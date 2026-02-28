@@ -36,8 +36,8 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 ### Top-level
 - **pipeline.py** — Orchestrates full flow: find backup → safety copy → parse → convert → inject → copy attachments → update manifest → verify.
 - **verify.py** — Post-injection checks: SQLite integrity, foreign key consistency, join table consistency, attachment files exist, Manifest.db entry present.
-- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`. Interactive backup confirmation prompt on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
-- **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`).
+- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`, `diagnose`. Interactive backup confirmation prompt on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
+- **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`). Also `CKStrategy` enum and `generate_ck_record_id()` helper.
 - **exceptions.py** — Hierarchy with user-friendly `hint` attributes.
 
 ## Data Flow
@@ -136,6 +136,24 @@ Each new attachment file gets a fresh random AES-256 key:
 4. Store wrapped key blob as `EncryptionKey` in the Manifest.db MBFile entry
 5. Encrypt attachment data with the unwrapped key (AES-256-CBC, zero IV, PKCS7)
 6. Store the **plaintext** file size in the MBFile blob (matching iOS convention)
+
+## CloudKit Sync Metadata
+
+iCloud Messages sync uses CloudKit metadata columns in sms.db to track which messages have been synced to the cloud. When a backup is restored with iCloud Messages enabled, iOS reconciles local messages against cloud state — messages with `ck_sync_state=0` and no CloudKit record ID may be deleted during reconciliation.
+
+### CK Strategy Options (`--ck-strategy`)
+
+- **none** (default) — No CK metadata. Messages get `ck_sync_state=0`, no record IDs. Current behavior; at risk with iCloud Messages.
+- **fake-synced** — Pretend already synced. Sets `ck_sync_state=1`, generates deterministic 64-char hex record IDs (`sha256(guid:salt)`), sets `ck_record_change_tag="1"`. Applied to both messages and chats.
+- **pending-upload** — Signal needs upload. Sets `ck_sync_state=0` with record IDs but no change tags. May trigger iOS to upload messages to iCloud rather than delete them.
+
+### Test Matrix Script (`scripts/wet_test_sync.py`)
+
+Injects 6 test messages with different CK strategies (A through F) into a single backup for A/B testing on a real device. After restore + iCloud sync, the `--diagnose` flag checks which messages survived to determine the winning strategy.
+
+### Diagnose Subcommand
+
+`green2blue diagnose` inspects a backup's CK sync state distribution, showing which messages are at risk. Supports `--injected-only` to filter for green2blue messages and `--password` for encrypted backups.
 
 ## Design Decisions
 

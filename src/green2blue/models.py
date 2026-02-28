@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
+from enum import Enum
 
 # --- Android models (parsed from SMS Import/Export NDJSON) ---
 
@@ -74,6 +75,29 @@ class iOSHandle:
     uncanonicalized_id: str | None = None  # Original unsanitized number
 
 
+class CKStrategy(Enum):
+    """CloudKit sync metadata strategy for injected messages."""
+
+    NONE = "none"  # No CK metadata (current default, ck_sync_state=0)
+    FAKE_SYNCED = "fake-synced"  # Pretend already synced (state=1, fake record IDs)
+    PENDING_UPLOAD = "pending-upload"  # Signal needs upload (state=0, with record IDs)
+
+
+def generate_ck_record_id(guid: str, salt: str = "green2blue-ck") -> str:
+    """Generate a 64-character hex CloudKit record ID.
+
+    Mimics the format of real ck_record_id values in sms.db.
+
+    Args:
+        guid: The message or chat GUID to derive from.
+        salt: Salt for uniqueness.
+
+    Returns:
+        64-character lowercase hex string.
+    """
+    return hashlib.sha256(f"{guid}:{salt}".encode()).hexdigest()
+
+
 @dataclass(frozen=True)
 class iOSChat:
     """A conversation in sms.db (chat table)."""
@@ -84,6 +108,8 @@ class iOSChat:
     service_name: str  # "SMS"
     display_name: str = ""  # User-visible group name, empty for 1:1
     account_id: str = "p:0"  # Default local account
+    ck_sync_state: int = 0  # CloudKit sync state (0=unsynced, 1=synced)
+    cloudkit_record_id: str | None = None  # CloudKit record ID
 
 
 @dataclass(frozen=True)
@@ -122,6 +148,9 @@ class iOSMessage:
     attachments: tuple[iOSAttachment, ...] = ()
     chat_identifier: str = ""  # Set during conversion for grouping
     group_members: tuple[str, ...] = ()  # All E.164 numbers for group chats
+    ck_sync_state: int = 0  # CloudKit sync state
+    ck_record_id: str | None = None  # CloudKit record ID (64-char hex)
+    ck_record_change_tag: str | None = None  # CloudKit change tag
 
 
 def compute_chat_guid(

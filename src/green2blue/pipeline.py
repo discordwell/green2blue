@@ -33,7 +33,7 @@ from green2blue.ios.backup import (
 )
 from green2blue.ios.manifest import ManifestDB, compute_file_id
 from green2blue.ios.sms_db import InjectionStats, SMSDatabase
-from green2blue.models import iOSAttachment, iOSMessage
+from green2blue.models import CKStrategy, iOSAttachment, iOSMessage
 from green2blue.parser.ndjson_parser import parse_ndjson
 from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
 from green2blue.verify import VerificationResult, verify_backup
@@ -64,6 +64,7 @@ def run_pipeline(
     include_attachments: bool = True,
     dry_run: bool = False,
     password: str | None = None,
+    ck_strategy: CKStrategy = CKStrategy.NONE,
 ) -> PipelineResult:
     """Run the full injection pipeline.
 
@@ -76,6 +77,7 @@ def run_pipeline(
         include_attachments: Copy MMS attachment files.
         dry_run: Parse and convert but don't modify the backup.
         password: Backup encryption password (if encrypted).
+        ck_strategy: CloudKit metadata strategy for iCloud Messages survival.
 
     Returns:
         PipelineResult with statistics and verification results.
@@ -110,6 +112,7 @@ def run_pipeline(
             include_attachments=include_attachments,
             dry_run=dry_run,
             country=country,
+            ck_strategy=ck_strategy,
         )
 
     # Step 3: Parse export ZIP
@@ -121,7 +124,9 @@ def run_pipeline(
 
         # Step 4: Convert to iOS format
         logger.info("Converting messages...")
-        conversion = convert_messages(android_messages, country, skip_duplicates)
+        conversion = convert_messages(
+            android_messages, country, skip_duplicates, ck_strategy=ck_strategy,
+        )
         result.conversion_warnings = conversion.warnings
         result.skipped_count = conversion.skipped_count
         logger.info(
@@ -264,6 +269,7 @@ def _run_encrypted_pipeline(
     include_attachments: bool = True,
     dry_run: bool = False,
     country: str = "US",
+    ck_strategy: CKStrategy = CKStrategy.NONE,
 ) -> PipelineResult:
     """Run the injection pipeline for an encrypted backup.
 
@@ -313,7 +319,9 @@ def _run_encrypted_pipeline(
 
             # Step 6: Convert to iOS format
             logger.info("Converting messages...")
-            conversion = convert_messages(android_messages, country, skip_duplicates)
+            conversion = convert_messages(
+                android_messages, country, skip_duplicates, ck_strategy=ck_strategy,
+            )
             result.conversion_warnings = conversion.warnings
             result.skipped_count = conversion.skipped_count
             logger.info(

@@ -9,6 +9,7 @@ import pytest
 from green2blue.ios.sms_db import SMSDatabase
 from green2blue.models import (
     ConversionResult,
+    generate_ck_record_id,
     iOSAttachment,
     iOSChat,
     iOSHandle,
@@ -325,6 +326,135 @@ class TestAttachmentInsertion:
             # Check join table
             cursor.execute("SELECT COUNT(*) as cnt FROM message_attachment_join")
             assert cursor.fetchone()["cnt"] == 1
+
+
+class TestCloudKitMetadata:
+    def test_message_default_ck_state_zero(self, empty_sms_db):
+        """Messages without CK metadata should have ck_sync_state=0."""
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[_make_message()],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT ck_sync_state, ck_record_id, ck_record_change_tag FROM message")
+            row = cursor.fetchone()
+            assert row["ck_sync_state"] == 0
+            assert row["ck_record_id"] is None
+            assert row["ck_record_change_tag"] is None
+
+    def test_message_fake_synced(self, empty_sms_db):
+        """Messages with fake-synced strategy should have ck_sync_state=1 and record ID."""
+        record_id = generate_ck_record_id("green2blue:ck-test")
+        msg = iOSMessage(
+            guid="green2blue:ck-test",
+            text="fake synced",
+            handle_id="+12025551234",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier="+12025551234",
+            ck_sync_state=1,
+            ck_record_id=record_id,
+            ck_record_change_tag="1",
+        )
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[msg],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT ck_sync_state, ck_record_id, ck_record_change_tag FROM message")
+            row = cursor.fetchone()
+            assert row["ck_sync_state"] == 1
+            assert row["ck_record_id"] == record_id
+            assert len(row["ck_record_id"]) == 64
+            assert row["ck_record_change_tag"] == "1"
+
+    def test_message_pending_upload(self, empty_sms_db):
+        """Messages with pending-upload strategy should have ck_sync_state=0 and record ID."""
+        record_id = generate_ck_record_id("green2blue:pending-test")
+        msg = iOSMessage(
+            guid="green2blue:pending-test",
+            text="pending upload",
+            handle_id="+12025551234",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier="+12025551234",
+            ck_sync_state=0,
+            ck_record_id=record_id,
+            ck_record_change_tag=None,
+        )
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[msg],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT ck_sync_state, ck_record_id, ck_record_change_tag FROM message")
+            row = cursor.fetchone()
+            assert row["ck_sync_state"] == 0
+            assert row["ck_record_id"] == record_id
+            assert row["ck_record_change_tag"] is None
+
+    def test_chat_ck_metadata(self, empty_sms_db):
+        """Chat CK metadata should be written to the chat table."""
+        chat_record_id = generate_ck_record_id("SMS;-;+12025551234", salt="green2blue-ck-chat")
+        chat = iOSChat(
+            guid="SMS;-;+12025551234",
+            style=45,
+            chat_identifier="+12025551234",
+            service_name="SMS",
+            ck_sync_state=1,
+            cloudkit_record_id=chat_record_id,
+        )
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[chat],
+            messages=[_make_message()],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT ck_sync_state, cloudkit_record_id FROM chat")
+            row = cursor.fetchone()
+            assert row["ck_sync_state"] == 1
+            assert row["cloudkit_record_id"] == chat_record_id
+
+    def test_generate_ck_record_id_format(self):
+        """Record IDs should be 64-char hex strings."""
+        record_id = generate_ck_record_id("test-guid")
+        assert len(record_id) == 64
+        assert all(c in "0123456789abcdef" for c in record_id)
+
+    def test_generate_ck_record_id_deterministic(self):
+        """Same input should produce same record ID."""
+        id1 = generate_ck_record_id("test-guid")
+        id2 = generate_ck_record_id("test-guid")
+        assert id1 == id2
+
+    def test_generate_ck_record_id_unique_per_guid(self):
+        """Different GUIDs should produce different record IDs."""
+        id1 = generate_ck_record_id("guid-1")
+        id2 = generate_ck_record_id("guid-2")
+        assert id1 != id2
+
+    def test_generate_ck_record_id_salt_matters(self):
+        """Different salts should produce different record IDs."""
+        id1 = generate_ck_record_id("guid", salt="salt-a")
+        id2 = generate_ck_record_id("guid", salt="salt-b")
+        assert id1 != id2
 
 
 class TestTriggerManagement:

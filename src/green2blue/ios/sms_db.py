@@ -267,8 +267,9 @@ class SMSDatabase:
         """Insert a chat and return its ROWID."""
         cursor.execute(
             """INSERT INTO chat (guid, style, state, account_id, chat_identifier,
-                                 service_name, display_name, account_login)
-               VALUES (?, ?, 3, ?, ?, ?, ?, ?)""",
+                                 service_name, display_name, account_login,
+                                 ck_sync_state, cloudkit_record_id)
+               VALUES (?, ?, 3, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 chat.guid,
                 chat.style,
@@ -277,6 +278,8 @@ class SMSDatabase:
                 chat.service_name,
                 chat.display_name,
                 chat.account_id,
+                chat.ck_sync_state,
+                chat.cloudkit_record_id,
             ),
         )
         return cursor.lastrowid
@@ -303,7 +306,8 @@ class SMSDatabase:
                 message_action_type, message_source,
                 associated_message_type, associated_message_range_location,
                 associated_message_range_length, time_expressive_send_played,
-                ck_sync_state, sr_ck_sync_state, is_corrupt,
+                ck_sync_state, ck_record_id, ck_record_change_tag,
+                sr_ck_sync_state, is_corrupt,
                 sort_id, is_spam, has_unseen_mention,
                 was_delivered_quietly, did_notify_recipient,
                 date_retracted, date_edited, was_detonated,
@@ -323,7 +327,8 @@ class SMSDatabase:
                 0, 0,
                 0, 0,
                 0, 0,
-                0, 0, 0,
+                ?, ?, ?,
+                0, 0,
                 0, 0, 0,
                 0, 0,
                 0, 0, 0,
@@ -348,6 +353,9 @@ class SMSDatabase:
                 int(msg.was_downgraded),
                 cache_has_attachments,
                 msg.group_title,
+                msg.ck_sync_state,
+                msg.ck_record_id,
+                msg.ck_record_change_tag,
             ),
         )
         return cursor.lastrowid

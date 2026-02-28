@@ -7,6 +7,7 @@ from green2blue.converter.timestamp import unix_ms_to_ios_ns, unix_s_to_ios_ns
 from green2blue.models import (
     AndroidMMS,
     AndroidSMS,
+    CKStrategy,
     MMSAddress,
     MMSPart,
     compute_chat_guid,
@@ -301,3 +302,82 @@ class TestComputeChatGuid:
         guid_1to1 = compute_chat_guid("+12025551234")
         guid_group = compute_chat_guid("+12025551234", ("+12025551234", "+12025559876"))
         assert guid_1to1 != guid_group
+
+
+class TestCKStrategy:
+    def test_default_no_ck_metadata(self):
+        """Default (none) strategy leaves CK fields at defaults."""
+        result = convert_messages([_make_sms()])
+        msg = result.messages[0]
+        assert msg.ck_sync_state == 0
+        assert msg.ck_record_id is None
+        assert msg.ck_record_change_tag is None
+
+    def test_none_strategy_explicit(self):
+        """Explicit none strategy is same as default."""
+        result = convert_messages([_make_sms()], ck_strategy=CKStrategy.NONE)
+        msg = result.messages[0]
+        assert msg.ck_sync_state == 0
+        assert msg.ck_record_id is None
+
+    def test_fake_synced_sets_state_1(self):
+        """Fake-synced strategy sets ck_sync_state=1."""
+        result = convert_messages([_make_sms()], ck_strategy=CKStrategy.FAKE_SYNCED)
+        msg = result.messages[0]
+        assert msg.ck_sync_state == 1
+
+    def test_fake_synced_generates_record_id(self):
+        """Fake-synced strategy generates a 64-char hex record ID."""
+        result = convert_messages([_make_sms()], ck_strategy=CKStrategy.FAKE_SYNCED)
+        msg = result.messages[0]
+        assert msg.ck_record_id is not None
+        assert len(msg.ck_record_id) == 64
+        assert all(c in "0123456789abcdef" for c in msg.ck_record_id)
+
+    def test_fake_synced_sets_change_tag(self):
+        """Fake-synced strategy sets a change tag."""
+        result = convert_messages([_make_sms()], ck_strategy=CKStrategy.FAKE_SYNCED)
+        msg = result.messages[0]
+        assert msg.ck_record_change_tag == "1"
+
+    def test_fake_synced_chat_metadata(self):
+        """Fake-synced strategy sets CK metadata on chats too."""
+        result = convert_messages([_make_sms()], ck_strategy=CKStrategy.FAKE_SYNCED)
+        chat = result.chats[0]
+        assert chat.ck_sync_state == 1
+        assert chat.cloudkit_record_id is not None
+        assert len(chat.cloudkit_record_id) == 64
+
+    def test_pending_upload_sets_state_0(self):
+        """Pending-upload strategy keeps ck_sync_state=0."""
+        result = convert_messages([_make_sms()], ck_strategy=CKStrategy.PENDING_UPLOAD)
+        msg = result.messages[0]
+        assert msg.ck_sync_state == 0
+
+    def test_pending_upload_generates_record_id(self):
+        """Pending-upload strategy generates a record ID."""
+        result = convert_messages([_make_sms()], ck_strategy=CKStrategy.PENDING_UPLOAD)
+        msg = result.messages[0]
+        assert msg.ck_record_id is not None
+        assert len(msg.ck_record_id) == 64
+
+    def test_pending_upload_no_change_tag(self):
+        """Pending-upload strategy has no change tag."""
+        result = convert_messages([_make_sms()], ck_strategy=CKStrategy.PENDING_UPLOAD)
+        msg = result.messages[0]
+        assert msg.ck_record_change_tag is None
+
+    def test_fake_synced_mms(self):
+        """Fake-synced strategy works with MMS messages too."""
+        result = convert_messages([_make_mms()], ck_strategy=CKStrategy.FAKE_SYNCED)
+        msg = result.messages[0]
+        assert msg.ck_sync_state == 1
+        assert msg.ck_record_id is not None
+
+    def test_unique_record_ids_per_message(self):
+        """Each message should get a unique record ID."""
+        sms1 = _make_sms(date=1700000000000)
+        sms2 = _make_sms(body="different", date=1700000001000)
+        result = convert_messages([sms1, sms2], ck_strategy=CKStrategy.FAKE_SYNCED)
+        assert len(result.messages) == 2
+        assert result.messages[0].ck_record_id != result.messages[1].ck_record_id

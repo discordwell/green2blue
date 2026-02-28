@@ -112,6 +112,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Backup encryption password",
     )
     inject_parser.add_argument(
+        "--ck-strategy",
+        type=str,
+        choices=["none", "fake-synced", "pending-upload"],
+        default="none",
+        help="CloudKit metadata strategy for iCloud Messages sync survival (default: none)",
+    )
+    inject_parser.add_argument(
         "-y", "--yes",
         action="store_true",
         default=False,
@@ -164,12 +171,46 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("-q", "--quiet", action="store_true")
     verify_parser.set_defaults(func=_cmd_verify)
 
+    # --- diagnose ---
+    diagnose_parser = subparsers.add_parser(
+        "diagnose",
+        help="Diagnose CloudKit sync state of messages in a backup",
+    )
+    diagnose_parser.add_argument(
+        "--backup",
+        type=str,
+        default=None,
+        help="iPhone backup path or UDID (auto-detect if omitted)",
+    )
+    diagnose_parser.add_argument(
+        "--backup-root",
+        type=Path,
+        default=None,
+        help="Override the default backup directory",
+    )
+    diagnose_parser.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Backup encryption password",
+    )
+    diagnose_parser.add_argument(
+        "--injected-only",
+        action="store_true",
+        default=False,
+        help="Only show green2blue-injected messages",
+    )
+    diagnose_parser.add_argument("-v", "--verbose", action="store_true")
+    diagnose_parser.add_argument("-q", "--quiet", action="store_true")
+    diagnose_parser.set_defaults(func=_cmd_diagnose)
+
     return parser
 
 
 def _cmd_inject(args: argparse.Namespace) -> int:
     """Execute the inject command."""
     from green2blue.ios.backup import find_backup
+    from green2blue.models import CKStrategy
     from green2blue.pipeline import run_pipeline
 
     # Resolve backup with interactive confirmation
@@ -186,6 +227,8 @@ def _cmd_inject(args: argparse.Namespace) -> int:
         if confirmed_path != backup_info.path:
             backup_info = find_backup(str(confirmed_path), args.backup_root)
 
+    ck_strategy = CKStrategy(args.ck_strategy)
+
     result = run_pipeline(
         export_path=args.export_zip,
         backup_path_or_udid=str(backup_info.path),
@@ -195,6 +238,7 @@ def _cmd_inject(args: argparse.Namespace) -> int:
         include_attachments=not args.no_attachments,
         dry_run=args.dry_run,
         password=args.password,
+        ck_strategy=ck_strategy,
     )
 
     # Print summary
@@ -351,6 +395,110 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     print(f"  Unknown:        {counts['unknown']}")
     print(f"  Parse errors:   {counts['errors']}")
     print(f"  Attachments:    {'yes' if has_attachments else 'no'}")
+
+    return 0
+
+
+def _cmd_diagnose(args: argparse.Namespace) -> int:
+    """Execute the diagnose command."""
+    import os
+    import sqlite3
+    import tempfile
+
+    from green2blue.ios.backup import find_backup, get_sms_db_path
+
+    backup_info = find_backup(args.backup, args.backup_root)
+    sms_db_path = get_sms_db_path(backup_info.path)
+    temp_path = None
+
+    try:
+        # Decrypt if needed
+        if backup_info.is_encrypted:
+            if not args.password:
+                print("Error: Encrypted backup requires --password", file=sys.stderr)
+                return 1
+            from green2blue.ios.crypto import EncryptedBackup
+            from green2blue.ios.manifest import ManifestDB, compute_file_id
+
+            eb = EncryptedBackup(backup_info.path, args.password)
+            eb.unlock()
+            temp_manifest = eb.decrypt_manifest_db()
+            sms_file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+            with ManifestDB(temp_manifest) as manifest:
+                sms_enc_key, sms_prot_class = manifest.get_file_encryption_info(sms_file_id)
+            encrypted_data = sms_db_path.read_bytes()
+            decrypted_data = eb.decrypt_db_file(encrypted_data, sms_enc_key, sms_prot_class)
+            fd, tmp = tempfile.mkstemp(suffix=".db")
+            os.close(fd)
+            temp_path = Path(tmp)
+            temp_path.write_bytes(decrypted_data)
+            temp_manifest.unlink(missing_ok=True)
+            sms_db_path = temp_path
+
+        conn = sqlite3.connect(sms_db_path)
+        conn.row_factory = sqlite3.Row
+
+        # Summary stats
+        total = conn.execute("SELECT COUNT(*) as cnt FROM message").fetchone()["cnt"]
+        print(f"\nBackup: {backup_info.device_name} (iOS {backup_info.product_version})")
+        print(f"Total messages: {total}")
+
+        # CK sync state distribution
+        rows = conn.execute(
+            "SELECT ck_sync_state, COUNT(*) as cnt FROM message "
+            "GROUP BY ck_sync_state ORDER BY ck_sync_state"
+        ).fetchall()
+        print("\nMessage CloudKit sync state distribution:")
+        for row in rows:
+            state = row["ck_sync_state"]
+            label = {0: "unsynced", 1: "synced", 2: "pending"}.get(state, f"unknown({state})")
+            at_risk = " [AT RISK with iCloud Messages]" if state == 0 else ""
+            print(f"  ck_sync_state={state} ({label}): {row['cnt']} messages{at_risk}")
+
+        # Chat CK state distribution
+        chat_rows = conn.execute(
+            "SELECT ck_sync_state, COUNT(*) as cnt FROM chat "
+            "GROUP BY ck_sync_state ORDER BY ck_sync_state"
+        ).fetchall()
+        print("\nChat CloudKit sync state distribution:")
+        for row in chat_rows:
+            print(f"  ck_sync_state={row['ck_sync_state']}: {row['cnt']} chats")
+
+        # Show injected messages
+        if args.injected_only:
+            print("\ngreen2blue-injected messages:")
+            injected = conn.execute(
+                "SELECT m.guid, m.text, m.ck_sync_state, m.ck_record_id, "
+                "m.ck_record_change_tag, h.id as handle "
+                "FROM message m LEFT JOIN handle h ON m.handle_id = h.ROWID "
+                "WHERE m.guid LIKE 'green2blue:%' ORDER BY m.date"
+            ).fetchall()
+            if not injected:
+                print("  (none found)")
+            for row in injected:
+                text = row["text"]
+                if text and len(text) > 40:
+                    text_preview = text[:40] + "..."
+                else:
+                    text_preview = text or "[attachment]"
+                print(f"  {row['handle']}: {text_preview}")
+                print(f"    ck_sync_state={row['ck_sync_state']}, "
+                      f"ck_record_id={row['ck_record_id'] or '(none)'}, "
+                      f"tag={row['ck_record_change_tag'] or '(none)'}")
+
+        # Highlight at-risk messages
+        at_risk = conn.execute(
+            "SELECT COUNT(*) as cnt FROM message WHERE ck_sync_state = 0"
+        ).fetchone()["cnt"]
+        if at_risk > 0 and at_risk < total:
+            print(f"\nWARNING: {at_risk}/{total} messages have ck_sync_state=0")
+            print("These may be deleted when iCloud Messages syncs.")
+
+        conn.close()
+
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
 
     return 0
 

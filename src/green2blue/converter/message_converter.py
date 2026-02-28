@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import defaultdict
+from dataclasses import replace
 
 from green2blue.converter.phone import normalize_phone
 from green2blue.converter.timestamp import unix_ms_to_ios_ns, unix_s_to_ios_ns
@@ -16,8 +17,10 @@ from green2blue.exceptions import PhoneNormalizationError
 from green2blue.models import (
     AndroidMMS,
     AndroidSMS,
+    CKStrategy,
     ConversionResult,
     compute_chat_guid,
+    generate_ck_record_id,
     iOSAttachment,
     iOSChat,
     iOSHandle,
@@ -62,6 +65,7 @@ def convert_messages(
     messages: list[AndroidSMS | AndroidMMS],
     country: str = "US",
     skip_duplicates: bool = True,
+    ck_strategy: CKStrategy = CKStrategy.NONE,
 ) -> ConversionResult:
     """Convert a list of Android messages to iOS format.
 
@@ -69,6 +73,7 @@ def convert_messages(
         messages: Parsed Android messages.
         country: Default country for phone normalization.
         skip_duplicates: If True, skip duplicate messages based on content hash.
+        ck_strategy: CloudKit metadata strategy for iCloud Messages survival.
 
     Returns:
         ConversionResult with iOS messages, handles, and chats.
@@ -102,6 +107,10 @@ def convert_messages(
         if ios_msg is None:
             result.skipped_count += 1
             continue
+
+        # Apply CloudKit metadata strategy
+        if ck_strategy != CKStrategy.NONE:
+            ios_msg = _apply_ck_strategy(ios_msg, ck_strategy)
 
         # Duplicate detection
         if skip_duplicates:
@@ -147,12 +156,41 @@ def convert_messages(
                 chat_identifier=conv_key,
                 service_name="SMS",
             )
+            # Apply CK strategy to chat
+            if ck_strategy != CKStrategy.NONE:
+                chat = _apply_ck_strategy_to_chat(chat, ck_strategy)
             chats_by_id[conv_key] = chat
 
     result.handles = list(handles_by_id.values())
     result.chats = list(chats_by_id.values())
 
     return result
+
+
+def _apply_ck_strategy(msg: iOSMessage, strategy: CKStrategy) -> iOSMessage:
+    """Apply CloudKit metadata strategy to a message."""
+    if strategy == CKStrategy.NONE:
+        return msg
+    record_id = generate_ck_record_id(msg.guid)
+    if strategy == CKStrategy.FAKE_SYNCED:
+        return replace(msg, ck_sync_state=1, ck_record_id=record_id,
+                       ck_record_change_tag="1")
+    elif strategy == CKStrategy.PENDING_UPLOAD:
+        return replace(msg, ck_sync_state=0, ck_record_id=record_id,
+                       ck_record_change_tag=None)
+    return msg
+
+
+def _apply_ck_strategy_to_chat(chat: iOSChat, strategy: CKStrategy) -> iOSChat:
+    """Apply CloudKit metadata strategy to a chat."""
+    if strategy == CKStrategy.NONE:
+        return chat
+    record_id = generate_ck_record_id(chat.guid, salt="green2blue-ck-chat")
+    if strategy == CKStrategy.FAKE_SYNCED:
+        return replace(chat, ck_sync_state=1, cloudkit_record_id=record_id)
+    elif strategy == CKStrategy.PENDING_UPLOAD:
+        return replace(chat, ck_sync_state=0, cloudkit_record_id=record_id)
+    return chat
 
 
 def _convert_sms(sms: AndroidSMS, country: str) -> iOSMessage | None:
