@@ -163,7 +163,12 @@ class ManifestDB:
                     enc_value = obj["EncryptionKey"]
                     # Real iOS blobs use plistlib.UID references for NSData
                     if isinstance(enc_value, plistlib.UID):
-                        encryption_key = objects[enc_value]
+                        resolved = objects[enc_value]
+                        # NSKeyedArchiver wraps NSData as {'NS.data': bytes, '$class': UID}
+                        if isinstance(resolved, dict) and "NS.data" in resolved:
+                            encryption_key = resolved["NS.data"]
+                        else:
+                            encryption_key = resolved
                     else:
                         encryption_key = enc_value
                 if "ProtectionClass" in obj:

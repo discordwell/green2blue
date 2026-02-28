@@ -107,3 +107,93 @@ class TestManifestDB:
     def test_get_entry_not_found(self, manifest_db):
         with ManifestDB(manifest_db) as m:
             assert m.get_entry("nonexistent") is None
+
+    def test_get_file_encryption_info_nsdata_wrapper(self, tmp_dir):
+        """EncryptionKey stored as NSKeyedArchiver NSData wrapper (real iOS format)."""
+        import plistlib
+
+        db_path = tmp_dir / "Manifest_nsdata.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE Files (
+                fileID TEXT PRIMARY KEY, domain TEXT, relativePath TEXT,
+                flags INTEGER, file BLOB
+            )
+        """)
+
+        # Build an NSKeyedArchiver-style blob with NSData wrapper for EncryptionKey
+        enc_key_bytes = b"\x03\x00\x00\x00" + b"\xaa" * 40  # 4-byte prefix + 40-byte wrapped key
+        blob = plistlib.dumps({
+            "$archiver": "NSKeyedArchiver",
+            "$version": 100000,
+            "$top": {"root": plistlib.UID(1)},
+            "$objects": [
+                "$null",
+                {
+                    "RelativePath": plistlib.UID(2),
+                    "EncryptionKey": plistlib.UID(3),
+                    "ProtectionClass": 3,
+                    "$class": plistlib.UID(5),
+                },
+                "Library/SMS/sms.db",
+                {"NS.data": enc_key_bytes, "$class": plistlib.UID(4)},
+                {"$classname": "NSMutableData", "$classes": ["NSMutableData", "NSData", "NSObject"]},
+                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+            ],
+        }, fmt=plistlib.FMT_BINARY)
+
+        file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+        conn.execute(
+            "INSERT INTO Files VALUES (?, ?, ?, ?, ?)",
+            (file_id, "HomeDomain", "Library/SMS/sms.db", 1, blob),
+        )
+        conn.commit()
+        conn.close()
+
+        with ManifestDB(db_path) as m:
+            enc_key, prot_class = m.get_file_encryption_info(file_id)
+            assert enc_key == enc_key_bytes
+            assert prot_class == 3
+
+    def test_get_file_encryption_info_raw_bytes(self, tmp_dir):
+        """EncryptionKey stored as raw bytes (synthetic/test format)."""
+        import plistlib
+
+        db_path = tmp_dir / "Manifest_raw.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE Files (
+                fileID TEXT PRIMARY KEY, domain TEXT, relativePath TEXT,
+                flags INTEGER, file BLOB
+            )
+        """)
+
+        enc_key_bytes = b"\x03\x00\x00\x00" + b"\xbb" * 40
+        blob = plistlib.dumps({
+            "$archiver": "NSKeyedArchiver",
+            "$version": 100000,
+            "$top": {"root": plistlib.UID(1)},
+            "$objects": [
+                "$null",
+                {
+                    "EncryptionKey": plistlib.UID(2),
+                    "ProtectionClass": 3,
+                    "$class": plistlib.UID(3),
+                },
+                enc_key_bytes,  # raw bytes, not wrapped in NSData
+                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+            ],
+        }, fmt=plistlib.FMT_BINARY)
+
+        file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+        conn.execute(
+            "INSERT INTO Files VALUES (?, ?, ?, ?, ?)",
+            (file_id, "HomeDomain", "Library/SMS/sms.db", 1, blob),
+        )
+        conn.commit()
+        conn.close()
+
+        with ManifestDB(db_path) as m:
+            enc_key, prot_class = m.get_file_encryption_info(file_id)
+            assert enc_key == enc_key_bytes
+            assert prot_class == 3
