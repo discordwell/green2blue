@@ -274,7 +274,14 @@ def main():
 
     try:
         if args.real:
-            # Real backup mode
+            # Real backup mode — resolve backup upfront so both
+            # inject and prepare-sync target the same one
+            from green2blue.ios.backup import find_backup
+
+            backup_info = find_backup()
+            backup_udid = backup_info.udid
+            print(f"Target backup: {backup_info.device_name} ({backup_udid})")
+
             print("\n" + "=" * 70)
             print("STEP 1: Building test export ZIP")
             print("=" * 70)
@@ -284,7 +291,11 @@ def main():
             print("\n" + "=" * 70)
             print("STEP 2: Injecting via green2blue with --ck-strategy fake-synced")
             print("=" * 70)
-            inject_args = ["inject", str(export_zip), "--ck-strategy", "fake-synced", "-y"]
+            inject_args = [
+                "inject", str(export_zip),
+                "--backup", backup_udid,
+                "--ck-strategy", "fake-synced", "-y",
+            ]
             if args.password:
                 inject_args += ["--password", args.password]
             run_g2b(*inject_args)
@@ -292,7 +303,7 @@ def main():
             print("\n" + "=" * 70)
             print("STEP 3: Running prepare-sync")
             print("=" * 70)
-            ps_args = ["prepare-sync"]
+            ps_args = ["prepare-sync", "--backup", backup_udid]
             if args.password:
                 ps_args += ["--password", args.password]
             run_g2b(*ps_args)
