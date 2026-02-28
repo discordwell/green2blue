@@ -148,6 +148,16 @@ def compute_chat_guid(
     return f"SMS;-;{chat_identifier}"
 
 
+def message_content_hash(msg: iOSMessage) -> str:
+    """Compute a content hash for duplicate detection.
+
+    Used by both the converter (pre-injection dedup) and the database
+    injector (post-injection dedup against existing messages).
+    """
+    content = f"{msg.handle_id}|{msg.date}|{msg.text or ''}"
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
 @dataclass
 class ConversionResult:
     """The full result of converting an Android export to iOS models."""

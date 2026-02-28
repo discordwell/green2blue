@@ -18,7 +18,7 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 
 ### `parser/`
 - **zip_reader.py** — Extract and validate SMS Import/Export ZIP archives. Ensures `messages.ndjson` exists.
-- **ndjson_parser.py** — Stream-parse NDJSON line by line. Classifies records as SMS (has `body`+`address`) or MMS (has `__parts`+`__addresses`). Yields frozen dataclasses.
+- **ndjson_parser.py** — Stream-parse NDJSON line by line. Classifies records as SMS (has `body`+`address`) or MMS (has `__parts`+`__sender_address`/`__recipient_addresses` or legacy `__addresses`). Detects RCS messages heuristically. Yields frozen dataclasses.
 
 ### `converter/`
 - **phone.py** — E.164 phone normalization without external dependencies. Country calling code table for 40+ countries. Handles parentheses, dashes, spaces, dots, short codes.
@@ -47,10 +47,17 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 {"address":"+12025551234","body":"Hello!","date":"1700000000000","type":"1","read":"1"}
 ```
 
-MMS records have `__parts` (text/binary) and `__addresses` (from/to):
+MMS records have `__parts` (text/binary) and address fields. The real SMS IE format uses `__sender_address` (object) + `__recipient_addresses` (array):
+```json
+{"date":"1700000000","msg_box":"1","__parts":[...],"__sender_address":{...},"__recipient_addresses":[...]}
+```
+
+Legacy format uses `__addresses` (array) — both are supported:
 ```json
 {"date":"1700000000","msg_box":"1","__parts":[...],"__addresses":[...]}
 ```
+
+RCS messages appear as regular SMS or MMS records with no special type marker. They can be detected via `rcs_*` prefixed fields (vendor extension).
 
 ### iOS sms.db Schema (key tables)
 - **handle** — Contact identifiers (E.164 phone numbers)

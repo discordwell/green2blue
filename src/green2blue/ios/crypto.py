@@ -47,23 +47,6 @@ def check_crypto_available() -> None:
 
 # --- Keybag parsing ---
 
-# Keybag tag identifiers (4-byte big-endian tags)
-KEYBAG_TAGS = {
-    b"VERS": "version",
-    b"TYPE": "type",
-    b"UUID": "uuid",
-    b"HMCK": "hmck",
-    b"WRAP": "wrap",
-    b"SALT": "salt",
-    b"ITER": "iter",
-    b"DPWT": "dpwt",
-    b"DPIC": "dpic",
-    b"DPSL": "dpsl",
-    b"CLAS": "class",
-    b"WPKY": "wpky",
-    b"KTYP": "ktyp",
-}
-
 
 class KeybagKey:
     """A single class key from the keybag."""

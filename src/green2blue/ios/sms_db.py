@@ -26,6 +26,7 @@ from green2blue.models import (
     iOSChat,
     iOSHandle,
     iOSMessage,
+    message_content_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ class SMSDatabase:
             for msg in result.messages:
                 # Duplicate check
                 if skip_duplicates:
-                    msg_hash = _message_content_hash(msg)
+                    msg_hash = message_content_hash(msg)
                     if msg_hash in existing_hashes:
                         stats.messages_skipped += 1
                         continue
@@ -188,7 +189,12 @@ class SMSDatabase:
             trigger_names.append(row["name"])
 
         for name in trigger_names:
-            cursor.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+            # Parameterized queries can't be used for DDL identifiers,
+            # so we validate the name contains only safe characters
+            if not all(c.isalnum() or c == '_' for c in name):
+                logger.warning("Skipping trigger with unsafe name: %r", name)
+                continue
+            cursor.execute(f"DROP TRIGGER IF EXISTS [{name}]")
         self.conn.commit()
         logger.debug("Dropped %d triggers", len(trigger_names))
 
@@ -422,7 +428,3 @@ class InjectionStats:
         )
 
 
-def _message_content_hash(msg: iOSMessage) -> str:
-    """Compute a content hash for duplicate detection against existing DB messages."""
-    content = f"{msg.handle_id}|{msg.date}|{msg.text or ''}"
-    return hashlib.sha256(content.encode()).hexdigest()

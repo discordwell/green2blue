@@ -79,6 +79,107 @@ SAMPLE_GROUP_MMS = {
     ],
 }
 
+# --- Real SMS Import/Export format fixtures ---
+# These match the actual format produced by the SMS IE Android app.
+# MMS uses __sender_address (object) + __recipient_addresses (array).
+# _data contains full Android filesystem paths.
+
+REAL_FORMAT_MMS = {
+    "date": "1700000002",
+    "date_sent": "1700000001",
+    "msg_box": "1",
+    "read": "1",
+    "sub": None,
+    "ct_t": "application/vnd.wap.multipart.related",
+    "__display_name": "Test Sender",
+    "__parts": [
+        {
+            "seq": "0",
+            "ct": "text/plain",
+            "text": "Check out this photo!",
+        },
+        {
+            "seq": "1",
+            "ct": "image/jpeg",
+            "_data": (
+                "/data/user/0/com.android.providers.telephony"
+                "/app_parts/PART_1700000002_image.jpg"
+            ),
+            "cl": "photo.jpg",
+        },
+    ],
+    "__sender_address": {
+        "address": "+12025551234",
+        "type": "137",
+        "charset": "106",
+    },
+    "__recipient_addresses": [
+        {"address": "+12025559876", "type": "151", "charset": "106"},
+    ],
+}
+
+REAL_FORMAT_GROUP_MMS = {
+    "date": "1700000003",
+    "msg_box": "1",
+    "read": "1",
+    "sub": "Weekend plans",
+    "ct_t": "application/vnd.wap.multipart.related",
+    "__parts": [
+        {
+            "seq": "0",
+            "ct": "text/plain",
+            "text": "Who's coming Saturday?",
+        },
+    ],
+    "__sender_address": {
+        "address": "+12025551111",
+        "type": "137",
+        "charset": "106",
+    },
+    "__recipient_addresses": [
+        {"address": "+12025552222", "type": "151", "charset": "106"},
+        {"address": "+12025553333", "type": "151", "charset": "106"},
+    ],
+}
+
+SAMPLE_RCS_SMS = {
+    "address": "+12025551234",
+    "body": "RCS message via Google Messages",
+    "date": "1700000005000",
+    "type": "1",
+    "read": "1",
+    "date_sent": "1700000005000",
+    "rcs_message_type": "1",
+    "rcs_delivery_status": "delivered",
+    "creator": "com.google.android.apps.messaging",
+}
+
+SAMPLE_RCS_MMS = {
+    "date": "1700000006",
+    "msg_box": "1",
+    "read": "1",
+    "sub": None,
+    "ct_t": "application/vnd.wap.multipart.related",
+    "rcs_message_type": "1",
+    "creator": "com.google.android.apps.messaging",
+    "__parts": [
+        {
+            "seq": "0",
+            "ct": "image/jpeg",
+            "_data": "/data/user/0/com.android.providers.telephony/app_parts/PART_rcs_photo.jpg",
+            "cl": "rcs_photo.jpg",
+        },
+    ],
+    "__sender_address": {
+        "address": "+12025551234",
+        "type": "137",
+        "charset": "106",
+    },
+    "__recipient_addresses": [
+        {"address": "+12025559876", "type": "151", "charset": "106"},
+    ],
+}
+
 
 def make_ndjson_content(*records: dict) -> str:
     """Create NDJSON content from dictionaries."""

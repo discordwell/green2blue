@@ -10,8 +10,12 @@ import pytest
 from green2blue.models import AndroidMMS, AndroidSMS
 from green2blue.parser.ndjson_parser import count_messages, parse_ndjson
 from tests.conftest import (
+    REAL_FORMAT_GROUP_MMS,
+    REAL_FORMAT_MMS,
     SAMPLE_GROUP_MMS,
     SAMPLE_MMS,
+    SAMPLE_RCS_MMS,
+    SAMPLE_RCS_SMS,
     SAMPLE_SMS_RECEIVED,
     SAMPLE_SMS_SENT,
 )
@@ -161,6 +165,98 @@ class TestMalformedData:
 
         with pytest.raises(ParseError):
             list(parse_ndjson(tmp_dir / "nonexistent.ndjson"))
+
+
+class TestRealSMSIEFormat:
+    """Tests for the real SMS Import/Export format (__sender_address / __recipient_addresses)."""
+
+    def test_real_mms(self, tmp_dir):
+        path = _write_ndjson(tmp_dir, REAL_FORMAT_MMS)
+        messages = list(parse_ndjson(path))
+        assert len(messages) == 1
+        msg = messages[0]
+        assert isinstance(msg, AndroidMMS)
+        assert msg.msg_box == 1
+        assert len(msg.parts) == 2
+        assert len(msg.addresses) == 2
+
+    def test_real_mms_sender_type(self, tmp_dir):
+        path = _write_ndjson(tmp_dir, REAL_FORMAT_MMS)
+        msg = list(parse_ndjson(path))[0]
+        from_addrs = [a for a in msg.addresses if a.type == 137]
+        to_addrs = [a for a in msg.addresses if a.type == 151]
+        assert len(from_addrs) == 1
+        assert from_addrs[0].address == "+12025551234"
+        assert len(to_addrs) == 1
+        assert to_addrs[0].address == "+12025559876"
+
+    def test_real_group_mms(self, tmp_dir):
+        path = _write_ndjson(tmp_dir, REAL_FORMAT_GROUP_MMS)
+        messages = list(parse_ndjson(path))
+        assert len(messages) == 1
+        msg = messages[0]
+        assert len(msg.addresses) == 3
+        to_addrs = [a for a in msg.addresses if a.type == 151]
+        assert len(to_addrs) == 2
+
+    def test_real_mms_android_data_path(self, tmp_dir):
+        """Test that full Android _data paths are preserved in MMSPart."""
+        path = _write_ndjson(tmp_dir, REAL_FORMAT_MMS)
+        msg = list(parse_ndjson(path))[0]
+        image_parts = [p for p in msg.parts if p.content_type == "image/jpeg"]
+        assert len(image_parts) == 1
+        # Full Android path should be stored as data_path
+        assert image_parts[0].data_path == (
+            "/data/user/0/com.android.providers.telephony/app_parts/"
+            "PART_1700000002_image.jpg"
+        )
+        # cl field should be stored as filename
+        assert image_parts[0].filename == "photo.jpg"
+
+    def test_real_mms_date_sent(self, tmp_dir):
+        path = _write_ndjson(tmp_dir, REAL_FORMAT_MMS)
+        msg = list(parse_ndjson(path))[0]
+        assert msg.date_sent == 1700000001
+
+    def test_mixed_legacy_and_real(self, tmp_dir):
+        """Both legacy (__addresses) and real (__sender_address) should parse."""
+        path = _write_ndjson(tmp_dir, SAMPLE_MMS, REAL_FORMAT_MMS)
+        messages = list(parse_ndjson(path))
+        assert len(messages) == 2
+        assert all(isinstance(m, AndroidMMS) for m in messages)
+        # Both should have 2 addresses
+        assert len(messages[0].addresses) == 2
+        assert len(messages[1].addresses) == 2
+
+
+class TestRCSDetection:
+    """Test RCS message parsing."""
+
+    def test_rcs_sms_parsed_as_sms(self, tmp_dir):
+        """RCS SMS should still be parsed as AndroidSMS."""
+        path = _write_ndjson(tmp_dir, SAMPLE_RCS_SMS)
+        messages = list(parse_ndjson(path))
+        assert len(messages) == 1
+        assert isinstance(messages[0], AndroidSMS)
+        assert messages[0].body == "RCS message via Google Messages"
+
+    def test_rcs_mms_parsed_as_mms(self, tmp_dir):
+        """RCS MMS should still be parsed as AndroidMMS."""
+        path = _write_ndjson(tmp_dir, SAMPLE_RCS_MMS)
+        messages = list(parse_ndjson(path))
+        assert len(messages) == 1
+        assert isinstance(messages[0], AndroidMMS)
+
+    def test_rcs_count(self, tmp_dir):
+        """count_messages should detect RCS messages."""
+        path = _write_ndjson(
+            tmp_dir, SAMPLE_SMS_RECEIVED, SAMPLE_RCS_SMS, SAMPLE_RCS_MMS
+        )
+        counts = count_messages(path)
+        assert counts["sms"] == 2  # regular SMS + RCS SMS
+        assert counts["mms"] == 1  # RCS MMS
+        assert counts["rcs"] == 2  # both RCS messages detected
+        assert counts["total"] == 3
 
 
 class TestCountMessages:

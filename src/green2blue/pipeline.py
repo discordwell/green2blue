@@ -2,15 +2,13 @@
 
 Flow:
 1. Find and validate iPhone backup
-2. Create safety copy
-3. Detect encryption → decrypt if needed
-4. Parse Android export ZIP
-5. Convert messages to iOS format
-6. Inject messages into sms.db
-7. Copy attachments into backup
-8. Update Manifest.db
-9. Re-encrypt if needed
-10. Verify integrity
+2. Parse Android export ZIP
+3. Convert messages to iOS format
+4. Create safety copy
+5. Inject messages into sms.db
+6. Copy attachments into backup
+7. Update Manifest.db
+8. Verify integrity
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ from green2blue.ios.manifest import ManifestDB
 from green2blue.ios.sms_db import InjectionStats, SMSDatabase
 from green2blue.models import iOSAttachment, iOSMessage
 from green2blue.parser.ndjson_parser import parse_ndjson
-from green2blue.parser.zip_reader import open_export_zip
+from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
 from green2blue.verify import VerificationResult, verify_backup
 
 logger = logging.getLogger(__name__)
@@ -97,18 +95,12 @@ def run_pipeline(
     validate_backup(backup_info.path)
 
     # Step 2: Handle encryption
-    encrypted_backup = None
     if backup_info.is_encrypted:
-        if not password:
-            raise EncryptedBackupError(
-                "Backup is encrypted but no password was provided."
-            )
-
-        from green2blue.ios.crypto import EncryptedBackup
-
-        encrypted_backup = EncryptedBackup(backup_info.path, password)
-        encrypted_backup.unlock()
-        logger.info("Encrypted backup unlocked successfully")
+        raise EncryptedBackupError(
+            "Encrypted backup support is not yet fully implemented. "
+            "Please use an unencrypted backup (disable 'Encrypt local backup' "
+            "in Finder/iTunes and create a new backup)."
+        )
 
     # Step 3: Parse export ZIP
     logger.info("Parsing Android export: %s", export_path)
@@ -143,13 +135,6 @@ def run_pipeline(
 
         # Step 6: Inject into sms.db
         sms_db_file = get_sms_db_path(backup_info.path)
-
-        # If encrypted, decrypt sms.db first
-        # For unencrypted, work directly on the file
-        if encrypted_backup:
-            # TODO: Decrypt sms.db, modify, re-encrypt
-            # For now, work with unencrypted backups
-            logger.warning("Encrypted backup injection not fully implemented yet")
 
         logger.info("Injecting messages into sms.db...")
         with SMSDatabase(sms_db_file) as db:
@@ -188,13 +173,7 @@ def run_pipeline(
                     )
                 db.conn.commit()
 
-        # Step 9: Re-encrypt if needed
-        if encrypted_backup:
-            logger.info("Re-encrypting backup...")
-            # TODO: Re-encrypt modified files
-            logger.warning("Encrypted backup re-encryption not fully implemented yet")
-
-        # Step 10: Verify
+        # Step 9: Verify
         logger.info("Verifying backup integrity...")
         result.verification = verify_backup(
             backup_info.path,
@@ -215,7 +194,7 @@ def run_pipeline(
 def _copy_message_attachment(
     att: iOSAttachment,
     msg: iOSMessage,
-    export,
+    export: ExtractedExport,
     backup_path: Path,
     manifest: ManifestDB,
     domain: str,
@@ -228,14 +207,24 @@ def _copy_message_attachment(
     if not export.data_dir:
         return 0
 
-    # Use the original data_path from the export if available
+    # Try to find the source file in the export
     source = None
-    if att.source_data_path:
-        candidate = export.temp_dir / att.source_data_path
+    if att.source_data_path and export.data_dir:
+        # Real SMS IE stores full Android paths like
+        # /data/user/0/com.android.providers.telephony/app_parts/PART_123.jpg
+        # The ZIP stores these as data/PART_123.jpg (basename under data/)
+        basename = Path(att.source_data_path).name
+        candidate = export.data_dir / basename
         if candidate.exists():
             source = candidate
 
-    # Fallback: search by transfer_name
+        # Also try as a relative path from temp_dir (legacy test format)
+        if source is None:
+            candidate = export.temp_dir / att.source_data_path
+            if candidate.exists():
+                source = candidate
+
+    # Fallback: search by transfer_name (display filename from cl/fn/name)
     if source is None:
         source = _find_attachment_source(att.transfer_name, export.data_dir)
 

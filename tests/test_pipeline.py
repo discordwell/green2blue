@@ -10,8 +10,12 @@ from pathlib import Path
 from green2blue.ios.backup import get_sms_db_hash
 from green2blue.pipeline import run_pipeline
 from tests.conftest import (
+    REAL_FORMAT_GROUP_MMS,
+    REAL_FORMAT_MMS,
     SAMPLE_GROUP_MMS,
     SAMPLE_MMS,
+    SAMPLE_RCS_MMS,
+    SAMPLE_RCS_SMS,
     SAMPLE_SMS_RECEIVED,
     SAMPLE_SMS_SENT,
     make_ndjson_content,
@@ -270,6 +274,183 @@ class TestFullPipeline:
         handle_id = cursor.fetchone()[0]
         conn.close()
         assert handle_id == "+12025551234"
+
+
+class TestRealSMSIEFormat:
+    """Tests using the real SMS Import/Export format (__sender_address / __recipient_addresses)."""
+
+    def test_real_format_mms(self, tmp_dir):
+        backup_dir = _create_full_backup(tmp_dir)
+        zip_path = _create_export_zip(
+            tmp_dir,
+            records=[REAL_FORMAT_MMS],
+            attachment_data={
+                "data/PART_1700000002_image.jpg": b"\xff\xd8\xff\xe0real_jpeg",
+            },
+        )
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+        )
+
+        assert result.injection_stats.messages_inserted == 1
+        # 1:1 MMS: only 1 handle (the other party; phone owner doesn't need one)
+        assert result.injection_stats.handles_inserted == 1
+        assert result.total_attachments_copied == 1
+        assert result.verification.passed
+
+    def test_real_format_group_mms(self, tmp_dir):
+        backup_dir = _create_full_backup(tmp_dir)
+        zip_path = _create_export_zip(
+            tmp_dir, records=[REAL_FORMAT_GROUP_MMS]
+        )
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+        )
+
+        assert result.injection_stats.messages_inserted == 1
+        assert result.injection_stats.handles_inserted == 3
+        assert result.injection_stats.chats_inserted == 1
+
+        # Verify group chat style
+        sms_hash = get_sms_db_hash()
+        sms_db = backup_dir / sms_hash[:2] / sms_hash
+        conn = sqlite3.connect(sms_db)
+        cursor = conn.execute("SELECT style FROM chat")
+        assert cursor.fetchone()[0] == 43
+        conn.close()
+
+    def test_real_format_android_data_path(self, tmp_dir):
+        """Test that full Android _data paths resolve to correct ZIP files."""
+        backup_dir = _create_full_backup(tmp_dir)
+        # The _data field has full Android path, but ZIP has basename under data/
+        zip_path = _create_export_zip(
+            tmp_dir,
+            records=[REAL_FORMAT_MMS],
+            attachment_data={
+                "data/PART_1700000002_image.jpg": b"\xff\xd8\xff\xe0real_jpeg",
+            },
+        )
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+        )
+
+        # Attachment should have been found and copied
+        assert result.total_attachments_copied == 1
+
+        # Verify the attachment file exists in the backup
+        sms_hash = get_sms_db_hash()
+        sms_db = backup_dir / sms_hash[:2] / sms_hash
+        conn = sqlite3.connect(sms_db)
+        cursor = conn.execute("SELECT filename, total_bytes FROM attachment")
+        row = cursor.fetchone()
+        conn.close()
+        assert row is not None
+        assert "Library/SMS/Attachments" in row[0]
+        assert row[1] > 0
+
+    def test_mixed_legacy_and_real_format(self, tmp_dir):
+        """Test that both legacy (__addresses) and real (__sender_address) formats work."""
+        backup_dir = _create_full_backup(tmp_dir)
+        records = [
+            SAMPLE_SMS_RECEIVED,
+            SAMPLE_MMS,  # legacy __addresses format
+            REAL_FORMAT_GROUP_MMS,  # real group format (different from SAMPLE_MMS)
+        ]
+        zip_path = _create_export_zip(
+            tmp_dir,
+            records=records,
+            attachment_data={
+                "data/parts/image_001.jpg": b"fake_jpeg",
+            },
+        )
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+        )
+
+        assert result.total_messages_parsed == 3
+        assert result.injection_stats.messages_inserted == 3
+        assert result.verification.passed
+
+
+class TestRCSMessages:
+    """Test that RCS messages are handled correctly."""
+
+    def test_rcs_sms_injected(self, tmp_dir):
+        """RCS SMS should be injected as a regular SMS."""
+        backup_dir = _create_full_backup(tmp_dir)
+        zip_path = _create_export_zip(tmp_dir, records=[SAMPLE_RCS_SMS])
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+        )
+
+        assert result.injection_stats.messages_inserted == 1
+        assert result.verification.passed
+
+        # Verify the message body
+        sms_hash = get_sms_db_hash()
+        sms_db = backup_dir / sms_hash[:2] / sms_hash
+        conn = sqlite3.connect(sms_db)
+        cursor = conn.execute("SELECT text FROM message")
+        assert cursor.fetchone()[0] == "RCS message via Google Messages"
+        conn.close()
+
+    def test_rcs_mms_injected(self, tmp_dir):
+        """RCS MMS should be injected as a regular MMS."""
+        backup_dir = _create_full_backup(tmp_dir)
+        zip_path = _create_export_zip(
+            tmp_dir,
+            records=[SAMPLE_RCS_MMS],
+            attachment_data={
+                "data/PART_rcs_photo.jpg": b"\xff\xd8\xff\xe0rcs_jpeg",
+            },
+        )
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+        )
+
+        assert result.injection_stats.messages_inserted == 1
+        assert result.total_attachments_copied == 1
+        assert result.verification.passed
+
+    def test_rcs_mixed_with_sms(self, tmp_dir):
+        """RCS, SMS, and MMS should all work together."""
+        backup_dir = _create_full_backup(tmp_dir)
+        records = [
+            SAMPLE_SMS_RECEIVED,
+            SAMPLE_RCS_SMS,
+            REAL_FORMAT_MMS,
+            SAMPLE_RCS_MMS,
+        ]
+        zip_path = _create_export_zip(
+            tmp_dir,
+            records=records,
+            attachment_data={
+                "data/PART_1700000002_image.jpg": b"\xff\xd8\xff\xe0jpeg1",
+                "data/PART_rcs_photo.jpg": b"\xff\xd8\xff\xe0jpeg2",
+            },
+        )
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+        )
+
+        assert result.total_messages_parsed == 4
+        assert result.injection_stats.messages_inserted == 4
+        assert result.total_attachments_copied == 2
+        assert result.verification.passed
 
 
 class TestPipelineEdgeCases:

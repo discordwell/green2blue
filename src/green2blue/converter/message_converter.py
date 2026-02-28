@@ -6,7 +6,6 @@ UUIDs for message GUIDs, and maps Android type codes to iOS boolean flags.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import uuid
 from collections import defaultdict
@@ -23,6 +22,7 @@ from green2blue.models import (
     iOSChat,
     iOSHandle,
     iOSMessage,
+    message_content_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ def convert_messages(
 
         # Duplicate detection
         if skip_duplicates:
-            content_hash = _message_hash(ios_msg)
+            content_hash = message_content_hash(ios_msg)
             if content_hash in seen_hashes:
                 result.skipped_count += 1
                 continue
@@ -290,7 +290,3 @@ def _convert_mms(mms: AndroidMMS, country: str) -> iOSMessage | None:
     )
 
 
-def _message_hash(msg: iOSMessage) -> str:
-    """Compute a content hash for duplicate detection."""
-    content = f"{msg.handle_id}|{msg.date}|{msg.text or ''}"
-    return hashlib.sha256(content.encode()).hexdigest()

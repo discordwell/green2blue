@@ -76,7 +76,6 @@ SHORT_CODE_MAX_LENGTH = 6
 
 # Strip all non-digit characters except leading +
 _STRIP_RE = re.compile(r"[^\d+]")
-_LEADING_PLUS_RE = re.compile(r"^\+")
 
 
 def normalize_phone(number: str, country: str = "US") -> str:
