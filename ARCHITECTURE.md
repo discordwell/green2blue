@@ -75,6 +75,68 @@ RCS messages appear as regular SMS or MMS records with no special type marker. T
 ### Backup File Layout
 Files are stored as `{backup_dir}/{SHA1[:2]}/{SHA1}` where SHA1 is computed from `{domain}-{relativePath}`.
 
+## Encrypted Backup Flow
+
+When a backup is encrypted (`IsEncrypted=True` in Manifest.plist), green2blue uses a decrypt-modify-re-encrypt strategy:
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│  Unlock Keybag  │────>│  Decrypt to Temp │────>│   Inject (same   │
+│  (PBKDF2 + AES  │     │  Manifest.db +   │     │   as unencrypted │
+│   key unwrap)   │     │  sms.db          │     │   path)          │
+└─────────────────┘     └──────────────────┘     └────────┬─────────┘
+                                                          │
+┌─────────────────┐     ┌──────────────────┐              │
+│  Write back to  │<────│  Re-encrypt      │<─────────────┘
+│  backup dir     │     │  modified files  │
+└─────────────────┘     └──────────────────┘
+```
+
+### Key Hierarchy
+
+```
+User password
+  └─ PBKDF2-SHA256 (dpsl/dpic, iOS 10.2+)
+      └─ PBKDF2-SHA1 (salt/iterations)
+          └─ 32-byte derived key
+              └─ AES key unwrap (RFC 3394)
+                  └─ Class keys (per protection class)
+                      └─ AES key unwrap
+                          └─ Per-file keys (AES-256-CBC, zero IV)
+```
+
+- **Keybag**: Binary TLV blob in `Manifest.plist > BackupKeyBag`. Contains wrapped class keys.
+- **Class keys**: Indexed by protection class (1-11). Class 3 (`NSFileProtectionCompleteUntilFirstUserAuthentication`) is standard for SMS data.
+- **Per-file keys**: Each file has a unique AES-256 key, wrapped with its class key. Stored as `EncryptionKey` in the MBFile blob in Manifest.db.
+- **ManifestKey**: Special per-file key for Manifest.db itself, stored in `Manifest.plist`.
+
+### Encrypted Pipeline Steps
+
+1. Parse keybag from `Manifest.plist`
+2. Derive encryption key from password (PBKDF2, two rounds)
+3. Unwrap class keys using derived key
+4. Decrypt Manifest.db → temp file (using ManifestKey)
+5. Read sms.db's EncryptionKey + ProtectionClass from Manifest.db
+6. Decrypt sms.db → temp file
+7. Create safety copy of entire backup
+8. Inject messages into temp sms.db (identical to unencrypted path)
+9. Copy+encrypt attachments (each gets a fresh random per-file key)
+10. Update Manifest.db entries (sms.db size, attachment entries with encryption keys)
+11. Verify integrity on decrypted temp files
+12. Re-encrypt sms.db → backup
+13. Re-encrypt Manifest.db → backup
+14. Clean up temp files
+
+### New Attachment Encryption
+
+Each new attachment file gets a fresh random AES-256 key:
+1. Generate 32 random bytes
+2. Wrap with the class key via AES key wrap
+3. Prepend 4-byte little-endian protection class prefix
+4. Store wrapped key blob as `EncryptionKey` in the Manifest.db MBFile entry
+5. Encrypt attachment data with the unwrapped key (AES-256-CBC, zero IV, PKCS7)
+6. Store the **plaintext** file size in the MBFile blob (matching iOS convention)
+
 ## Design Decisions
 
 1. **Zero runtime dependencies** for the core path. Only `cryptography` is needed for encrypted backups.
@@ -84,3 +146,5 @@ Files are stored as `{backup_dir}/{SHA1[:2]}/{SHA1}` where SHA1 is computed from
 5. **Triggers dropped during injection** — iOS triggers call internal functions that would fail.
 6. **Content-hash deduplication** — `sha256(phone + timestamp + body)` prevents re-injection.
 7. **Safety copy before modification** — Full backup copy is the ultimate escape hatch.
+8. **Temp file approach for encryption** — Decrypt to temp files, modify, re-encrypt. Reuses all existing SQLite-based logic unchanged.
+9. **Verify before re-encrypt** — Run integrity checks on decrypted data where SQLite queries are meaningful.

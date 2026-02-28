@@ -13,6 +13,7 @@ Install via: pip install green2blue[encrypted]
 from __future__ import annotations
 
 import logging
+import os
 import plistlib
 import struct
 import tempfile
@@ -30,7 +31,7 @@ try:
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    from cryptography.hazmat.primitives.keywrap import aes_key_unwrap
+    from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
     HAS_CRYPTO = True
 except ImportError:
@@ -378,6 +379,51 @@ class EncryptedBackup:
     ) -> bytes:
         """Re-encrypt a modified database file."""
         return encrypt_file(plaintext, encryption_key, protection_class, self.class_keys)
+
+    def generate_file_key(self, protection_class: int = 3) -> bytes:
+        """Generate a new per-file encryption key for an encrypted backup.
+
+        Creates a random AES-256 key, wraps it with the class key, and
+        prepends the 4-byte little-endian protection class prefix.
+
+        Args:
+            protection_class: The iOS protection class (default: 3).
+
+        Returns:
+            The full wrapped key blob (same format as EncryptionKey in Manifest.db).
+        """
+        check_crypto_available()
+
+        class_key = self.class_keys.get(protection_class)
+        if not class_key:
+            raise CryptoError(
+                f"No class key for protection class {protection_class}"
+            )
+
+        file_key = os.urandom(32)
+        wrapped = aes_key_wrap(class_key, file_key)
+        return struct.pack("<I", protection_class) + wrapped
+
+    def encrypt_new_file(
+        self, plaintext: bytes, protection_class: int = 3
+    ) -> tuple[bytes, bytes]:
+        """Encrypt a new file for inclusion in the encrypted backup.
+
+        Generates a fresh per-file key, encrypts the data, and returns
+        both the encrypted data and the wrapped key blob.
+
+        Args:
+            plaintext: The plaintext file content.
+            protection_class: The iOS protection class (default: 3).
+
+        Returns:
+            Tuple of (encrypted_data, encryption_key_blob).
+        """
+        enc_key_blob = self.generate_file_key(protection_class)
+        encrypted = encrypt_file(
+            plaintext, enc_key_blob, protection_class, self.class_keys,
+        )
+        return encrypted, enc_key_blob
 
     def re_encrypt_manifest_db(self, decrypted_path: Path) -> None:
         """Re-encrypt a modified Manifest.db back into the backup."""

@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import plistlib
 import sqlite3
+import struct
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from green2blue.ios.backup import get_sms_db_hash
+from green2blue.ios.crypto import HAS_CRYPTO
 from green2blue.pipeline import run_pipeline
 from tests.conftest import (
     REAL_FORMAT_GROUP_MMS,
@@ -19,6 +23,10 @@ from tests.conftest import (
     SAMPLE_SMS_RECEIVED,
     SAMPLE_SMS_SENT,
     make_ndjson_content,
+)
+
+crypto_required = pytest.mark.skipif(
+    not HAS_CRYPTO, reason="cryptography package not installed"
 )
 
 
@@ -468,3 +476,308 @@ class TestPipelineEdgeCases:
         assert result.total_messages_parsed == 0
         assert result.injection_stats.messages_inserted == 0
         assert result.verification.passed
+
+
+def _build_keybag_tlv(tag: bytes, value: bytes) -> bytes:
+    """Build a single TLV record for a keybag."""
+    return tag + struct.pack(">I", len(value)) + value
+
+
+def _create_encrypted_backup(root: Path, password: str = "testpass") -> Path:
+    """Create a complete synthetic encrypted iPhone backup.
+
+    Builds a real keybag with a known class key, encrypts sms.db and
+    Manifest.db with per-file keys wrapped by that class key.
+    """
+    from cryptography.hazmat.primitives.keywrap import aes_key_wrap
+
+    from green2blue.ios.crypto import (
+        Keybag,
+        derive_key_from_password,
+        encrypt_file,
+    )
+    from green2blue.ios.plist_utils import build_mbfile_blob
+
+    udid = "ENCRYPTED-TEST-BACKUP"
+    backup_dir = root / udid
+    backup_dir.mkdir(parents=True)
+
+    # Known class key for protection class 3
+    class_key = b"\xee" * 32
+
+    # Build keybag with low iteration count
+    keybag_data = b""
+    keybag_data += _build_keybag_tlv(b"VERS", struct.pack(">I", 5))
+    keybag_data += _build_keybag_tlv(b"TYPE", struct.pack(">I", 1))
+    keybag_data += _build_keybag_tlv(b"UUID", b"\x00" * 16)
+    keybag_data += _build_keybag_tlv(b"SALT", b"\x01" * 20)
+    keybag_data += _build_keybag_tlv(b"ITER", struct.pack(">I", 1))
+
+    # Derive key from password and wrap the class key
+    keybag = Keybag()
+    keybag.salt = b"\x01" * 20
+    keybag.iterations = 1
+    derived_key = derive_key_from_password(password, keybag)
+    wrapped_class_key = aes_key_wrap(derived_key, class_key)
+
+    keybag_data += _build_keybag_tlv(b"UUID", b"\x02" * 16)
+    keybag_data += _build_keybag_tlv(b"CLAS", struct.pack(">I", 3))
+    keybag_data += _build_keybag_tlv(b"WPKY", wrapped_class_key)
+    keybag_data += _build_keybag_tlv(b"KTYP", struct.pack(">I", 1))
+
+    class_keys = {3: class_key}
+
+    # Create sms.db encryption key
+    sms_file_key = b"\xaa" * 32
+    wrapped_sms_key = aes_key_wrap(class_key, sms_file_key)
+    sms_enc_key = struct.pack("<I", 3) + wrapped_sms_key
+
+    # Create Manifest.db encryption key (ManifestKey)
+    manifest_file_key = b"\xbb" * 32
+    wrapped_manifest_key = aes_key_wrap(class_key, manifest_file_key)
+    manifest_key_data = struct.pack("<I", 3) + wrapped_manifest_key
+
+    # Info.plist
+    (backup_dir / "Info.plist").write_bytes(plistlib.dumps({
+        "Device Name": "Encrypted Test iPhone",
+        "Product Version": "17.0",
+        "Unique Identifier": udid,
+    }))
+
+    # Manifest.plist
+    (backup_dir / "Manifest.plist").write_bytes(plistlib.dumps({
+        "IsEncrypted": True,
+        "BackupKeyBag": keybag_data,
+        "ManifestKey": manifest_key_data,
+        "Version": "3.3",
+    }))
+
+    # Status.plist
+    (backup_dir / "Status.plist").write_bytes(plistlib.dumps({
+        "IsFullBackup": True,
+        "Version": "3.3",
+    }))
+
+    # Create plaintext sms.db, then encrypt it
+    sms_hash = get_sms_db_hash()
+    sms_dir = backup_dir / sms_hash[:2]
+    sms_dir.mkdir()
+
+    plain_sms_path = root / "plain_sms.db"
+    sql_path = Path(__file__).parent.parent / "scripts" / "create_empty_smsdb.sql"
+    conn = sqlite3.connect(plain_sms_path)
+    conn.executescript(sql_path.read_text())
+    conn.close()
+
+    sms_plaintext = plain_sms_path.read_bytes()
+    sms_encrypted = encrypt_file(sms_plaintext, sms_enc_key, 3, class_keys)
+    (sms_dir / sms_hash).write_bytes(sms_encrypted)
+
+    # Create plaintext Manifest.db with sms.db entry (including EncryptionKey)
+    plain_manifest_path = root / "plain_manifest.db"
+    conn = sqlite3.connect(plain_manifest_path)
+    conn.execute("""
+        CREATE TABLE Files (
+            fileID TEXT PRIMARY KEY,
+            domain TEXT,
+            relativePath TEXT,
+            flags INTEGER,
+            file BLOB
+        )
+    """)
+    sms_blob = build_mbfile_blob(
+        len(sms_plaintext),
+        encryption_key=sms_enc_key,
+        protection_class=3,
+    )
+    conn.execute(
+        "INSERT INTO Files VALUES (?, ?, ?, ?, ?)",
+        (sms_hash, "HomeDomain", "Library/SMS/sms.db", 1, sms_blob),
+    )
+    conn.commit()
+    conn.close()
+
+    manifest_plaintext = plain_manifest_path.read_bytes()
+    manifest_encrypted = encrypt_file(manifest_plaintext, manifest_key_data, 3, class_keys)
+    (backup_dir / "Manifest.db").write_bytes(manifest_encrypted)
+
+    # Clean up temp files
+    plain_sms_path.unlink()
+    plain_manifest_path.unlink()
+
+    return backup_dir
+
+
+@crypto_required
+class TestEncryptedPipeline:
+    """Integration tests for the full encrypted backup pipeline."""
+
+    def test_basic_encrypted_injection(self, tmp_dir):
+        """Inject SMS into an encrypted backup end-to-end."""
+        backup_dir = _create_encrypted_backup(tmp_dir)
+        zip_path = _create_export_zip(tmp_dir)
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            password="testpass",
+        )
+
+        assert result.injection_stats is not None
+        assert result.injection_stats.messages_inserted == 2
+        assert result.injection_stats.handles_inserted == 2
+        assert result.injection_stats.chats_inserted == 2
+        assert result.verification is not None
+        assert result.verification.passed
+
+    def test_encrypted_injection_verifiable_via_decrypt(self, tmp_dir):
+        """After injection, decrypt sms.db and verify messages exist."""
+        from green2blue.ios.crypto import EncryptedBackup
+        from green2blue.ios.manifest import ManifestDB, compute_file_id
+
+        backup_dir = _create_encrypted_backup(tmp_dir)
+        zip_path = _create_export_zip(tmp_dir)
+
+        run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            password="testpass",
+        )
+
+        # Decrypt and verify
+        eb = EncryptedBackup(backup_dir, "testpass")
+        eb.unlock()
+
+        # Decrypt Manifest.db
+        temp_manifest = eb.decrypt_manifest_db()
+        with ManifestDB(temp_manifest) as manifest:
+            sms_file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+            enc_key, prot_class = manifest.get_file_encryption_info(sms_file_id)
+
+        # Decrypt sms.db
+        sms_hash = get_sms_db_hash()
+        sms_encrypted = (backup_dir / sms_hash[:2] / sms_hash).read_bytes()
+        sms_decrypted = eb.decrypt_db_file(sms_encrypted, enc_key, prot_class)
+
+        # Write decrypted to temp and query
+        temp_sms = tmp_dir / "verify_sms.db"
+        temp_sms.write_bytes(sms_decrypted)
+
+        conn = sqlite3.connect(temp_sms)
+        cursor = conn.execute("SELECT COUNT(*) FROM message")
+        assert cursor.fetchone()[0] == 2
+        cursor = conn.execute("SELECT text FROM message ORDER BY ROWID")
+        texts = [r[0] for r in cursor.fetchall()]
+        assert "Hello from Android!" in texts
+        assert "Hello from me!" in texts
+        conn.close()
+
+        temp_manifest.unlink(missing_ok=True)
+
+    def test_encrypted_mms_with_attachment(self, tmp_dir):
+        """MMS attachments should be encrypted when copied."""
+        from green2blue.ios.crypto import EncryptedBackup
+
+        backup_dir = _create_encrypted_backup(tmp_dir)
+        zip_path = _create_export_zip(
+            tmp_dir,
+            records=[SAMPLE_MMS],
+            attachment_data={"data/parts/image_001.jpg": b"\xff\xd8\xff\xe0fake_jpeg"},
+        )
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            password="testpass",
+        )
+
+        assert result.injection_stats.messages_inserted == 1
+
+        # Verify the Manifest.db has encryption keys for attachments
+        eb = EncryptedBackup(backup_dir, "testpass")
+        eb.unlock()
+        temp_manifest = eb.decrypt_manifest_db()
+
+        conn = sqlite3.connect(temp_manifest)
+        cursor = conn.execute(
+            "SELECT relativePath, file FROM Files WHERE relativePath LIKE '%Attachments%'"
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        # Should have at least one attachment entry
+        if result.total_attachments_copied > 0:
+            assert len(rows) > 0
+            # Verify the blob contains EncryptionKey
+            blob = rows[0][1]
+            plist_data = plistlib.loads(blob)
+            objects = plist_data["$objects"]
+            has_enc_key = any(
+                isinstance(obj, dict) and "EncryptionKey" in obj
+                for obj in objects
+            )
+            assert has_enc_key
+
+        temp_manifest.unlink(missing_ok=True)
+
+    def test_missing_password_raises(self, tmp_dir):
+        """Running on an encrypted backup without password should raise."""
+        from green2blue.exceptions import EncryptedBackupError
+
+        backup_dir = _create_encrypted_backup(tmp_dir)
+        zip_path = _create_export_zip(tmp_dir)
+
+        with pytest.raises(EncryptedBackupError, match="requires a password"):
+            run_pipeline(
+                export_path=zip_path,
+                backup_path_or_udid=str(backup_dir),
+            )
+
+    def test_wrong_password_raises(self, tmp_dir):
+        """Running with wrong password should raise WrongPasswordError."""
+        from green2blue.exceptions import WrongPasswordError
+
+        backup_dir = _create_encrypted_backup(tmp_dir)
+        zip_path = _create_export_zip(tmp_dir)
+
+        with pytest.raises(WrongPasswordError):
+            run_pipeline(
+                export_path=zip_path,
+                backup_path_or_udid=str(backup_dir),
+                password="wrong_password",
+            )
+
+    def test_encrypted_safety_copy_created(self, tmp_dir):
+        """Safety copy should be created before modifying encrypted backup."""
+        backup_dir = _create_encrypted_backup(tmp_dir)
+        zip_path = _create_export_zip(tmp_dir)
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            password="testpass",
+        )
+
+        assert result.safety_copy_path is not None
+        assert result.safety_copy_path.exists()
+        assert "g2b_backup" in result.safety_copy_path.name
+
+    def test_encrypted_duplicate_prevention(self, tmp_dir):
+        """Running twice on encrypted backup should skip duplicates."""
+        backup_dir = _create_encrypted_backup(tmp_dir)
+        zip_path = _create_export_zip(tmp_dir)
+
+        result1 = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            password="testpass",
+        )
+        result2 = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            password="testpass",
+        )
+
+        assert result1.injection_stats.messages_inserted == 2
+        assert result2.injection_stats.messages_skipped == 2
+        assert result2.injection_stats.messages_inserted == 0

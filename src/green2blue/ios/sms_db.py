@@ -62,6 +62,20 @@ class SMSDatabase:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def update_attachment_sizes(self, sizes: dict[str, int]) -> None:
+        """Update total_bytes for attachments by GUID.
+
+        Args:
+            sizes: Dict of {attachment_guid: file_size_bytes}.
+        """
+        cursor = self.conn.cursor()
+        for guid, size in sizes.items():
+            cursor.execute(
+                "UPDATE attachment SET total_bytes = ? WHERE guid = ?",
+                (size, guid),
+            )
+        self.conn.commit()
+
     def inject(self, result: ConversionResult, skip_duplicates: bool = True) -> InjectionStats:
         """Inject converted messages into sms.db.
 

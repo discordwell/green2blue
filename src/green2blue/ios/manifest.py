@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import plistlib
 import sqlite3
 from pathlib import Path
 
@@ -89,6 +90,8 @@ class ManifestDB:
         relative_path: str,
         file_size: int,
         domain: str = "HomeDomain",
+        encryption_key: bytes | None = None,
+        protection_class: int = 3,
     ) -> str:
         """Add an attachment file entry to Manifest.db.
 
@@ -97,12 +100,18 @@ class ManifestDB:
                           'Library/SMS/Attachments/ab/cd/UUID/photo.jpg'.
             file_size: Size of the attachment file in bytes.
             domain: The backup domain (default: HomeDomain).
+            encryption_key: Per-file wrapped encryption key blob (encrypted backups).
+            protection_class: iOS protection class (default: 3).
 
         Returns:
             The fileID (hash) for the new entry.
         """
         file_id = compute_file_id(domain, relative_path)
-        blob = build_mbfile_blob(file_size)
+        blob = build_mbfile_blob(
+            file_size,
+            encryption_key=encryption_key,
+            protection_class=protection_class,
+        )
 
         cursor = self.conn.cursor()
         cursor.execute(
@@ -113,6 +122,59 @@ class ManifestDB:
         self.conn.commit()
         logger.debug("Added attachment entry: %s (%d bytes)", relative_path, file_size)
         return file_id
+
+    def get_file_encryption_info(self, file_id: str) -> tuple[bytes, int]:
+        """Extract the EncryptionKey and ProtectionClass for a file entry.
+
+        Reads the MBFile blob for the given fileID, parses the NSKeyedArchiver
+        plist, and extracts the encryption metadata.
+
+        Args:
+            file_id: The fileID (SHA1 hash) of the entry.
+
+        Returns:
+            Tuple of (encryption_key_bytes, protection_class_int).
+
+        Raises:
+            ManifestError: If the entry or encryption data is not found.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT file FROM Files WHERE fileID = ?", (file_id,))
+        row = cursor.fetchone()
+
+        if not row or not row["file"]:
+            raise ManifestError(f"No file blob found for fileID: {file_id}")
+
+        try:
+            plist = plistlib.loads(row["file"])
+        except Exception as e:
+            raise ManifestError(f"Failed to parse MBFile blob: {e}") from e
+
+        objects = plist.get("$objects")
+        if not objects:
+            raise ManifestError("MBFile blob has no $objects")
+
+        encryption_key = None
+        protection_class = None
+
+        for obj in objects:
+            if isinstance(obj, dict):
+                if "EncryptionKey" in obj:
+                    enc_value = obj["EncryptionKey"]
+                    # Real iOS blobs use plistlib.UID references for NSData
+                    if isinstance(enc_value, plistlib.UID):
+                        encryption_key = objects[enc_value]
+                    else:
+                        encryption_key = enc_value
+                if "ProtectionClass" in obj:
+                    protection_class = obj["ProtectionClass"]
+
+        if encryption_key is None:
+            raise ManifestError(f"No EncryptionKey in MBFile blob for {file_id}")
+        if protection_class is None:
+            raise ManifestError(f"No ProtectionClass in MBFile blob for {file_id}")
+
+        return encryption_key, protection_class
 
     def get_entry(self, file_id: str) -> dict | None:
         """Get a Manifest.db entry by fileID."""

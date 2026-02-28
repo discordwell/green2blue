@@ -1,5 +1,16 @@
 # Session Summaries
 
+## 2026-02-28T00:00Z - Encrypted backup support
+- Implemented full encrypted backup pipeline: decrypt → inject → re-encrypt
+- Added `generate_file_key()` and `encrypt_new_file()` to `EncryptedBackup` class
+- Added `get_file_encryption_info()` to `ManifestDB` with UID dereference for real iOS blobs
+- Added encryption-aware attachment copying and Manifest.db entry creation
+- Added `_run_encrypted_pipeline()` in pipeline.py with temp-file approach
+- Extracted `SMSDatabase.update_attachment_sizes()` to eliminate duplication
+- Fixed fd leak: close `mkstemp` fd immediately, don't hold for pipeline duration
+- 18 new tests (22 crypto + 7 pipeline encrypted), 207 total, lint clean
+- Updated ARCHITECTURE.md with encrypted flow, key hierarchy, pipeline steps
+
 ## 2026-02-27T19:30Z - Format compatibility and polish session
 - Fixed NDJSON parser to support real SMS IE format (`__sender_address`/`__recipient_addresses`) alongside legacy `__addresses`
 - Fixed attachment `_data` path handling for real Android filesystem paths (extract basename, search in data/ dir)
@@ -28,6 +39,14 @@
 - MMS `date` is in seconds; SMS `date` is in milliseconds
 
 ## Test architecture
-- 184 tests across 12 test files
+- 207 tests across 12 test files
 - conftest.py has both legacy and real-format fixtures
 - Pipeline tests create full synthetic iPhone backups with sms.db, Manifest.db, plists
+- Encrypted tests build synthetic keybags with low iteration counts for fast PBKDF2
+
+## Encrypted backup notes
+- Key hierarchy: password → PBKDF2 → derived key → unwrap class keys → unwrap per-file keys
+- ManifestKey prefix and EncryptionKey prefix are little-endian; keybag TLVs are big-endian
+- Real iOS NSKeyedArchiver blobs use `plistlib.UID` references for EncryptionKey (not inline bytes)
+- iOS stores plaintext file size in MBFile blobs even for encrypted files
+- Protection class 3 (`NSFileProtectionCompleteUntilFirstUserAuthentication`) is standard for SMS data

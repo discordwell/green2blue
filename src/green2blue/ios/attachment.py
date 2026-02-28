@@ -29,6 +29,8 @@ def copy_attachment_to_backup(
     backup_dir: Path,
     manifest: ManifestDB,
     domain: str = "HomeDomain",
+    encrypted_backup: object | None = None,
+    protection_class: int = 3,
 ) -> int:
     """Copy an attachment file into the backup structure and register in Manifest.db.
 
@@ -39,9 +41,11 @@ def copy_attachment_to_backup(
         backup_dir: Root of the iPhone backup directory.
         manifest: Open ManifestDB instance.
         domain: Backup domain (default: HomeDomain).
+        encrypted_backup: EncryptedBackup instance (if encrypted backup).
+        protection_class: iOS protection class for encryption (default: 3).
 
     Returns:
-        File size in bytes.
+        File size in bytes (plaintext size).
     """
     if not source_path.exists():
         logger.warning("Attachment source not found: %s", source_path)
@@ -58,12 +62,27 @@ def copy_attachment_to_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / file_id
 
-    # Copy the file
-    shutil.copy2(source_path, dest_path)
-    logger.debug("Copied attachment: %s -> %s", source_path.name, dest_path)
+    if encrypted_backup is not None:
+        # Encrypted path: encrypt the file data before writing
+        plaintext = source_path.read_bytes()
+        encrypted_data, enc_key_blob = encrypted_backup.encrypt_new_file(
+            plaintext, protection_class,
+        )
+        dest_path.write_bytes(encrypted_data)
+        logger.debug("Encrypted attachment: %s -> %s", source_path.name, dest_path)
 
-    # Register in Manifest.db
-    manifest.add_attachment_entry(ios_relative_path, file_size, domain)
+        # Register in Manifest.db with encryption key (plaintext size per iOS convention)
+        manifest.add_attachment_entry(
+            ios_relative_path, file_size, domain,
+            encryption_key=enc_key_blob, protection_class=protection_class,
+        )
+    else:
+        # Unencrypted path: copy plaintext
+        shutil.copy2(source_path, dest_path)
+        logger.debug("Copied attachment: %s -> %s", source_path.name, dest_path)
+
+        # Register in Manifest.db
+        manifest.add_attachment_entry(ios_relative_path, file_size, domain)
 
     return file_size
 

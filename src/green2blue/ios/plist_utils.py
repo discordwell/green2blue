@@ -49,7 +49,13 @@ def patch_mbfile_blob(existing_blob: bytes, new_size: int, new_mtime: float | No
     return plistlib.dumps(plist, fmt=plistlib.FMT_BINARY)
 
 
-def build_mbfile_blob(size: int, mtime: float | None = None, mode: int = 0o100644) -> bytes:
+def build_mbfile_blob(
+    size: int,
+    mtime: float | None = None,
+    mode: int = 0o100644,
+    encryption_key: bytes | None = None,
+    protection_class: int = 3,
+) -> bytes:
     """Build a minimal MBFile NSKeyedArchiver binary plist from scratch.
 
     This creates a simplified but valid NSKeyedArchiver-compatible structure.
@@ -59,12 +65,30 @@ def build_mbfile_blob(size: int, mtime: float | None = None, mode: int = 0o10064
         size: File size in bytes.
         mtime: Modification time as Unix timestamp.
         mode: POSIX file mode (default: regular file, 0644).
+        encryption_key: Per-file wrapped encryption key blob (for encrypted backups).
+        protection_class: iOS protection class (default: 3).
 
     Returns:
         Binary plist blob.
     """
     if mtime is None:
         mtime = time.time()
+
+    mbfile_dict: dict[str, Any] = {
+        "$class": plistlib.UID(2),
+        "Size": size,
+        "Mode": mode,
+        "LastModified": int(mtime),
+        "Birth": int(mtime),
+        "UserID": 501,
+        "GroupID": 501,
+        "InodeNumber": 0,
+        "Flags": 0,
+        "ProtectionClass": protection_class,
+    }
+
+    if encryption_key is not None:
+        mbfile_dict["EncryptionKey"] = encryption_key
 
     # Build NSKeyedArchiver structure
     # $objects[0] = "$null" sentinel
@@ -75,18 +99,7 @@ def build_mbfile_blob(size: int, mtime: float | None = None, mode: int = 0o10064
         "$top": {"root": plistlib.UID(1)},
         "$objects": [
             "$null",
-            {
-                "$class": plistlib.UID(2),
-                "Size": size,
-                "Mode": mode,
-                "LastModified": int(mtime),
-                "Birth": int(mtime),
-                "UserID": 501,
-                "GroupID": 501,
-                "InodeNumber": 0,
-                "Flags": 0,
-                "ProtectionClass": 3,
-            },
+            mbfile_dict,
             {
                 "$classes": ["MBFile", "NSObject"],
                 "$classname": "MBFile",
