@@ -150,6 +150,18 @@ def inject_test_matrix(sms_db_path: Path) -> None:
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
+    # Drop triggers (real sms.db has triggers that call iOS internal functions)
+    saved_triggers = []
+    cursor.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
+    for row in cursor.fetchall():
+        if row["sql"]:
+            saved_triggers.append(row["sql"])
+        name = row["name"]
+        if all(c.isalnum() or c == '_' for c in name):
+            cursor.execute(f"DROP TRIGGER IF EXISTS [{name}]")
+    conn.commit()
+    print(f"  Dropped {len(saved_triggers)} triggers")
+
     for i, test in enumerate(TEST_MESSAGES):
         phone = test["phone"]
         dt = base + timedelta(minutes=i * 5)
@@ -216,6 +228,18 @@ def inject_test_matrix(sms_db_path: Path) -> None:
         )
 
     conn.commit()
+
+    # Restore triggers
+    restored = 0
+    for sql in saved_triggers:
+        try:
+            cursor.execute(sql)
+            restored += 1
+        except sqlite3.Error as e:
+            print(f"  Warning: failed to restore trigger: {e}")
+    conn.commit()
+    print(f"  Restored {restored}/{len(saved_triggers)} triggers")
+
     conn.close()
     print(f"Injected {len(TEST_MESSAGES)} test messages into {sms_db_path}")
 
