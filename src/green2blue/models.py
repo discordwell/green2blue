@@ -81,6 +81,7 @@ class CKStrategy(Enum):
     NONE = "none"  # No CK metadata (current default, ck_sync_state=0)
     FAKE_SYNCED = "fake-synced"  # Pretend already synced (state=1, fake record IDs)
     PENDING_UPLOAD = "pending-upload"  # Signal needs upload (state=0, with record IDs)
+    ICLOUD_RESET = "icloud-reset"  # Clean state + prepare-sync for iCloud reset
 
 
 def generate_ck_record_id(guid: str, salt: str = "green2blue-ck") -> str:

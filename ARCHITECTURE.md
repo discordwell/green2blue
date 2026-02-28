@@ -31,13 +31,14 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 - **manifest.py** — Update Manifest.db with new file sizes (sms.db) and new entries (attachments). Computes fileID as `SHA1('{domain}-{relativePath}')`.
 - **plist_utils.py** — NSKeyedArchiver binary plist construction for MBFile objects. Clone-and-patch strategy preferred; build-from-scratch fallback.
 - **attachment.py** — Copy MMS binary files from ZIP into backup directory structure. Path: `{backup}/{hash[:2]}/{hash}`.
+- **prepare_sync.py** — Post-injection CK metadata reset for the iCloud sync reset workflow. Drops triggers, resets injected message/attachment/chat CK state, restores triggers.
 - **crypto.py** — Encrypted backup support (optional). Keybag parsing, PBKDF2 key derivation, AES key unwrap (RFC3394), AES-256-CBC file decrypt/re-encrypt.
 
 ### Top-level
 - **pipeline.py** — Orchestrates full flow: find backup → safety copy → parse → convert → inject → copy attachments → update manifest → verify.
 - **verify.py** — Post-injection checks: SQLite integrity, foreign key consistency, join table consistency, attachment files exist, Manifest.db entry present.
-- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`, `diagnose`. Interactive backup confirmation prompt on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
-- **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`). Also `CKStrategy` enum and `generate_ck_record_id()` helper.
+- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`, `diagnose`, `prepare-sync`. Interactive backup confirmation prompt on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
+- **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`). Also `CKStrategy` enum (none, fake-synced, pending-upload, icloud-reset) and `generate_ck_record_id()` helper.
 - **exceptions.py** — Hierarchy with user-friendly `hint` attributes.
 
 ## Data Flow
@@ -150,6 +151,29 @@ iCloud Messages sync uses CloudKit metadata columns in sms.db to track which mes
 ### Test Matrix Script (`scripts/wet_test_sync.py`)
 
 Injects 6 test messages with different CK strategies (A through F) into a single backup for A/B testing on a real device. After restore + iCloud sync, the `--diagnose` flag checks which messages survived to determine the winning strategy.
+
+### iCloud Reset Strategy (`--ck-strategy icloud-reset`)
+
+The most reliable approach for iCloud Messages survival. Instead of trying to trick CloudKit reconciliation, this strategy works *with* iOS's merge behavior:
+
+1. Inject messages with clean CK state (`ck_sync_state=0`, no record IDs)
+2. After injection, `prepare_sync()` clears `server_change_token` on affected chats to force full reconciliation
+3. User disables iCloud Messages on device before restoring
+4. Restore backup via Finder
+5. Re-enable iCloud Messages → iOS performs **bidirectional merge**: uploads local messages to iCloud, downloads cloud messages to device
+
+Messages with `ck_sync_state=0` and no CK record IDs look like "new local messages" and get uploaded rather than deleted.
+
+### Prepare-Sync Subcommand
+
+`green2blue prepare-sync` post-processes an already-injected backup for the iCloud reset workflow. It:
+- Resets CK metadata on injected messages (`green2blue:` GUID prefix) → `ck_sync_state=0`, clears record IDs
+- Resets CK metadata on injected attachments (`green2blue-att:` prefix)
+- Clears `server_change_token` on chats containing injected messages (forces full reconciliation)
+- Resets CK state on pure-injected chats (only green2blue messages — safe, no cloud counterpart)
+- Preserves CK state on mixed chats (pre-existing + injected — prevents duplicate conversations)
+
+This is useful for re-preparing a backup that was injected with a different CK strategy (e.g., `fake-synced`).
 
 ### Diagnose Subcommand
 

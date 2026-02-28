@@ -114,7 +114,7 @@ def _build_parser() -> argparse.ArgumentParser:
     inject_parser.add_argument(
         "--ck-strategy",
         type=str,
-        choices=["none", "fake-synced", "pending-upload"],
+        choices=["none", "fake-synced", "pending-upload", "icloud-reset"],
         default="none",
         help="CloudKit metadata strategy for iCloud Messages sync survival (default: none)",
     )
@@ -203,6 +203,33 @@ def _build_parser() -> argparse.ArgumentParser:
     diagnose_parser.add_argument("-v", "--verbose", action="store_true")
     diagnose_parser.add_argument("-q", "--quiet", action="store_true")
     diagnose_parser.set_defaults(func=_cmd_diagnose)
+
+    # --- prepare-sync ---
+    prepare_sync_parser = subparsers.add_parser(
+        "prepare-sync",
+        help="Prepare an injected backup for iCloud sync reset workflow",
+    )
+    prepare_sync_parser.add_argument(
+        "--backup",
+        type=str,
+        default=None,
+        help="iPhone backup path or UDID (auto-detect if omitted)",
+    )
+    prepare_sync_parser.add_argument(
+        "--backup-root",
+        type=Path,
+        default=None,
+        help="Override the default backup directory",
+    )
+    prepare_sync_parser.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Backup encryption password",
+    )
+    prepare_sync_parser.add_argument("-v", "--verbose", action="store_true")
+    prepare_sync_parser.add_argument("-q", "--quiet", action="store_true")
+    prepare_sync_parser.set_defaults(func=_cmd_prepare_sync)
 
     return parser
 
@@ -495,6 +522,80 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
             print("These may be deleted when iCloud Messages syncs.")
 
         conn.close()
+
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+
+    return 0
+
+
+def _cmd_prepare_sync(args: argparse.Namespace) -> int:
+    """Execute the prepare-sync command."""
+    import os
+    import tempfile
+
+    from green2blue.ios.backup import find_backup, get_sms_db_path
+    from green2blue.ios.prepare_sync import prepare_sync
+
+    backup_info = find_backup(args.backup, args.backup_root)
+    sms_db_path = get_sms_db_path(backup_info.path)
+    temp_path = None
+
+    try:
+        if backup_info.is_encrypted:
+            if not args.password:
+                print("Error: Encrypted backup requires --password", file=sys.stderr)
+                return 1
+            from green2blue.ios.crypto import EncryptedBackup
+            from green2blue.ios.manifest import ManifestDB, compute_file_id
+
+            eb = EncryptedBackup(backup_info.path, args.password)
+            eb.unlock()
+            temp_manifest = eb.decrypt_manifest_db()
+            sms_file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+            with ManifestDB(temp_manifest) as manifest:
+                sms_enc_key, sms_prot_class = manifest.get_file_encryption_info(sms_file_id)
+            encrypted_data = sms_db_path.read_bytes()
+            decrypted_data = eb.decrypt_db_file(encrypted_data, sms_enc_key, sms_prot_class)
+            fd, tmp = tempfile.mkstemp(suffix=".db")
+            os.close(fd)
+            temp_path = Path(tmp)
+            temp_path.write_bytes(decrypted_data)
+            temp_manifest.unlink(missing_ok=True)
+
+            result = prepare_sync(temp_path)
+
+            # Re-encrypt and write back
+            re_encrypted = eb.encrypt_db_file(
+                temp_path.read_bytes(), sms_enc_key, sms_prot_class,
+            )
+            sms_db_path.write_bytes(re_encrypted)
+        else:
+            result = prepare_sync(sms_db_path)
+
+        # Print summary
+        print(f"\nBackup: {backup_info.device_name} (iOS {backup_info.product_version})")
+        print("\n--- Prepare-Sync Summary ---")
+        print(f"Messages reset:         {result.messages_updated}")
+        print(f"Messages already clean:  {result.messages_already_clean}")
+        print(f"Attachments reset:       {result.attachments_updated}")
+        print(f"Attachments already clean: {result.attachments_already_clean}")
+        print(f"Chat tokens cleared:     {result.chats_token_cleared}")
+        print(f"Chats CK reset:          {result.chats_ck_reset}")
+        print(f"Mixed chats preserved:   {result.chats_preserved}")
+
+        total_injected = result.messages_updated + result.messages_already_clean
+        if total_injected > 0:
+            print(f"\nWorkflow for {total_injected} injected messages:")
+            print("  1. Disable iCloud Messages on your iPhone")
+            print("     Settings > [your name] > iCloud > Messages > toggle OFF")
+            print("  2. Restore this backup via Finder/iTunes")
+            print("  3. Re-enable iCloud Messages")
+            print("     iOS will do a bidirectional merge — uploading local")
+            print("     messages to iCloud instead of deleting them.")
+        else:
+            print("\nNo injected messages found in this backup.")
 
     finally:
         if temp_path:

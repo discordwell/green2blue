@@ -157,6 +157,13 @@ def run_pipeline(
 
         logger.info("Injection complete: %s", result.injection_stats)
 
+        # Run prepare-sync if using icloud-reset strategy
+        if ck_strategy == CKStrategy.ICLOUD_RESET:
+            from green2blue.ios.prepare_sync import prepare_sync
+
+            logger.info("Running prepare-sync for icloud-reset strategy...")
+            prepare_sync(sms_db_file)
+
         # Step 7: Copy attachments + Step 8: Update Manifest.db
         logger.info("Updating Manifest.db and copying attachments...")
         manifest_path = backup_info.path / "Manifest.db"
@@ -348,6 +355,13 @@ def _run_encrypted_pipeline(
             with SMSDatabase(temp_sms_path) as db:
                 result.injection_stats = db.inject(conversion, skip_duplicates)
             logger.info("Injection complete: %s", result.injection_stats)
+
+            # Run prepare-sync if using icloud-reset strategy
+            if ck_strategy == CKStrategy.ICLOUD_RESET:
+                from green2blue.ios.prepare_sync import prepare_sync
+
+                logger.info("Running prepare-sync for icloud-reset strategy...")
+                prepare_sync(temp_sms_path)
 
             # Step 9: Copy + encrypt attachments, update temp Manifest.db
             logger.info("Updating Manifest.db and copying attachments...")

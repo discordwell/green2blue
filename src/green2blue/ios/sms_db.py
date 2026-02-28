@@ -19,6 +19,10 @@ import sqlite3
 from pathlib import Path
 
 from green2blue.exceptions import DatabaseError
+from green2blue.ios.trigger_utils import (
+    drop_triggers,
+    restore_triggers,
+)
 from green2blue.models import (
     ConversionResult,
     compute_chat_guid,
@@ -193,39 +197,11 @@ class SMSDatabase:
         so this must run outside the data transaction. Trigger restoration
         is guaranteed by the try/finally in inject().
         """
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
-        self._saved_triggers = []
-        trigger_names = []
-        for row in cursor.fetchall():
-            if row["sql"]:
-                self._saved_triggers.append(row["sql"])
-            trigger_names.append(row["name"])
-
-        for name in trigger_names:
-            # Parameterized queries can't be used for DDL identifiers,
-            # so we validate the name contains only safe characters
-            if not all(c.isalnum() or c == '_' for c in name):
-                logger.warning("Skipping trigger with unsafe name: %r", name)
-                continue
-            cursor.execute(f"DROP TRIGGER IF EXISTS [{name}]")
-        self.conn.commit()
-        logger.debug("Dropped %d triggers", len(trigger_names))
+        self._saved_triggers = drop_triggers(self.conn)
 
     def _restore_triggers(self) -> None:
         """Restore previously dropped triggers."""
-        if not self._saved_triggers:
-            return
-        cursor = self.conn.cursor()
-        restored = 0
-        for sql in self._saved_triggers:
-            try:
-                cursor.execute(sql)
-                restored += 1
-            except sqlite3.Error as e:
-                logger.warning("Failed to restore trigger: %s", e)
-        self.conn.commit()
-        logger.debug("Restored %d/%d triggers", restored, len(self._saved_triggers))
+        restore_triggers(self.conn, self._saved_triggers)
         self._saved_triggers = []
 
     def _load_existing_handles(self) -> dict[str, int]:

@@ -169,7 +169,7 @@ def convert_messages(
 
 def _apply_ck_strategy(msg: iOSMessage, strategy: CKStrategy) -> iOSMessage:
     """Apply CloudKit metadata strategy to a message."""
-    if strategy == CKStrategy.NONE:
+    if strategy in (CKStrategy.NONE, CKStrategy.ICLOUD_RESET):
         return msg
     record_id = generate_ck_record_id(msg.guid)
     if strategy == CKStrategy.FAKE_SYNCED:
@@ -183,7 +183,7 @@ def _apply_ck_strategy(msg: iOSMessage, strategy: CKStrategy) -> iOSMessage:
 
 def _apply_ck_strategy_to_chat(chat: iOSChat, strategy: CKStrategy) -> iOSChat:
     """Apply CloudKit metadata strategy to a chat."""
-    if strategy == CKStrategy.NONE:
+    if strategy in (CKStrategy.NONE, CKStrategy.ICLOUD_RESET):
         return chat
     record_id = generate_ck_record_id(chat.guid, salt="green2blue-ck-chat")
     if strategy == CKStrategy.FAKE_SYNCED:
