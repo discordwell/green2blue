@@ -6,9 +6,13 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from green2blue import __version__
 from green2blue.exceptions import Green2BlueError
+
+if TYPE_CHECKING:
+    from green2blue.ios.backup import BackupInfo
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,6 +111,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Backup encryption password",
     )
+    inject_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt",
+    )
     inject_parser.add_argument("-v", "--verbose", action="store_true")
     inject_parser.add_argument("-q", "--quiet", action="store_true")
     inject_parser.set_defaults(func=_cmd_inject)
@@ -159,11 +169,26 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _cmd_inject(args: argparse.Namespace) -> int:
     """Execute the inject command."""
+    from green2blue.ios.backup import find_backup
     from green2blue.pipeline import run_pipeline
+
+    # Resolve backup with interactive confirmation
+    backup_info = find_backup(args.backup, args.backup_root)
+
+    # Show confirmation prompt unless skipped
+    skip_prompt = args.backup or args.yes or not sys.stdin.isatty()
+    if not skip_prompt:
+        confirmed_path = _confirm_backup(backup_info, args.backup_root)
+        if confirmed_path is None:
+            print("Aborted.", file=sys.stderr)
+            return 1
+        # User may have picked a different backup from the list
+        if confirmed_path != backup_info.path:
+            backup_info = find_backup(str(confirmed_path), args.backup_root)
 
     result = run_pipeline(
         export_path=args.export_zip,
-        backup_path_or_udid=args.backup,
+        backup_path_or_udid=str(backup_info.path),
         backup_root=args.backup_root,
         country=args.country,
         skip_duplicates=args.skip_duplicates,
@@ -206,6 +231,85 @@ def _cmd_inject(args: argparse.Namespace) -> int:
         print("\n(Dry run — no changes were made to the backup)")
 
     return 0
+
+
+def _confirm_backup(
+    backup_info: BackupInfo,
+    backup_root: Path | None = None,
+) -> Path | None:
+    """Show selected backup and prompt for confirmation.
+
+    Returns:
+        The confirmed backup path, or None if the user aborted.
+    """
+    from green2blue.ios.backup import has_restore_checkpoint
+
+    encrypted = ", encrypted" if backup_info.is_encrypted else ""
+    injected = " [already injected]" if has_restore_checkpoint(backup_info.path) else ""
+    print(f"\nSelected backup: {backup_info.device_name} "
+          f"(iOS {backup_info.product_version}{encrypted}){injected}")
+    print(f"  UDID: {backup_info.udid}")
+    if backup_info.date:
+        print(f"  Date: {backup_info.date}")
+    print()
+
+    while True:
+        try:
+            response = input("Proceed? [Y/n/list] ").strip().lower()
+        except EOFError:
+            return None
+
+        if response in ("", "y", "yes"):
+            return backup_info.path
+        elif response in ("n", "no"):
+            return None
+        elif response == "list":
+            result = _show_backup_list(backup_root)
+            if result is None:
+                return None
+            return result
+        else:
+            print("Please enter Y, n, or list.")
+
+
+def _show_backup_list(backup_root: Path | None = None) -> Path | None:
+    """Show a numbered list of all backups and let the user pick one.
+
+    Returns:
+        The chosen backup path, or None if the user quit.
+    """
+    from green2blue.ios.backup import has_restore_checkpoint, list_backups
+
+    backups = list_backups(backup_root)
+    if not backups:
+        print("No backups found.")
+        return None
+
+    print()
+    for i, b in enumerate(backups, 1):
+        injected = " [already injected]" if has_restore_checkpoint(b.path) else ""
+        encrypted = ", encrypted" if b.is_encrypted else ""
+        print(f"  {i}. {b.device_name} (iOS {b.product_version}{encrypted}){injected}")
+        print(f"     UDID: {b.udid}")
+        if b.date:
+            print(f"     Date: {b.date}")
+    print()
+
+    while True:
+        try:
+            choice = input(f"Pick a backup [1-{len(backups)}] or q to quit: ").strip().lower()
+        except EOFError:
+            return None
+
+        if choice == "q":
+            return None
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(backups):
+                return backups[idx].path
+        except ValueError:
+            pass
+        print(f"Please enter a number 1-{len(backups)} or q.")
 
 
 def _cmd_list_backups(args: argparse.Namespace) -> int:

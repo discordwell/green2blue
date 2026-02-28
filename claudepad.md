@@ -1,5 +1,13 @@
 # Session Summaries
 
+## 2026-02-28T12:00Z - Smart backup selection + restore checkpoint rename
+- `find_backup()` now auto-selects most recent uninjected backup when multiple exist (no more MultipleBackupsError)
+- `list_backups()` filters out `.restore_checkpoint_` directories
+- Safety copies renamed from `.g2b_backup_` to `.restore_checkpoint_`
+- Added `has_restore_checkpoint()` helper
+- Interactive confirmation prompt in CLI inject (skip with `-y`, `--backup`, or non-TTY)
+- 7 new/updated tests in test_backup.py, 2 assertion updates in test_pipeline.py
+
 ## 2026-02-28T00:00Z - Encrypted backup support
 - Implemented full encrypted backup pipeline: decrypt → inject → re-encrypt
 - Added `generate_file_key()` and `encrypt_new_file()` to `EncryptedBackup` class

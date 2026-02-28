@@ -213,7 +213,7 @@ class TestFullPipeline:
 
         assert result.safety_copy_path is not None
         assert result.safety_copy_path.exists()
-        assert "g2b_backup" in result.safety_copy_path.name
+        assert "restore_checkpoint" in result.safety_copy_path.name
 
     def test_manifest_updated(self, tmp_dir):
         backup_dir = _create_full_backup(tmp_dir)
@@ -760,7 +760,7 @@ class TestEncryptedPipeline:
 
         assert result.safety_copy_path is not None
         assert result.safety_copy_path.exists()
-        assert "g2b_backup" in result.safety_copy_path.name
+        assert "restore_checkpoint" in result.safety_copy_path.name
 
     def test_encrypted_duplicate_prevention(self, tmp_dir):
         """Running twice on encrypted backup should skip duplicates."""

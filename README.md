@@ -70,7 +70,7 @@ green2blue inject export.zip
 
 The tool will:
 - Find your iPhone backup automatically
-- Create a safety copy (`.g2b_backup_*` directory)
+- Create a safety copy (`.restore_checkpoint_*` directory)
 - Parse your Android messages
 - Inject them into the backup's sms.db
 - Copy MMS attachments
@@ -91,6 +91,7 @@ green2blue inject <export.zip> [options]
     --no-attachments         Skip copying MMS attachment files
     --dry-run                Parse and convert without modifying the backup
     --password <pw>          Backup encryption password
+    -y, --yes                Skip confirmation prompt
     -v, --verbose            Verbose output
     -q, --quiet              Minimal output
 
@@ -101,7 +102,7 @@ green2blue verify <path>     Verify a backup's integrity
 
 ## Safety
 
-- **Safety copy**: Before any modification, a full copy of your backup is created with a `.g2b_backup_*` suffix. If anything goes wrong, just delete the modified backup and rename the safety copy.
+- **Safety copy**: Before any modification, a full copy of your backup is created with a `.restore_checkpoint_*` suffix. If anything goes wrong, just delete the modified backup and rename the safety copy.
 - **Single transaction**: All database writes happen in one SQLite transaction. Any failure rolls back everything.
 - **Trigger management**: iOS database triggers are dropped before injection and restored after, preventing internal function call failures.
 - **Verification**: After injection, integrity checks run automatically on the database and file structure.

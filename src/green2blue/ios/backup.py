@@ -69,6 +69,9 @@ def list_backups(backup_root: Path | None = None) -> list[BackupInfo]:
     for entry in sorted(root.iterdir()):
         if not entry.is_dir():
             continue
+        # Skip restore checkpoint directories (green2blue safety copies)
+        if ".restore_checkpoint_" in entry.name:
+            continue
         try:
             info = _read_backup_info(entry)
             backups.append(info)
@@ -83,7 +86,11 @@ def find_backup(
     backup_path_or_udid: str | None = None,
     backup_root: Path | None = None,
 ) -> BackupInfo:
-    """Find a specific backup or auto-select if only one exists.
+    """Find a specific backup or auto-select the best candidate.
+
+    When no backup is specified, selects the most recent backup that has
+    not yet been injected (no ``.restore_checkpoint_`` sibling). If all
+    backups have been injected, falls back to the most recent overall.
 
     Args:
         backup_path_or_udid: Explicit path or UDID to match.
@@ -94,7 +101,7 @@ def find_backup(
 
     Raises:
         BackupNotFoundError: No matching backup found.
-        MultipleBackupsError: Multiple backups and none specified.
+        MultipleBackupsError: Multiple backups match a partial UDID.
     """
     if backup_path_or_udid:
         # Check if it's a direct path
@@ -122,15 +129,42 @@ def find_backup(
             f"No backup found matching '{backup_path_or_udid}'",
         )
 
-    # Auto-select
+    # Auto-select: pick the most recent backup, preferring uninjected ones
     backups = list_backups(backup_root)
     if not backups:
         raise BackupNotFoundError("No iPhone backups found.")
-    if len(backups) > 1:
-        raise MultipleBackupsError(
-            f"Found {len(backups)} backups. Specify one with --backup.",
-        )
+    if len(backups) == 1:
+        return backups[0]
+
+    # Sort by date, most recent first
+    backups.sort(key=_backup_sort_key, reverse=True)
+
+    # Prefer backups that haven't been injected yet
+    uninjected = [b for b in backups if not has_restore_checkpoint(b.path)]
+    if uninjected:
+        return uninjected[0]
+
+    # All have been injected; return most recent
     return backups[0]
+
+
+def has_restore_checkpoint(backup_path: Path) -> bool:
+    """Check if a backup has a restore checkpoint (previous green2blue safety copy).
+
+    Args:
+        backup_path: Path to the backup directory.
+
+    Returns:
+        True if a sibling directory matches ``{name}.restore_checkpoint_*``.
+    """
+    prefix = f"{backup_path.name}.restore_checkpoint_"
+    parent = backup_path.parent
+    if not parent.exists():
+        return False
+    return any(
+        entry.is_dir() and entry.name.startswith(prefix)
+        for entry in parent.iterdir()
+    )
 
 
 def create_safety_copy(backup_path: Path) -> Path:
@@ -143,7 +177,7 @@ def create_safety_copy(backup_path: Path) -> Path:
         Path to the safety copy.
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    safety_path = backup_path.parent / f"{backup_path.name}.g2b_backup_{timestamp}"
+    safety_path = backup_path.parent / f"{backup_path.name}.restore_checkpoint_{timestamp}"
     logger.info("Creating safety copy: %s", safety_path)
     shutil.copytree(backup_path, safety_path, symlinks=True)
     return safety_path
@@ -186,6 +220,23 @@ def get_sms_db_path(backup_path: Path) -> Path:
     """Return the path to sms.db within a backup."""
     h = get_sms_db_hash()
     return backup_path / h[:2] / h
+
+
+def _backup_sort_key(info: BackupInfo) -> str:
+    """Return a sort key for ordering backups by date (most recent = highest).
+
+    Uses the date string from Status.plist, falling back to Manifest.db mtime.
+    """
+    if info.date:
+        return info.date
+
+    # Fallback: Manifest.db modification time as ISO string
+    manifest_path = info.path / "Manifest.db"
+    if manifest_path.exists():
+        mtime = manifest_path.stat().st_mtime
+        return datetime.fromtimestamp(mtime).isoformat()
+
+    return ""
 
 
 def _read_backup_info(path: Path) -> BackupInfo:

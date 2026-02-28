@@ -26,7 +26,7 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 - **message_converter.py** — Android models → iOS models. Groups messages into conversations by normalized phone. Generates UUIDs. Maps Android type codes to iOS booleans. MIME→UTI mapping for attachments.
 
 ### `ios/`
-- **backup.py** — Discover iPhone backups at platform-specific paths. Read metadata from Info.plist/Manifest.plist/Status.plist. Create safety copies. Validate backup structure.
+- **backup.py** — Discover iPhone backups at platform-specific paths. Read metadata from Info.plist/Manifest.plist/Status.plist. Smart auto-selection: picks the most recent uninjected backup when multiple exist. Creates `.restore_checkpoint_` safety copies before modification. Filters out checkpoint directories from backup listings. Validate backup structure.
 - **sms_db.py** — Core injection into sms.db. Handle/chat creation with dedup. Message insertion with ~35 columns. Attachment insertion. Join table management. Trigger drop/restore. Single-transaction safety.
 - **manifest.py** — Update Manifest.db with new file sizes (sms.db) and new entries (attachments). Computes fileID as `SHA1('{domain}-{relativePath}')`.
 - **plist_utils.py** — NSKeyedArchiver binary plist construction for MBFile objects. Clone-and-patch strategy preferred; build-from-scratch fallback.
@@ -36,7 +36,7 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 ### Top-level
 - **pipeline.py** — Orchestrates full flow: find backup → safety copy → parse → convert → inject → copy attachments → update manifest → verify.
 - **verify.py** — Post-injection checks: SQLite integrity, foreign key consistency, join table consistency, attachment files exist, Manifest.db entry present.
-- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`.
+- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`. Interactive backup confirmation prompt on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
 - **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`).
 - **exceptions.py** — Hierarchy with user-friendly `hint` attributes.
 
@@ -145,6 +145,6 @@ Each new attachment file gets a fresh random AES-256 key:
 4. **Single SQLite transaction** — All writes are atomic. Failure = full rollback.
 5. **Triggers dropped during injection** — iOS triggers call internal functions that would fail.
 6. **Content-hash deduplication** — `sha256(phone + timestamp + body)` prevents re-injection.
-7. **Safety copy before modification** — Full backup copy is the ultimate escape hatch.
+7. **Safety copy before modification** — Full backup copy (`.restore_checkpoint_` suffix) is the ultimate escape hatch.
 8. **Temp file approach for encryption** — Decrypt to temp files, modify, re-encrypt. Reuses all existing SQLite-based logic unchanged.
 9. **Verify before re-encrypt** — Run integrity checks on decrypted data where SQLite queries are meaningful.

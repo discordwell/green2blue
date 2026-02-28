@@ -131,7 +131,7 @@ class VerificationError(Green2BlueError):
 
     hint = (
         "The backup may be in an inconsistent state. "
-        "Restore from the safety copy (the .bak directory) and try again."
+        "Restore from the safety copy (the .restore_checkpoint_ directory) and try again."
     )
 
 
