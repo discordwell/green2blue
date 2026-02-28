@@ -70,6 +70,18 @@ class TestShortCodes:
         result = normalize_phone("55555")
         assert not result.startswith("+")
 
+    def test_seven_digit_local_us(self):
+        """7-digit local numbers (no area code) should pass through."""
+        assert normalize_phone("5551234") == "5551234"
+
+    def test_seven_digit_local_ca(self):
+        assert normalize_phone("5551234", "CA") == "5551234"
+
+    def test_seven_digit_not_e164(self):
+        """7-digit local numbers should not get a + prefix."""
+        result = normalize_phone("5551234")
+        assert not result.startswith("+")
+
 
 class TestEdgeCases:
     def test_empty_string(self):

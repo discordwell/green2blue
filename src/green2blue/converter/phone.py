@@ -146,6 +146,11 @@ def normalize_phone(number: str, country: str = "US") -> str:
     if calling_code == "1" and len(digits) == 11 and digits.startswith("1"):
         return f"+{digits}"
 
+    # 7-digit local numbers (no area code) — common in older messages.
+    # We can't infer the area code, so pass through as-is like short codes.
+    if calling_code == "1" and len(digits) == 7:
+        return digits
+
     # Nothing worked — give a useful error
     raise PhoneNormalizationError(
         f"Cannot normalize {original!r} for country {country}. "

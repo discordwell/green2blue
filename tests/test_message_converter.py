@@ -24,6 +24,7 @@ def _make_mms(
     parts=None,
     msg_box=1,
     date=1700000000,
+    date_sent=None,
 ):
     if addresses is None:
         addresses = (
@@ -37,6 +38,7 @@ def _make_mms(
         msg_box=msg_box,
         addresses=addresses,
         parts=parts,
+        date_sent=date_sent,
     )
 
 
@@ -132,6 +134,25 @@ class TestMMSConversion:
         msg = result.messages[0]
         assert msg.is_from_me
         assert msg.is_sent
+
+    def test_sent_mms_date_sent_used(self):
+        """Sent MMS should use date_sent for date_delivered when available."""
+        mms = _make_mms(msg_box=2, date=1700000000, date_sent=1700000005)
+        result = convert_messages([mms])
+        msg = result.messages[0]
+        expected_delivered = unix_s_to_ios_ns(1700000005)
+        assert msg.date_delivered == expected_delivered
+        # date should still use the regular date field
+        expected_date = unix_s_to_ios_ns(1700000000)
+        assert msg.date == expected_date
+
+    def test_received_mms_date_sent_ignored(self):
+        """Received MMS should not set date_delivered from date_sent."""
+        mms = _make_mms(msg_box=1, date=1700000000, date_sent=1700000005)
+        result = convert_messages([mms])
+        msg = result.messages[0]
+        # Received messages have date_delivered=0
+        assert msg.date_delivered == 0
 
     def test_mms_with_attachment(self):
         parts = (

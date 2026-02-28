@@ -237,6 +237,11 @@ def _convert_mms(mms: AndroidMMS, country: str) -> iOSMessage | None:
     date_read_ns = date_ns if mms.read else 0
     date_delivered_ns = date_ns if is_from_me else 0
 
+    if mms.date_sent and mms.date_sent > 0:
+        sent_ns = unix_s_to_ios_ns(mms.date_sent)
+        if is_from_me:
+            date_delivered_ns = sent_ns
+
     # Extract text body from parts
     text_parts = [p.text for p in mms.parts if p.content_type == "text/plain" and p.text]
     body = "\n".join(text_parts) if text_parts else None
