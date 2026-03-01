@@ -457,6 +457,144 @@ class TestCloudKitMetadata:
         assert id1 != id2
 
 
+class TestDestinationCallerId:
+    def test_detect_from_existing_messages(self, empty_sms_db):
+        """Should detect device owner's phone from existing messages."""
+        # Pre-populate with real iOS-style messages that have destination_caller_id
+        conn = sqlite3.connect(empty_sms_db)
+        conn.execute(
+            "INSERT INTO message (guid, text, service, destination_caller_id, date) "
+            "VALUES ('real-1', 'hi', 'SMS', '+15052289549', 100)"
+        )
+        conn.execute(
+            "INSERT INTO message (guid, text, service, destination_caller_id, date) "
+            "VALUES ('real-2', 'hey', 'SMS', '+15052289549', 200)"
+        )
+        conn.commit()
+        conn.close()
+
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[_make_message()],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "SELECT destination_caller_id FROM message WHERE guid LIKE 'green2blue:%'"
+            )
+            row = cursor.fetchone()
+            assert row["destination_caller_id"] == "+15052289549"
+
+    def test_empty_db_returns_null(self, empty_sms_db):
+        """No existing messages → destination_caller_id should be NULL."""
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[_make_message()],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "SELECT destination_caller_id FROM message WHERE guid LIKE 'green2blue:%'"
+            )
+            row = cursor.fetchone()
+            assert row["destination_caller_id"] is None
+
+    def test_picks_most_frequent(self, empty_sms_db):
+        """Should pick the most frequent destination_caller_id value."""
+        conn = sqlite3.connect(empty_sms_db)
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO message (guid, text, service, destination_caller_id, date) "
+                f"VALUES ('a-{i}', 'hi', 'SMS', '+11111111111', {i * 100})"
+            )
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO message (guid, text, service, destination_caller_id, date) "
+                f"VALUES ('b-{i}', 'hi', 'SMS', '+12222222222', {(i + 10) * 100})"
+            )
+        conn.commit()
+        conn.close()
+
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[_make_message()],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "SELECT destination_caller_id FROM message WHERE guid LIKE 'green2blue:%'"
+            )
+            row = cursor.fetchone()
+            assert row["destination_caller_id"] == "+12222222222"
+
+
+class TestCkChatId:
+    def test_1to1_chat_id(self, empty_sms_db):
+        """ck_chat_id for 1:1 should be SMS;-;+phone."""
+        result = _make_result(
+            handles=[_make_handle("+12025551234")],
+            chats=[_make_chat("+12025551234")],
+            messages=[_make_message("+12025551234")],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT ck_chat_id FROM message")
+            row = cursor.fetchone()
+            assert row["ck_chat_id"] == "SMS;-;+12025551234"
+
+    def test_group_chat_id(self, empty_sms_db):
+        """ck_chat_id for group should be SMS;-;chat{hash}."""
+        from green2blue.models import compute_chat_guid
+
+        members = ("+12025551111", "+12025552222", "+12025553333")
+        chat_guid = compute_chat_guid(
+            "+12025551111,+12025552222,+12025553333", members
+        )
+        expected_ck = chat_guid.replace("any;-;", "SMS;-;", 1)
+
+        group_chat = iOSChat(
+            guid=chat_guid,
+            style=43,
+            chat_identifier="+12025551111,+12025552222,+12025553333",
+            service_name="SMS",
+        )
+        msg = iOSMessage(
+            guid="green2blue:group-ck-test",
+            text="group msg",
+            handle_id="+12025551111",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier="+12025551111,+12025552222,+12025553333",
+            group_members=members,
+        )
+        result = _make_result(
+            handles=[
+                _make_handle("+12025551111"),
+                _make_handle("+12025552222"),
+                _make_handle("+12025553333"),
+            ],
+            chats=[group_chat],
+            messages=[msg],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT ck_chat_id FROM message")
+            row = cursor.fetchone()
+            assert row["ck_chat_id"] == expected_ck
+            assert row["ck_chat_id"].startswith("SMS;-;chat")
+
+
 class TestTriggerManagement:
     def test_triggers_restored_on_success(self, empty_sms_db):
         # Add a simple trigger

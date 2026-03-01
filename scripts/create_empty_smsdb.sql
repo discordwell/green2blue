@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS message (
     ck_record_id TEXT,
     ck_record_change_tag TEXT,
     destination_caller_id TEXT,
+    ck_chat_id TEXT,
     sr_ck_sync_state INTEGER DEFAULT 0,
     sr_ck_record_id TEXT,
     sr_ck_record_change_tag TEXT,

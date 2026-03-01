@@ -21,6 +21,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 from green2blue.exceptions import DatabaseError
+from green2blue.ios.attributed_body import build_attributed_body
 from green2blue.ios.message_summary import build_message_summary_info
 from green2blue.ios.trigger_utils import (
     drop_triggers,
@@ -145,8 +146,9 @@ class SMSDatabase:
                     handle_rowids[handle.id] = rowid
                     stats.handles_inserted += 1
 
-            # Detect SMS account_id from existing chats for consistency
+            # Detect SMS account_id and destination_caller_id from existing data
             detected_account_id = self._detect_account_id()
+            detected_caller_id = self._detect_destination_caller_id()
 
             # Insert chats
             chat_rowids: dict[str, int] = {}
@@ -191,12 +193,22 @@ class SMSDatabase:
 
                 handle_rowid = handle_rowids.get(msg.handle_id, 0)
 
-                msg_rowid = self._insert_message(cursor, msg, handle_rowid)
-                stats.messages_inserted += 1
-
                 # Determine which chat this message belongs to
                 chat_key = msg.chat_identifier or msg.handle_id
                 chat_guid = compute_chat_guid(chat_key, msg.group_members)
+
+                # Derive ck_chat_id: replace "any;-;" prefix with "{service};-;"
+                if chat_guid.startswith("any;-;"):
+                    ck_chat_id = f"{msg.service};-;{chat_guid[6:]}"
+                else:
+                    ck_chat_id = chat_guid
+
+                msg_rowid = self._insert_message(
+                    cursor, msg, handle_rowid,
+                    destination_caller_id=detected_caller_id,
+                    ck_chat_id=ck_chat_id,
+                )
+                stats.messages_inserted += 1
 
                 chat_rowid = chat_rowids.get(chat_guid)
                 if chat_rowid:
@@ -249,6 +261,30 @@ class SMSDatabase:
             "AND account_id IS NOT NULL LIMIT 1"
         ).fetchone()
         return row["account_id"] if row else ""
+
+    def _detect_destination_caller_id(self) -> str:
+        """Detect the device owner's phone from existing messages.
+
+        Real iOS sets destination_caller_id to the device owner's
+        E.164 phone on virtually every SMS message. We detect it
+        from the most frequent value in existing messages.
+
+        Returns:
+            Owner's phone string, or empty string if no existing messages.
+        """
+        if "destination_caller_id" not in self._msg_schema:
+            return ""
+        cursor = self.conn.cursor()
+        row = cursor.execute(
+            "SELECT destination_caller_id, COUNT(*) as cnt "
+            "FROM message "
+            "WHERE destination_caller_id IS NOT NULL "
+            "AND destination_caller_id != '' "
+            "AND service = 'SMS' "
+            "GROUP BY destination_caller_id "
+            "ORDER BY cnt DESC LIMIT 1"
+        ).fetchone()
+        return row["destination_caller_id"] if row else ""
 
     def _load_existing_handles(self) -> dict[str, int]:
         """Load existing handles as {id: ROWID}."""
@@ -310,7 +346,13 @@ class SMSDatabase:
         return cursor.lastrowid
 
     def _insert_message(
-        self, cursor: sqlite3.Cursor, msg: iOSMessage, handle_rowid: int
+        self,
+        cursor: sqlite3.Cursor,
+        msg: iOSMessage,
+        handle_rowid: int,
+        *,
+        destination_caller_id: str = "",
+        ck_chat_id: str = "",
     ) -> int:
         """Insert a message and return its ROWID."""
         cache_has_attachments = 1 if msg.attachments else 0
@@ -331,8 +373,27 @@ class SMSDatabase:
             has_text=bool(msg.text),
         ) if has_msi else None
 
+        # Generate attributedBody typedstream blob
+        has_ab = "attributedBody" in self._msg_schema
+        ab_cols = "\n                attributedBody," if has_ab else ""
+        ab_vals = "\n                ?," if has_ab else ""
+        ab_blob = build_attributed_body(msg.text) if has_ab else None
+
+        # destination_caller_id (device owner's phone)
+        has_dci = "destination_caller_id" in self._msg_schema
+        dci_cols = "\n                destination_caller_id," if has_dci else ""
+        dci_vals = "\n                ?," if has_dci else ""
+
+        # ck_chat_id (service;-;chat_identifier)
+        has_cci = "ck_chat_id" in self._msg_schema
+        cci_cols = "\n                ck_chat_id," if has_cci else ""
+        cci_vals = "\n                ?," if has_cci else ""
+
         # Build optional params
         msi_params = (msi_blob,) if has_msi else ()
+        ab_params = (ab_blob,) if has_ab else ()
+        dci_params = (destination_caller_id or None,) if has_dci else ()
+        cci_params = (ck_chat_id,) if has_cci else ()
 
         cursor.execute(
             f"""INSERT INTO message (
@@ -350,7 +411,8 @@ class SMSDatabase:
                 message_action_type, message_source,
                 associated_message_type, associated_message_range_location,
                 associated_message_range_length, time_expressive_send_played,
-                ck_sync_state, ck_record_id, ck_record_change_tag,{sr_ck_cols}{msi_cols}
+                ck_sync_state, ck_record_id, ck_record_change_tag,{sr_ck_cols}{msi_cols}{ab_cols}
+                {dci_cols}{cci_cols}
                 is_corrupt, date_recovered,
                 sort_id, is_spam, has_unseen_mention,
                 was_delivered_quietly, did_notify_recipient,
@@ -371,7 +433,7 @@ class SMSDatabase:
                 0, 0,
                 0, 0,
                 0, 0,
-                ?, ?, ?,{sr_ck_vals}{msi_vals}
+                ?, ?, ?,{sr_ck_vals}{msi_vals}{ab_vals}{dci_vals}{cci_vals}
                 0, 0,
                 0, 0, 0,
                 0, 0,
@@ -401,6 +463,9 @@ class SMSDatabase:
                 msg.ck_record_id,
                 msg.ck_record_change_tag,
                 *msi_params,
+                *ab_params,
+                *dci_params,
+                *cci_params,
             ),
         )
         return cursor.lastrowid

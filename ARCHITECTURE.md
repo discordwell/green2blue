@@ -27,7 +27,8 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 
 ### `ios/`
 - **backup.py** — Discover iPhone backups at platform-specific paths. Read metadata from Info.plist/Manifest.plist/Status.plist. Smart auto-selection: picks the most recent uninjected backup when multiple exist. Creates `.restore_checkpoint_` safety copies before modification. Filters out checkpoint directories from backup listings. Validate backup structure.
-- **sms_db.py** — Core injection into sms.db. Handle/chat creation with dedup. Message insertion with ~35 columns. Attachment insertion. Join table management. Trigger drop/restore. Single-transaction safety. Generates `message_summary_info` blobs.
+- **sms_db.py** — Core injection into sms.db. Handle/chat creation with dedup. Message insertion with ~35 columns. Attachment insertion. Join table management. Trigger drop/restore. Single-transaction safety. Generates `message_summary_info` and `attributedBody` blobs.
+- **attributed_body.py** — Generate `attributedBody` typedstream blobs (Apple NSArchiver format, NOT NSKeyedArchiver). Every iOS message with text has this blob; it contains an NSAttributedString with the text and `__kIMMessagePartAttributeName = 0` attribute. Uses the compact NSAttributedString (non-mutable) variant. Verified byte-identical against real iOS 26.2 sms.db (100% match on 7,499+ simple messages). Schema dynamically detected.
 - **message_summary.py** — Generate `message_summary_info` binary plist blobs. Every iOS message with text has this blob; it contains metadata keys (`cmmS\x10`, `cmmAO`, etc.). For SMS messages, the minimal blob `{'cmmS\x10': 0, 'cmmAO': 0}` matches 80%+ of real iOS messages. The schema is dynamically detected so older iOS versions without this column are unaffected.
 - **manifest.py** — Update Manifest.db with new file sizes (sms.db) and new entries (attachments). Computes fileID as `SHA1('{domain}-{relativePath}')`.
 - **plist_utils.py** — NSKeyedArchiver binary plist construction for MBFile objects. Clone-and-patch strategy preferred; build-from-scratch fallback.
@@ -84,7 +85,10 @@ Injection output is validated against real iOS backup data. Key field mappings:
 - **message.was_data_detected** = 1, **has_dd_results** = 0 (iOS populates after data detection runs)
 - **message.is_delivered** = 1 for both incoming and outgoing
 - **message.group_title** = NULL for 1:1 (not empty string)
+- **message.attributedBody** = typedstream (NSArchiver) blob containing NSAttributedString with `__kIMMessagePartAttributeName = 0`; NULL for attachment-only messages. Uses non-mutable variant. iOS regenerates detected-data attributes (URLs, dates, money) after restore.
 - **message.message_summary_info** = binary plist `{'cmmS\x10': 0, 'cmmAO': 0}` for messages with text; NULL for attachment-only or system messages
+- **message.destination_caller_id** = device owner's E.164 phone number (auto-detected from most frequent value in existing messages; NULL if no existing messages)
+- **message.ck_chat_id** = `{service};-;{chat_identifier}` — derived from chat GUID by replacing `any;-;` prefix with the message's service (e.g., `SMS;-;+12025551234` for 1:1, `SMS;-;chat{hash}` for group)
 - **message.date_recovered** = 0
 - **chat.account_login** = `'E:'` (constant for SMS accounts)
 - **chat.account_id** = device UUID (auto-detected from existing chats)
