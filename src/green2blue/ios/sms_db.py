@@ -21,6 +21,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 from green2blue.exceptions import DatabaseError
+from green2blue.ios.message_summary import build_message_summary_info
 from green2blue.ios.trigger_utils import (
     drop_triggers,
     restore_triggers,
@@ -319,6 +320,20 @@ class SMSDatabase:
         sr_ck_cols = "\n                sr_ck_sync_state," if has_sr_ck else ""
         sr_ck_vals = "\n                0," if has_sr_ck else ""
 
+        has_msi = "message_summary_info" in self._msg_schema
+        msi_cols = "\n                message_summary_info," if has_msi else ""
+        msi_vals = "\n                ?," if has_msi else ""
+
+        # Generate message_summary_info blob
+        msi_blob = build_message_summary_info(
+            service=msg.service,
+            is_from_me=msg.is_from_me,
+            has_text=bool(msg.text),
+        ) if has_msi else None
+
+        # Build optional params
+        msi_params = (msi_blob,) if has_msi else ()
+
         cursor.execute(
             f"""INSERT INTO message (
                 guid, text, handle_id, service, account, account_guid,
@@ -335,7 +350,7 @@ class SMSDatabase:
                 message_action_type, message_source,
                 associated_message_type, associated_message_range_location,
                 associated_message_range_length, time_expressive_send_played,
-                ck_sync_state, ck_record_id, ck_record_change_tag,{sr_ck_cols}
+                ck_sync_state, ck_record_id, ck_record_change_tag,{sr_ck_cols}{msi_cols}
                 is_corrupt, date_recovered,
                 sort_id, is_spam, has_unseen_mention,
                 was_delivered_quietly, did_notify_recipient,
@@ -356,7 +371,7 @@ class SMSDatabase:
                 0, 0,
                 0, 0,
                 0, 0,
-                ?, ?, ?,{sr_ck_vals}
+                ?, ?, ?,{sr_ck_vals}{msi_vals}
                 0, 0,
                 0, 0, 0,
                 0, 0,
@@ -385,6 +400,7 @@ class SMSDatabase:
                 msg.ck_sync_state,
                 msg.ck_record_id,
                 msg.ck_record_change_tag,
+                *msi_params,
             ),
         )
         return cursor.lastrowid

@@ -73,9 +73,10 @@
 ## Real backup injection comparison results (94 message columns)
 - 83 columns match perfectly between injected and real iOS SMS
 - 7 inherently different (ROWID, guid, text, handle_id, date, date_read, date_delivered)
-- 4 remaining are iOS-generated blobs we don't create:
-  - attributedBody (NSMutableAttributedString), message_summary_info (bplist)
+- 3 remaining are iOS-generated blobs we don't create:
+  - attributedBody (NSMutableAttributedString)
   - destination_caller_id (user phone), ck_chat_id (chat GUID)
+- message_summary_info is now generated (see below)
 - Real iOS `has_dd_results`: mostly 0 (iOS populates after data detection runs)
 - Real iOS `was_data_detected`: mostly 1 (flag that detection should run)
 - Real iOS `group_title`: NULL for 1:1, subject string for MMS groups
@@ -83,7 +84,7 @@
 - Pipeline MUST update attachment sizes BEFORE computing sms.db digest for Manifest.db
 
 ## Test architecture
-- 258 tests across 12 test files
+- 272 tests across 13 test files
 - conftest.py has both legacy and real-format fixtures
 - Pipeline tests create full synthetic iPhone backups with sms.db, Manifest.db, plists
 - Encrypted tests build synthetic keybags with low iteration counts for fast PBKDF2
@@ -101,6 +102,32 @@
 - Must physically move backup directories out of MobileSync/Backup/ for Finder to stop showing them
 - Unplugging and replugging iPhone may be needed to refresh Finder's backup list
 - Restore checkpoint + secondary backups all show same timestamp in Finder (from shared Info.plist Date field), making it impossible for users to distinguish — hide extras before restore
+
+## message_summary_info plist structure (reverse-engineered from real iOS 26.2)
+- Binary plist dict on every message with text (27,033/27,050 messages in real backup)
+- Only 17 messages with NULL blob — all system events (item_type != 0) with no text
+- Canonical SMS blob: `{'cmmS\x10': 0, 'cmmAO': 0}` — covers 80%+ of SMS messages
+- Key meanings decoded from 27K+ message corpus:
+  - `cmmS\x10`, `cmmAO` = always 0, universal metadata keys
+  - `ust` = "uses shared transport" (True for iMessage, rare on SMS)
+  - `amc` = associated message count (0=normal, 1=tapback-target)
+  - `oui` = "originating user identifier" (SMS received, sender handle)
+  - `ams` = associated message summary (truncated original text in tapbacks)
+  - `ampt` = associated message part typed (NSAttributedString blob)
+  - `enc` = encrypted (bool, some iMessage threads)
+  - `osn` = original service name (e.g., 'iMessage' for SMS-fallback)
+  - `ec` = edit corrections, `ep` = edit parts, `otr` = original text range
+  - `smm` = spam ML metadata (iOS filter results on shortcodes)
+  - `swybid`/`swyan` = Shared With You bundle ID / app name
+  - `raa` = RCS authentication assessment
+  - `uat` = unknown attachment type? (True for RCS attachment-only)
+  - `rfgs` = reply-from GUIDs, `rp` = reply parts
+  - `eogcd` = edit or generation count/delta
+  - `amsa` = associated message Siri author, `amab` = associated message attributed body
+  - `hbr` = has been replied
+- plistlib key order differs from iOS but both are valid binary plists
+- Schema detection (`message_summary_info in self._msg_schema`) ensures older iOS versions unaffected
+- 272 tests (14 new for message_summary), lint clean
 
 ## CloudKit sync test in progress
 - 6 test messages injected into main backup (00008101-000E60C43C40001E) with password `glorious1`
