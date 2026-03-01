@@ -21,15 +21,6 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 from green2blue.exceptions import DatabaseError
-
-# UTI to preview_generation_state mapping (real iOS values)
-_UTI_PREVIEW_STATE: dict[str, int] = {
-    "public.jpeg": 1, "public.png": 1, "public.heic": 1,
-    "public.heif": 1, "public.webp": 1, "public.tiff": 1,
-    "com.compuserve.gif": 1, "com.microsoft.bmp": 1,
-    "public.mpeg-4": 2, "public.3gpp": 2, "public.3gpp2": 2,
-    "com.apple.quicktime-movie": 2, "org.webmproject.webm": 2,
-}
 from green2blue.ios.trigger_utils import (
     drop_triggers,
     restore_triggers,
@@ -43,6 +34,15 @@ from green2blue.models import (
     iOSMessage,
     message_content_hash,
 )
+
+# UTI to preview_generation_state mapping (real iOS values)
+_UTI_PREVIEW_STATE: dict[str, int] = {
+    "public.jpeg": 1, "public.png": 1, "public.heic": 1,
+    "public.heif": 1, "public.webp": 1, "public.tiff": 1,
+    "com.compuserve.gif": 1, "com.microsoft.bmp": 1,
+    "public.mpeg-4": 2, "public.3gpp": 2, "public.3gpp2": 2,
+    "com.apple.quicktime-movie": 2, "org.webmproject.webm": 2,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,17 @@ class SMSDatabase:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=OFF")
+        self._inspect_schema()
+
+    def _inspect_schema(self) -> None:
+        """Detect optional columns that vary by iOS version."""
+        cursor = self.conn.cursor()
+        self._msg_schema: set[str] = {
+            r[1] for r in cursor.execute("PRAGMA table_info(message)").fetchall()
+        }
+        self._att_schema: set[str] = {
+            r[1] for r in cursor.execute("PRAGMA table_info(attachment)").fetchall()
+        }
 
     def close(self) -> None:
         """Close the database connection."""
@@ -303,18 +314,10 @@ class SMSDatabase:
         """Insert a message and return its ROWID."""
         cache_has_attachments = 1 if msg.attachments else 0
 
-        # Check if sr_ck_sync_state column exists (not present in all iOS versions)
-        if not hasattr(self, "_has_sr_ck_sync_state"):
-            cols = {
-                r[1] for r in cursor.execute(
-                    "PRAGMA table_info(message)"
-                ).fetchall()
-            }
-            self._has_sr_ck_sync_state = "sr_ck_sync_state" in cols
-
         # Build column list and values dynamically for optional columns
-        sr_ck_cols = "\n                sr_ck_sync_state," if self._has_sr_ck_sync_state else ""
-        sr_ck_vals = "\n                0," if self._has_sr_ck_sync_state else ""
+        has_sr_ck = "sr_ck_sync_state" in self._msg_schema
+        sr_ck_cols = "\n                sr_ck_sync_state," if has_sr_ck else ""
+        sr_ck_vals = "\n                0," if has_sr_ck else ""
 
         cursor.execute(
             f"""INSERT INTO message (
@@ -333,7 +336,7 @@ class SMSDatabase:
                 associated_message_type, associated_message_range_location,
                 associated_message_range_length, time_expressive_send_played,
                 ck_sync_state, ck_record_id, ck_record_change_tag,{sr_ck_cols}
-                is_corrupt,
+                is_corrupt, date_recovered,
                 sort_id, is_spam, has_unseen_mention,
                 was_delivered_quietly, did_notify_recipient,
                 date_retracted, date_edited, was_detonated,
@@ -345,7 +348,7 @@ class SMSDatabase:
                 ?, ?, ?,
                 ?, 0, 0, 0,
                 10, 0, 0, 0, 0,
-                0, 1, 0,
+                0, 0, 0,
                 0, 0, 1, 0,
                 0, 0, 0,
                 0, 0, 0,
@@ -354,7 +357,7 @@ class SMSDatabase:
                 0, 0,
                 0, 0,
                 ?, ?, ?,{sr_ck_vals}
-                0,
+                0, 0,
                 0, 0, 0,
                 0, 0,
                 0, 0, 0,
@@ -392,14 +395,34 @@ class SMSDatabase:
         """Insert an attachment and return its ROWID."""
         preview_state = _UTI_PREVIEW_STATE.get(att.uti, 0)
 
+        # Build optional column fragments (schema detected in _inspect_schema)
+        opt_cols = ""
+        opt_vals = ""
+        if "sr_ck_sync_state" in self._att_schema:
+            opt_cols += ", sr_ck_sync_state"
+            opt_vals += ", 0"
+        if "preview_generation_state" in self._att_schema:
+            opt_cols += ", preview_generation_state"
+            opt_vals += ", ?"
+        if "original_guid" in self._att_schema:
+            opt_cols += ", original_guid"
+            opt_vals += ", ?"
+
+        # Build params for optional columns
+        opt_params = []
+        if "preview_generation_state" in self._att_schema:
+            opt_params.append(preview_state)
+        if "original_guid" in self._att_schema:
+            opt_params.append(att.guid)
+
         cursor.execute(
-            """INSERT INTO attachment (
+            f"""INSERT INTO attachment (
                 guid, created_date, start_date, filename, uti, mime_type,
                 transfer_state, is_outgoing, transfer_name, total_bytes,
-                original_guid, preview_generation_state,
-                is_sticker, hide_attachment, ck_sync_state, sr_ck_sync_state,
-                is_commsafety_sensitive
-            ) VALUES (?, ?, 0, ?, ?, ?, 5, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0)""",
+                is_sticker, hide_attachment, ck_sync_state,
+                is_commsafety_sensitive{opt_cols}
+            ) VALUES (?, ?, 0, ?, ?, ?, 5, ?, ?, ?,
+                0, 0, 0, 0{opt_vals})""",
             (
                 att.guid,
                 att.created_date,
@@ -409,8 +432,7 @@ class SMSDatabase:
                 int(is_outgoing),
                 att.transfer_name,
                 att.total_bytes,
-                att.guid,
-                preview_state,
+                *opt_params,
             ),
         )
         return cursor.lastrowid

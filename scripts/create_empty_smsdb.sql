@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS message (
     sr_ck_record_change_tag TEXT,
     is_corrupt INTEGER DEFAULT 0,
     reply_to_guid TEXT,
+    date_recovered INTEGER DEFAULT 0,
     sort_id INTEGER DEFAULT 0,
     is_spam INTEGER DEFAULT 0,
     has_unseen_mention INTEGER DEFAULT 0,

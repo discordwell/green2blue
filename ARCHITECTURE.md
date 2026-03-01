@@ -80,8 +80,10 @@ Injection output is validated against real iOS backup data. Key field mappings:
 - **message.version** = 10 (not 1)
 - **message.account / account_guid** = NULL for SMS (not 'p:0')
 - **message.ck_record_id / ck_record_change_tag** = `''` (empty string, not NULL) for unsynced messages
-- **message.was_data_detected** = 1, **has_dd_results** = 1
+- **message.was_data_detected** = 1, **has_dd_results** = 0 (iOS populates after data detection runs)
 - **message.is_delivered** = 1 for both incoming and outgoing
+- **message.group_title** = NULL for 1:1 (not empty string)
+- **message.date_recovered** = 0
 - **chat.account_login** = `'E:'` (constant for SMS accounts)
 - **chat.account_id** = device UUID (auto-detected from existing chats)
 - **chat.server_change_token** = `''` (empty string, not NULL)

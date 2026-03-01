@@ -1,9 +1,20 @@
 # Session Summaries
 
+## 2026-03-01T00:00Z - Real backup injection + comparison testing
+- Injected test messages into real iOS 26.2 backup copy, compared field-by-field
+- Fixed dynamic attachment schema detection (sr_ck_sync_state, preview_generation_state, original_guid)
+- Fixed pipeline digest ordering: attachment size update BEFORE Manifest.db digest computation
+- Fixed group_title: None instead of '' (15,877/15,884 SMS use NULL)
+- Fixed date_recovered: set to 0 (all 27,054 real messages have 0)
+- Fixed has_dd_results: set to 0 (iOS populates after data detection, majority have 0)
+- Fixed import ordering in sms_db.py (E402 lint)
+- Final comparison: 83/94 columns match, 7 inherently different, 4 iOS-generated blobs
+- 258 tests pass, lint clean
+
 ## 2026-02-28T22:30Z - Field-identical iOS data matching from real backup comparison
 - Compared real iOS 26.2 sms.db field-by-field against green2blue output
 - Fixed 15+ field mismatches to match real iOS behavior:
-  - message: version=10, account/account_guid=NULL, ck_record_id/tag='', was_data_detected=1, has_dd_results=1, is_delivered=True always
+  - message: version=10, account/account_guid=NULL, ck_record_id/tag='', was_data_detected=1, is_delivered=True always
   - chat: account_login='E:', server_change_token='', group_id=UUID, account_id auto-detected from existing chats
   - attachment: created_date in seconds (not ns), start_date=0, original_guid=guid, preview_generation_state
 - Updated prepare_sync.py: CK field resets use '' not NULL, server_change_token '' not NULL
@@ -42,16 +53,6 @@
 - 18 new tests (22 crypto + 7 pipeline encrypted), 207 total, lint clean
 - Updated ARCHITECTURE.md with encrypted flow, key hierarchy, pipeline steps
 
-## 2026-02-27T19:30Z - Format compatibility and polish session
-- Fixed NDJSON parser to support real SMS IE format (`__sender_address`/`__recipient_addresses`) alongside legacy `__addresses`
-- Fixed attachment `_data` path handling for real Android filesystem paths (extract basename, search in data/ dir)
-- Added RCS detection and counting (`_looks_like_rcs`, `count_messages` returns `rcs` key)
-- Added 16 new tests: real SMS IE format (parser + pipeline), RCS handling, Android data path resolution
-- Updated README with feature list, GitHub URL, "How It Works" section
-- Updated ARCHITECTURE.md with dual format docs
-- Lint clean (ruff), 184 tests passing
-- Code review agents launched for correctness and refactoring
-
 # Key Findings
 
 ## iOS sms.db injection critical notes
@@ -69,8 +70,20 @@
 - RCS has no explicit type marker - detected via `rcs_*` prefixed fields
 - MMS `date` is in seconds; SMS `date` is in milliseconds
 
+## Real backup injection comparison results (94 message columns)
+- 83 columns match perfectly between injected and real iOS SMS
+- 7 inherently different (ROWID, guid, text, handle_id, date, date_read, date_delivered)
+- 4 remaining are iOS-generated blobs we don't create:
+  - attributedBody (NSMutableAttributedString), message_summary_info (bplist)
+  - destination_caller_id (user phone), ck_chat_id (chat GUID)
+- Real iOS `has_dd_results`: mostly 0 (iOS populates after data detection runs)
+- Real iOS `was_data_detected`: mostly 1 (flag that detection should run)
+- Real iOS `group_title`: NULL for 1:1, subject string for MMS groups
+- Real iOS `date_recovered`: always 0
+- Pipeline MUST update attachment sizes BEFORE computing sms.db digest for Manifest.db
+
 ## Test architecture
-- 244 tests across 12 test files
+- 258 tests across 12 test files
 - conftest.py has both legacy and real-format fixtures
 - Pipeline tests create full synthetic iPhone backups with sms.db, Manifest.db, plists
 - Encrypted tests build synthetic keybags with low iteration counts for fast PBKDF2

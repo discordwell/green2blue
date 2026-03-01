@@ -336,7 +336,7 @@ def _convert_mms(mms: AndroidMMS, country: str) -> iOSMessage | None:
         attachments=tuple(attachments),
         chat_identifier=chat_identifier,
         group_members=group_members,
-        group_title=mms.sub or "",
+        group_title=mms.sub,  # None for 1:1, subject string for group MMS
     )
 
 

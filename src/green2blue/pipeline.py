@@ -182,14 +182,17 @@ def run_pipeline(
                             attachment_sizes[att.guid] = file_size
                             result.total_attachments_copied += 1
 
-            sms_db_size = sms_db_file.stat().st_size
-            sms_db_digest = hashlib.sha1(sms_db_file.read_bytes()).digest()
-            manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
-
-        # Update attachment sizes in sms.db
+        # Update attachment sizes in sms.db (must happen before digest)
         if attachment_sizes:
             with SMSDatabase(sms_db_file) as db:
                 db.update_attachment_sizes(attachment_sizes)
+
+        # Update Manifest.db with final sms.db size and digest
+        # (after all sms.db modifications are complete)
+        with ManifestDB(manifest_path) as manifest:
+            sms_db_size = sms_db_file.stat().st_size
+            sms_db_digest = hashlib.sha1(sms_db_file.read_bytes()).digest()
+            manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
 
         # Step 9: Verify
         logger.info("Verifying backup integrity...")
@@ -383,15 +386,18 @@ def _run_encrypted_pipeline(
                                 attachment_sizes[att.guid] = file_size
                                 result.total_attachments_copied += 1
 
-                # Update sms.db entry in temp Manifest.db (plaintext size + digest)
-                sms_db_size = temp_sms_path.stat().st_size
-                sms_db_digest = hashlib.sha1(temp_sms_path.read_bytes()).digest()
-                manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
-
             # Step 10: Update attachment sizes in temp sms.db
+            # (must happen before digest computation)
             if attachment_sizes:
                 with SMSDatabase(temp_sms_path) as db:
                     db.update_attachment_sizes(attachment_sizes)
+
+            # Update Manifest.db with final sms.db size and digest
+            # (after all sms.db modifications are complete)
+            with ManifestDB(temp_manifest_path) as manifest:
+                sms_db_size = temp_sms_path.stat().st_size
+                sms_db_digest = hashlib.sha1(temp_sms_path.read_bytes()).digest()
+                manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
 
             # Step 11: Verify on decrypted data (meaningful integrity checks)
             logger.info("Verifying backup integrity (on decrypted data)...")

@@ -147,7 +147,7 @@ class iOSMessage:
     is_delivered: bool = True  # Real iOS = 1 for both incoming and outgoing
     is_finished: bool = True
     was_downgraded: bool = False
-    group_title: str = ""
+    group_title: str | None = None  # None for 1:1, group name for group chats
     attachments: tuple[iOSAttachment, ...] = ()
     chat_identifier: str = ""  # Set during conversion for grouping
     group_members: tuple[str, ...] = ()  # All E.164 numbers for group chats
