@@ -231,6 +231,132 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare_sync_parser.add_argument("-q", "--quiet", action="store_true")
     prepare_sync_parser.set_defaults(func=_cmd_prepare_sync)
 
+    # --- device (subcommand group) ---
+    device_parser = subparsers.add_parser(
+        "device",
+        help="Direct device operations via USB (requires pymobiledevice3)",
+    )
+    device_subs = device_parser.add_subparsers(dest="device_command", help="Device commands")
+
+    # device list
+    dev_list_parser = device_subs.add_parser(
+        "list",
+        help="List connected iOS devices",
+    )
+    dev_list_parser.add_argument("-v", "--verbose", action="store_true")
+    dev_list_parser.add_argument("-q", "--quiet", action="store_true")
+    dev_list_parser.set_defaults(func=_cmd_device_list)
+
+    # device backup
+    dev_backup_parser = device_subs.add_parser(
+        "backup",
+        help="Create a backup from a connected device",
+    )
+    dev_backup_parser.add_argument(
+        "--output", "-o",
+        type=Path,
+        default=None,
+        help="Output directory for backup (default: temp directory)",
+    )
+    dev_backup_parser.add_argument(
+        "--udid",
+        type=str,
+        default=None,
+        help="Target device UDID (auto-select if only one device)",
+    )
+    dev_backup_parser.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Backup encryption password",
+    )
+    dev_backup_parser.add_argument("-v", "--verbose", action="store_true")
+    dev_backup_parser.add_argument("-q", "--quiet", action="store_true")
+    dev_backup_parser.set_defaults(func=_cmd_device_backup)
+
+    # device inject
+    dev_inject_parser = device_subs.add_parser(
+        "inject",
+        help="Full pipeline: backup device, inject messages, restore",
+    )
+    dev_inject_parser.add_argument(
+        "export_zip",
+        type=Path,
+        help="Path to the SMS Import/Export ZIP file",
+    )
+    dev_inject_parser.add_argument(
+        "--udid",
+        type=str,
+        default=None,
+        help="Target device UDID (auto-select if only one device)",
+    )
+    dev_inject_parser.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Backup encryption password",
+    )
+    dev_inject_parser.add_argument(
+        "--country",
+        type=str,
+        default="US",
+        help="Default country code for phone normalization (default: US)",
+    )
+    dev_inject_parser.add_argument(
+        "--ck-strategy",
+        type=str,
+        choices=["none", "fake-synced", "pending-upload", "icloud-reset"],
+        default="none",
+        help="CloudKit metadata strategy (default: none)",
+    )
+    dev_inject_parser.add_argument(
+        "--keep-backup",
+        action="store_true",
+        default=False,
+        help="Keep the temporary backup after restore (default: delete)",
+    )
+    dev_inject_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt",
+    )
+    dev_inject_parser.add_argument("-v", "--verbose", action="store_true")
+    dev_inject_parser.add_argument("-q", "--quiet", action="store_true")
+    dev_inject_parser.set_defaults(func=_cmd_device_inject)
+
+    # device restore
+    dev_restore_parser = device_subs.add_parser(
+        "restore",
+        help="Restore an already-modified backup to a device",
+    )
+    dev_restore_parser.add_argument(
+        "backup_path",
+        type=Path,
+        help="Path to the backup directory",
+    )
+    dev_restore_parser.add_argument(
+        "--udid",
+        type=str,
+        default=None,
+        help="Target device UDID (auto-select if only one device)",
+    )
+    dev_restore_parser.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Backup encryption password",
+    )
+    dev_restore_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt",
+    )
+    dev_restore_parser.add_argument("-v", "--verbose", action="store_true")
+    dev_restore_parser.add_argument("-q", "--quiet", action="store_true")
+    dev_restore_parser.set_defaults(func=_cmd_device_restore)
+
     return parser
 
 
@@ -649,3 +775,254 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         print(f"  WARNING: {warn}")
 
     return 0 if result.passed else 1
+
+
+# --- Device subcommands ---
+
+
+def _print_post_restore_instructions() -> None:
+    """Print instructions the user should follow after a device restore."""
+    print("\n\nRestore complete. Your device will reboot.")
+    print("After reboot:")
+    print("  1. If you see 'iPhone Partially Set Up', tap 'Continue with Partial Setup'")
+    print("  2. Wait for the 'press home to upgrade' progress bar to complete")
+    print("  3. Open Messages — your injected conversations should appear")
+
+
+def _cmd_device_list(args: argparse.Namespace) -> int:
+    """List connected iOS devices."""
+    from green2blue.ios.device import list_devices
+
+    devices = list_devices()
+
+    if not devices:
+        print("No iOS devices connected.")
+        return 0
+
+    print(f"Found {len(devices)} device(s):\n")
+    for d in devices:
+        paired = "" if d.is_paired else " [NOT PAIRED]"
+        print(f"  {d.name} (iOS {d.ios_version}){paired}")
+        print(f"    UDID: {d.udid}")
+    print()
+
+    return 0
+
+
+def _cmd_device_backup(args: argparse.Namespace) -> int:
+    """Create a backup from a connected device."""
+    import tempfile
+
+    from green2blue.ios.device import create_backup
+
+    output_dir = args.output or Path(tempfile.mkdtemp(prefix="g2b_backup_"))
+    print(f"Creating backup in: {output_dir}")
+
+    def progress(pct: float) -> None:
+        print(f"\r  Backup progress: {pct:.1f}%", end="", flush=True)
+
+    backup_path = create_backup(
+        backup_dir=output_dir,
+        udid=args.udid,
+        password=args.password,
+        progress_cb=progress,
+    )
+
+    print(f"\n\nBackup created: {backup_path}")
+    return 0
+
+
+def _cmd_device_inject(args: argparse.Namespace) -> int:
+    """Full automated pipeline: backup -> inject -> restore."""
+    import tempfile
+
+    from green2blue.ios.device import (
+        create_backup,
+        list_devices,
+        restore_backup,
+    )
+    from green2blue.models import CKStrategy
+    from green2blue.pipeline import run_pipeline
+
+    # Step 1: Find device
+    devices = list_devices()
+    if not devices:
+        print("No iOS devices connected.", file=sys.stderr)
+        return 1
+
+    target = None
+    if args.udid:
+        for d in devices:
+            if d.udid == args.udid:
+                target = d
+                break
+        if not target:
+            print(f"Device {args.udid} not found.", file=sys.stderr)
+            return 1
+    elif len(devices) == 1:
+        target = devices[0]
+    else:
+        print("Multiple devices connected. Use --udid to select one:", file=sys.stderr)
+        for d in devices:
+            print(f"  {d.udid}  {d.name} (iOS {d.ios_version})", file=sys.stderr)
+        return 1
+
+    if not target.is_paired:
+        print(f"Device {target.name} is not paired. Unlock and trust first.", file=sys.stderr)
+        return 1
+
+    # Confirm
+    if not args.yes and sys.stdin.isatty():
+        print(f"\nTarget: {target.name} (iOS {target.ios_version})")
+        print(f"  UDID: {target.udid}")
+        print(f"  Export: {args.export_zip}")
+        print("\nThis will:")
+        print("  1. Create a full backup of the device")
+        print(f"  2. Inject messages from {args.export_zip.name}")
+        print("  3. Restore the modified backup")
+        print("  4. Reboot the device")
+        try:
+            response = input("\nProceed? [y/N] ").strip().lower()
+        except EOFError:
+            return 1
+        if response not in ("y", "yes"):
+            print("Aborted.")
+            return 1
+
+    # Step 2: Create backup
+    backup_root = Path(tempfile.mkdtemp(prefix="g2b_device_"))
+    print("\nCreating backup...")
+
+    def backup_progress(pct: float) -> None:
+        print(f"\r  Backup progress: {pct:.1f}%", end="", flush=True)
+
+    backup_path = create_backup(
+        backup_dir=backup_root,
+        udid=target.udid,
+        password=args.password,
+        progress_cb=backup_progress,
+    )
+    print(f"\n  Backup saved to: {backup_path}")
+
+    # Step 3: Run injection pipeline
+    ck_strategy = CKStrategy(args.ck_strategy)
+    print("\nInjecting messages...")
+    result = run_pipeline(
+        export_path=args.export_zip,
+        backup_path_or_udid=str(backup_path),
+        country=args.country,
+        skip_duplicates=True,
+        include_attachments=True,
+        dry_run=False,
+        password=args.password,
+        ck_strategy=ck_strategy,
+    )
+
+    # Print injection summary
+    stats = result.injection_stats
+    if stats:
+        print("\n--- Injection Summary ---")
+        print(f"Messages injected: {stats.messages_inserted}")
+        print(f"Handles created:   {stats.handles_inserted}")
+        print(f"Chats created:     {stats.chats_inserted}")
+        print(f"Attachments:       {stats.attachments_inserted}")
+
+    if result.verification:
+        v = result.verification
+        status = "PASSED" if v.passed else "FAILED"
+        print(f"Verification:      {status} ({v.checks_passed}/{v.checks_run})")
+
+    # Step 4: Restore to device
+    print("\nRestoring modified backup to device...")
+
+    def restore_progress(pct: float) -> None:
+        print(f"\r  Restore progress: {pct:.1f}%", end="", flush=True)
+
+    restore_backup(
+        backup_dir=backup_root,
+        udid=target.udid,
+        password=args.password,
+        progress_cb=restore_progress,
+    )
+
+    _print_post_restore_instructions()
+
+    # Cleanup
+    if not args.keep_backup:
+        import shutil
+
+        shutil.rmtree(backup_root, ignore_errors=True)
+        print("\nTemporary backup cleaned up.")
+    else:
+        print(f"\nBackup kept at: {backup_root}")
+
+    return 0
+
+
+def _cmd_device_restore(args: argparse.Namespace) -> int:
+    """Restore an already-modified backup to a device."""
+    from green2blue.ios.device import list_devices, restore_backup
+
+    # Validate backup path
+    backup_path = args.backup_path
+    if not backup_path.exists():
+        print(f"Backup not found: {backup_path}", file=sys.stderr)
+        return 1
+
+    # Find the backup root (parent of UDID dir)
+    # The backup_path could be either the UDID dir or its parent
+    if (backup_path / "Manifest.db").exists() or (backup_path / "Manifest.mbdb").exists():
+        # User passed the UDID directory directly; parent is the backup root
+        backup_root = backup_path.parent
+    else:
+        backup_root = backup_path
+
+    # Resolve target device early to avoid confusing errors after confirmation
+    devices = list_devices()
+    if not devices:
+        print("No iOS devices connected.", file=sys.stderr)
+        return 1
+
+    if args.udid:
+        target = None
+        for d in devices:
+            if d.udid == args.udid:
+                target = d
+        if not target:
+            print(f"Device {args.udid} not found.", file=sys.stderr)
+            return 1
+    elif len(devices) == 1:
+        target = devices[0]
+    else:
+        print("Multiple devices connected. Use --udid to select one:", file=sys.stderr)
+        for d in devices:
+            print(f"  {d.udid}  {d.name} (iOS {d.ios_version})", file=sys.stderr)
+        return 1
+
+    # Confirm
+    if not args.yes and sys.stdin.isatty():
+        print(f"\nTarget: {target.name} (iOS {target.ios_version})")
+        print(f"  UDID: {target.udid}")
+        print(f"  Backup: {backup_path}")
+        print("\nThis will restore the backup and reboot the device.")
+        try:
+            response = input("Proceed? [y/N] ").strip().lower()
+        except EOFError:
+            return 1
+        if response not in ("y", "yes"):
+            print("Aborted.")
+            return 1
+
+    def progress(pct: float) -> None:
+        print(f"\r  Restore progress: {pct:.1f}%", end="", flush=True)
+
+    restore_backup(
+        backup_dir=backup_root,
+        udid=target.udid,
+        password=args.password,
+        progress_cb=progress,
+    )
+
+    _print_post_restore_instructions()
+
+    return 0

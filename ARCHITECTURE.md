@@ -35,11 +35,13 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 - **attachment.py** — Copy MMS binary files from ZIP into backup directory structure. Path: `{backup}/{hash[:2]}/{hash}`.
 - **prepare_sync.py** — Post-injection CK metadata reset for the iCloud sync reset workflow. Drops triggers, resets injected message/attachment/chat CK state, restores triggers.
 - **crypto.py** — Encrypted backup support (optional). Keybag parsing, PBKDF2 key derivation, AES key unwrap (RFC3394), AES-256-CBC file decrypt/re-encrypt.
+- **device.py** — Direct device communication via pymobiledevice3 (optional). USB backup creation, restore with correct flags, synthetic backup push. Lazy imports for optional dependency.
+- **mbdb.py** — Manifest.mbdb binary format (version 2.4) for synthetic/partial backups. MbdbRecord serialization, SyntheticBackup builder with auto-generated plists and keybag.
 
 ### Top-level
 - **pipeline.py** — Orchestrates full flow: find backup → safety copy → parse → convert → inject → copy attachments → update manifest → verify.
 - **verify.py** — Post-injection checks: SQLite integrity, foreign key consistency, join table consistency, attachment files exist, Manifest.db entry present.
-- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`, `diagnose`, `prepare-sync`. Interactive backup confirmation prompt on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
+- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`, `diagnose`, `prepare-sync`, `device` (with sub-subcommands: `list`, `backup`, `inject`, `restore`). Interactive backup confirmation prompt on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
 - **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`). Also `CKStrategy` enum (none, fake-synced, pending-upload, icloud-reset) and `generate_ck_record_id()` helper.
 - **exceptions.py** — Hierarchy with user-friendly `hint` attributes.
 
@@ -208,9 +210,55 @@ This is useful for re-preparing a backup that was injected with a different CK s
 
 `green2blue diagnose` inspects a backup's CK sync state distribution, showing which messages are at risk. Supports `--injected-only` to filter for green2blue messages and `--password` for encrypted backups.
 
+## Direct Device Communication
+
+### Overview
+
+The `device` module (`ios/device.py`) enables direct USB backup/restore operations via pymobiledevice3, eliminating the need for Finder/iTunes. This is an optional dependency (`pip install green2blue[device]`).
+
+### Synthetic Backup Format (Manifest.mbdb)
+
+The `ios/mbdb.py` module implements the version 2.4 binary manifest format used by TrollRestore/Nugget for partial/overlay restores:
+
+```
+Manifest.mbdb binary layout:
+  Header: b"mbdb\x05\x00"
+  Records: [domain, filename, link, hash, key, mode, inode, uid, gid, mtime, atime, ctime, size, flags, properties...]
+  Strings: 2-byte BE length prefix, 0xFFFF = NULL
+```
+
+`SyntheticBackup` class generates a complete backup directory: `Manifest.mbdb` + `Status.plist` (Version=2.4) + `Info.plist` + `Manifest.plist` (with static BackupKeyBag).
+
+### Critical Restore Flags
+
+The key discovery from idevicebackup2 issue #1504: `RemoveItemsNotRestored=True` is required for iOS to run post-restore data migration that makes sms.db usable.
+
+```
+Full restore (SMS works):     system=True, settings=True, remove=True, reboot=True
+Partial/overlay (experimental): system=True, remove=False, reboot=True
+```
+
+`remove=True` triggers iOS data migration — without it, restored sms.db entries are invisible in Messages.app.
+
+### Two Restore Modes
+
+1. **Full restore** (`device inject` / `device restore`): Creates a full backup, injects, restores with `remove=True`. SMS data migration runs. Reliable but slow.
+2. **Synthetic push** (`push_synthetic_backup`): Overlay files without deleting existing data. Uses `remove=False`. Experimental — SMS may not work due to missing data migration.
+
+### CLI Subcommands
+
+- `green2blue device list` — Show connected devices
+- `green2blue device backup` — Create backup from device
+- `green2blue device inject <zip>` — Full automated pipeline (backup → inject → restore)
+- `green2blue device restore <path>` — Restore an already-modified backup
+
+### Lazy Imports
+
+pymobiledevice3 is imported inside functions, not at module level. This keeps the core tool working without the dependency installed. `check_pymobiledevice3()` raises `DeviceDependencyError` with an install hint.
+
 ## Design Decisions
 
-1. **Zero runtime dependencies** for the core path. Only `cryptography` is needed for encrypted backups.
+1. **Zero runtime dependencies** for the core path. Only `cryptography` is needed for encrypted backups, `pymobiledevice3` for direct device operations.
 2. **Frozen dataclasses** for all models — immutability prevents accidental mutation.
 3. **Clone-and-patch for MBFile plists** — Safer than building from scratch; reuses existing format.
 4. **Single SQLite transaction** — All writes are atomic. Failure = full rollback.

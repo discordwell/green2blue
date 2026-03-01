@@ -26,6 +26,7 @@ classifiers = [
 
 [project.optional-dependencies]
 encrypted = ["cryptography>=41.0"]
+device = ["pymobiledevice3>=4.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
