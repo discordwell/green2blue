@@ -266,8 +266,21 @@ class SMSDatabase:
         """Insert a message and return its ROWID."""
         cache_has_attachments = 1 if msg.attachments else 0
 
+        # Check if sr_ck_sync_state column exists (not present in all iOS versions)
+        if not hasattr(self, "_has_sr_ck_sync_state"):
+            cols = {
+                r[1] for r in cursor.execute(
+                    "PRAGMA table_info(message)"
+                ).fetchall()
+            }
+            self._has_sr_ck_sync_state = "sr_ck_sync_state" in cols
+
+        # Build column list and values dynamically for optional columns
+        sr_ck_cols = "\n                sr_ck_sync_state," if self._has_sr_ck_sync_state else ""
+        sr_ck_vals = "\n                0," if self._has_sr_ck_sync_state else ""
+
         cursor.execute(
-            """INSERT INTO message (
+            f"""INSERT INTO message (
                 guid, text, handle_id, service, account, account_guid,
                 date, date_read, date_delivered,
                 is_from_me, is_sent, is_delivered, is_read, is_finished,
@@ -282,8 +295,8 @@ class SMSDatabase:
                 message_action_type, message_source,
                 associated_message_type, associated_message_range_location,
                 associated_message_range_length, time_expressive_send_played,
-                ck_sync_state, ck_record_id, ck_record_change_tag,
-                sr_ck_sync_state, is_corrupt,
+                ck_sync_state, ck_record_id, ck_record_change_tag,{sr_ck_cols}
+                is_corrupt,
                 sort_id, is_spam, has_unseen_mention,
                 was_delivered_quietly, did_notify_recipient,
                 date_retracted, date_edited, was_detonated,
@@ -303,8 +316,8 @@ class SMSDatabase:
                 0, 0,
                 0, 0,
                 0, 0,
-                ?, ?, ?,
-                0, 0,
+                ?, ?, ?,{sr_ck_vals}
+                0,
                 0, 0, 0,
                 0, 0,
                 0, 0, 0,

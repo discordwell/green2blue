@@ -13,6 +13,7 @@ Flow:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import tempfile
@@ -182,7 +183,8 @@ def run_pipeline(
                             result.total_attachments_copied += 1
 
             sms_db_size = sms_db_file.stat().st_size
-            manifest.update_sms_db_entry(sms_db_size)
+            sms_db_digest = hashlib.sha1(sms_db_file.read_bytes()).digest()
+            manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
 
         # Update attachment sizes in sms.db
         if attachment_sizes:
@@ -381,9 +383,10 @@ def _run_encrypted_pipeline(
                                 attachment_sizes[att.guid] = file_size
                                 result.total_attachments_copied += 1
 
-                # Update sms.db entry in temp Manifest.db (plaintext size)
+                # Update sms.db entry in temp Manifest.db (plaintext size + digest)
                 sms_db_size = temp_sms_path.stat().st_size
-                manifest.update_sms_db_entry(sms_db_size)
+                sms_db_digest = hashlib.sha1(temp_sms_path.read_bytes()).digest()
+                manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
 
             # Step 10: Update attachment sizes in temp sms.db
             if attachment_sizes:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import plistlib
 import sqlite3
 
-from green2blue.ios.manifest import compute_file_id
+from green2blue.ios.manifest import ManifestDB, compute_file_id
 from green2blue.verify import verify_backup
 
 
@@ -52,6 +54,127 @@ class TestVerifyBackup:
 
         result = verify_backup(sample_backup_dir, sms_db)
         assert not result.passed
+
+
+    def test_digest_mismatch_detected(self, sample_backup_dir):
+        """Verification should fail when Manifest.db digest doesn't match sms.db."""
+        sms_hash = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+        sms_db = sample_backup_dir / sms_hash[:2] / sms_hash
+
+        # Build an MBFile blob with a WRONG digest
+        wrong_digest = b"\x00" * 20
+        actual_size = sms_db.stat().st_size
+        blob = plistlib.dumps({
+            "$archiver": "NSKeyedArchiver",
+            "$version": 100000,
+            "$top": {"root": plistlib.UID(1)},
+            "$objects": [
+                "$null",
+                {
+                    "Size": actual_size,
+                    "LastModified": 1700000000,
+                    "Digest": plistlib.UID(2),
+                    "$class": plistlib.UID(3),
+                },
+                wrong_digest,
+                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+            ],
+        }, fmt=plistlib.FMT_BINARY)
+
+        # Update Manifest.db with the wrong-digest blob
+        manifest_path = sample_backup_dir / "Manifest.db"
+        conn = sqlite3.connect(manifest_path)
+        conn.execute(
+            "UPDATE Files SET file = ? WHERE fileID = ?",
+            (blob, sms_hash),
+        )
+        conn.commit()
+        conn.close()
+
+        result = verify_backup(sample_backup_dir, sms_db, manifest_path)
+        assert not result.passed
+        assert any("digest mismatch" in e for e in result.errors)
+
+    def test_correct_digest_passes(self, sample_backup_dir):
+        """Verification should pass when Manifest.db digest matches sms.db."""
+        sms_hash = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+        sms_db = sample_backup_dir / sms_hash[:2] / sms_hash
+
+        # Build an MBFile blob with the CORRECT digest
+        actual_digest = hashlib.sha1(sms_db.read_bytes()).digest()
+        actual_size = sms_db.stat().st_size
+        blob = plistlib.dumps({
+            "$archiver": "NSKeyedArchiver",
+            "$version": 100000,
+            "$top": {"root": plistlib.UID(1)},
+            "$objects": [
+                "$null",
+                {
+                    "Size": actual_size,
+                    "LastModified": 1700000000,
+                    "Digest": plistlib.UID(2),
+                    "$class": plistlib.UID(3),
+                },
+                actual_digest,
+                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+            ],
+        }, fmt=plistlib.FMT_BINARY)
+
+        manifest_path = sample_backup_dir / "Manifest.db"
+        conn = sqlite3.connect(manifest_path)
+        conn.execute(
+            "UPDATE Files SET file = ? WHERE fileID = ?",
+            (blob, sms_hash),
+        )
+        conn.commit()
+        conn.close()
+
+        result = verify_backup(sample_backup_dir, sms_db, manifest_path)
+        assert result.passed
+
+    def test_update_sms_db_entry_fixes_digest(self, sample_backup_dir):
+        """update_sms_db_entry with new_digest should fix a stale digest."""
+        sms_hash = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+        sms_db = sample_backup_dir / sms_hash[:2] / sms_hash
+
+        # Build an MBFile blob with a WRONG digest
+        wrong_digest = b"\x00" * 20
+        actual_size = sms_db.stat().st_size
+        blob = plistlib.dumps({
+            "$archiver": "NSKeyedArchiver",
+            "$version": 100000,
+            "$top": {"root": plistlib.UID(1)},
+            "$objects": [
+                "$null",
+                {
+                    "Size": actual_size,
+                    "LastModified": 1700000000,
+                    "Digest": plistlib.UID(2),
+                    "$class": plistlib.UID(3),
+                },
+                wrong_digest,
+                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+            ],
+        }, fmt=plistlib.FMT_BINARY)
+
+        # Put the wrong-digest blob in Manifest.db
+        manifest_path = sample_backup_dir / "Manifest.db"
+        conn = sqlite3.connect(manifest_path)
+        conn.execute(
+            "UPDATE Files SET file = ? WHERE fileID = ?",
+            (blob, sms_hash),
+        )
+        conn.commit()
+        conn.close()
+
+        # Now call update_sms_db_entry with the correct digest
+        correct_digest = hashlib.sha1(sms_db.read_bytes()).digest()
+        with ManifestDB(manifest_path) as manifest:
+            manifest.update_sms_db_entry(actual_size, new_digest=correct_digest)
+
+        # Verification should now pass
+        result = verify_backup(sample_backup_dir, sms_db, manifest_path)
+        assert result.passed
 
 
 class TestJoinTableConsistency:

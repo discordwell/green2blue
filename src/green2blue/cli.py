@@ -532,6 +532,7 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
 
 def _cmd_prepare_sync(args: argparse.Namespace) -> int:
     """Execute the prepare-sync command."""
+    import hashlib
     import os
     import tempfile
 
@@ -540,6 +541,7 @@ def _cmd_prepare_sync(args: argparse.Namespace) -> int:
 
     backup_info = find_backup(args.backup, args.backup_root)
     sms_db_path = get_sms_db_path(backup_info.path)
+    manifest_path = backup_info.path / "Manifest.db"
     temp_path = None
 
     try:
@@ -562,17 +564,34 @@ def _cmd_prepare_sync(args: argparse.Namespace) -> int:
             os.close(fd)
             temp_path = Path(tmp)
             temp_path.write_bytes(decrypted_data)
-            temp_manifest.unlink(missing_ok=True)
 
             result = prepare_sync(temp_path)
 
-            # Re-encrypt and write back
+            # Update Manifest.db with new size and digest
+            sms_db_digest = hashlib.sha1(temp_path.read_bytes()).digest()
+            sms_db_size = temp_path.stat().st_size
+            with ManifestDB(temp_manifest) as manifest:
+                manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
+
+            # Re-encrypt sms.db and write back
             re_encrypted = eb.encrypt_db_file(
                 temp_path.read_bytes(), sms_enc_key, sms_prot_class,
             )
             sms_db_path.write_bytes(re_encrypted)
+
+            # Re-encrypt Manifest.db and write back
+            eb.re_encrypt_manifest_db(temp_manifest)
+            temp_manifest.unlink(missing_ok=True)
         else:
             result = prepare_sync(sms_db_path)
+
+            # Update Manifest.db with new size and digest
+            sms_db_digest = hashlib.sha1(sms_db_path.read_bytes()).digest()
+            sms_db_size = sms_db_path.stat().st_size
+            from green2blue.ios.manifest import ManifestDB
+
+            with ManifestDB(manifest_path) as manifest:
+                manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
 
         # Print summary
         print(f"\nBackup: {backup_info.device_name} (iOS {backup_info.product_version})")

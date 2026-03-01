@@ -47,11 +47,15 @@ class ManifestDB:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def update_sms_db_entry(self, new_size: int) -> str:
-        """Update the sms.db entry in Manifest.db with new size.
+    def update_sms_db_entry(
+        self, new_size: int, new_digest: bytes | None = None
+    ) -> str:
+        """Update the sms.db entry in Manifest.db with new size and digest.
 
         Args:
             new_size: New file size of sms.db in bytes.
+            new_digest: New SHA1 digest of sms.db (20 bytes). If provided,
+                updates the Digest field in the MBFile blob.
 
         Returns:
             The fileID (hash) of the sms.db entry.
@@ -64,7 +68,7 @@ class ManifestDB:
         row = cursor.fetchone()
 
         if row and row["file"]:
-            new_blob = patch_mbfile_blob(row["file"], new_size)
+            new_blob = patch_mbfile_blob(row["file"], new_size, new_digest=new_digest)
         else:
             new_blob = build_mbfile_blob(new_size)
 

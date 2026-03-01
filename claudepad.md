@@ -1,5 +1,18 @@
 # Session Summaries
 
+## 2026-02-28T20:00Z - CloudKit metadata for iCloud Messages sync survival
+- Added CKStrategy enum (none/fake-synced/pending-upload) to models.py
+- Added ck_sync_state, ck_record_id, ck_record_change_tag fields to iOSMessage
+- Added ck_sync_state, cloudkit_record_id fields to iOSChat
+- Updated sms_db.py INSERT SQL for message and chat tables to include CK columns
+- Added _apply_ck_strategy() using dataclasses.replace() in message_converter.py
+- Added --ck-strategy flag to CLI inject, wired through pipeline
+- Added `diagnose` subcommand (CK sync state distribution, --injected-only filter)
+- Created scripts/wet_test_sync.py: 6-strategy A/B test matrix for real device testing
+- 19 new tests (8 sms_db + 11 converter), 244 total, lint clean
+- Code review: refactored manual dataclass reconstruction to dataclasses.replace()
+- Updated ARCHITECTURE.md with CloudKit sync metadata section
+
 ## 2026-02-28T12:00Z - Smart backup selection + restore checkpoint rename
 - `find_backup()` now auto-selects most recent uninjected backup when multiple exist (no more MultipleBackupsError)
 - `list_backups()` filters out `.restore_checkpoint_` directories
@@ -47,7 +60,7 @@
 - MMS `date` is in seconds; SMS `date` is in milliseconds
 
 ## Test architecture
-- 207 tests across 12 test files
+- 244 tests across 12 test files
 - conftest.py has both legacy and real-format fixtures
 - Pipeline tests create full synthetic iPhone backups with sms.db, Manifest.db, plists
 - Encrypted tests build synthetic keybags with low iteration counts for fast PBKDF2
@@ -58,3 +71,17 @@
 - Real iOS NSKeyedArchiver blobs use `plistlib.UID` references for EncryptionKey (not inline bytes)
 - iOS stores plaintext file size in MBFile blobs even for encrypted files
 - Protection class 3 (`NSFileProtectionCompleteUntilFirstUserAuthentication`) is standard for SMS data
+
+## Backup management gotchas
+- Real sms.db has 22 triggers calling iOS internal functions (verify_chat, etc.) - MUST drop before direct SQL injection
+- Finder caches backup list via a system service - renaming directories with `.hidden` suffix is NOT enough to hide backups
+- Must physically move backup directories out of MobileSync/Backup/ for Finder to stop showing them
+- Unplugging and replugging iPhone may be needed to refresh Finder's backup list
+- Restore checkpoint + secondary backups all show same timestamp in Finder (from shared Info.plist Date field), making it impossible for users to distinguish — hide extras before restore
+
+## CloudKit sync test in progress
+- 6 test messages injected into main backup (00008101-000E60C43C40001E) with password `glorious1`
+- Restore checkpoint moved to /tmp/ during restore (must move back after)
+- Secondary backup (031457) also moved to /tmp/
+- Test phones: +15550000001 through +15550000006 (Tests A-F)
+- After restore+sync, run: `python scripts/wet_test_sync.py --diagnose <backup_path> --password glorious1`

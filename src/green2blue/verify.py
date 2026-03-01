@@ -9,7 +9,9 @@ Checks performed after injecting messages into a backup:
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import plistlib
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -239,16 +241,54 @@ def _check_manifest(
     sms_db_path: Path,
     result: VerificationResult,
 ) -> None:
-    """Check that Manifest.db has an entry for sms.db."""
+    """Check that Manifest.db has a valid entry for sms.db with correct digest."""
     result.checks_run += 1
     try:
         with ManifestDB(manifest_db_path) as manifest:
             file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
             entry = manifest.get_entry(file_id)
-            if entry:
-                result.checks_passed += 1
-                logger.debug("Manifest.db sms.db entry: PRESENT")
-            else:
+            if not entry:
                 result.add_error("sms.db entry missing from Manifest.db")
+                return
+
+            result.checks_passed += 1
+            logger.debug("Manifest.db sms.db entry: PRESENT")
+
+            # Check digest if the MBFile blob has one
+            blob = entry.get("file")
+            if blob:
+                stored_digest = _extract_manifest_digest(blob)
+                if stored_digest is not None:
+                    result.checks_run += 1
+                    actual_digest = hashlib.sha1(sms_db_path.read_bytes()).digest()
+                    if stored_digest == actual_digest:
+                        result.checks_passed += 1
+                        logger.debug("Manifest.db sms.db digest: MATCH")
+                    else:
+                        result.add_error(
+                            f"sms.db digest mismatch: manifest={stored_digest.hex()}, "
+                            f"actual={actual_digest.hex()}"
+                        )
     except Exception as e:
         result.add_error(f"Manifest check error: {e}")
+
+
+def _extract_manifest_digest(blob: bytes) -> bytes | None:
+    """Extract the Digest field from an MBFile NSKeyedArchiver blob."""
+    try:
+        plist = plistlib.loads(blob)
+        objects = plist.get("$objects")
+        if not objects:
+            return None
+        for obj in objects:
+            if isinstance(obj, dict) and "Digest" in obj:
+                digest_ref = obj["Digest"]
+                if isinstance(digest_ref, plistlib.UID):
+                    resolved = objects[digest_ref]
+                    if isinstance(resolved, bytes):
+                        return resolved
+                elif isinstance(digest_ref, bytes):
+                    return digest_ref
+    except Exception:
+        pass
+    return None
