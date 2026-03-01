@@ -16,9 +16,20 @@ from __future__ import annotations
 import hashlib
 import logging
 import sqlite3
+import uuid
+from dataclasses import replace as dc_replace
 from pathlib import Path
 
 from green2blue.exceptions import DatabaseError
+
+# UTI to preview_generation_state mapping (real iOS values)
+_UTI_PREVIEW_STATE: dict[str, int] = {
+    "public.jpeg": 1, "public.png": 1, "public.heic": 1,
+    "public.heif": 1, "public.webp": 1, "public.tiff": 1,
+    "com.compuserve.gif": 1, "com.microsoft.bmp": 1,
+    "public.mpeg-4": 2, "public.3gpp": 2, "public.3gpp2": 2,
+    "com.apple.quicktime-movie": 2, "org.webmproject.webm": 2,
+}
 from green2blue.ios.trigger_utils import (
     drop_triggers,
     restore_triggers,
@@ -134,7 +145,6 @@ class SMSDatabase:
                 else:
                     # Apply detected account_id if chat has none
                     if detected_account_id and not chat.account_id:
-                        from dataclasses import replace as dc_replace
                         chat = dc_replace(chat, account_id=detected_account_id)
                     rowid = self._insert_chat(cursor, chat)
                     chat_rowids[chat.guid] = rowid
@@ -265,9 +275,7 @@ class SMSDatabase:
 
     def _insert_chat(self, cursor: sqlite3.Cursor, chat: iOSChat) -> int:
         """Insert a chat and return its ROWID."""
-        import uuid as _uuid
-
-        group_id = str(_uuid.uuid4()).upper()
+        group_id = str(uuid.uuid4()).upper()
         cursor.execute(
             """INSERT INTO chat (guid, style, state, account_id, chat_identifier,
                                  service_name, display_name, account_login,
@@ -382,20 +390,7 @@ class SMSDatabase:
         self, cursor: sqlite3.Cursor, att: iOSAttachment, is_outgoing: bool
     ) -> int:
         """Insert an attachment and return its ROWID."""
-        # Determine preview_generation_state from UTI
-        # Real iOS: 1 = image preview generated, 2 = video preview generated
-        if att.uti.startswith("public.") and att.uti in (
-            "public.jpeg", "public.png", "public.heic", "public.heif",
-            "public.webp", "public.tiff",
-        ) or att.uti in ("com.compuserve.gif", "com.microsoft.bmp"):
-            preview_state = 1
-        elif att.uti in (
-            "public.mpeg-4", "public.3gpp", "public.3gpp2",
-            "com.apple.quicktime-movie", "org.webmproject.webm",
-        ):
-            preview_state = 2
-        else:
-            preview_state = 0
+        preview_state = _UTI_PREVIEW_STATE.get(att.uti, 0)
 
         cursor.execute(
             """INSERT INTO attachment (

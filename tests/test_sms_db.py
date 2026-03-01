@@ -294,7 +294,7 @@ class TestAttachmentInsertion:
             uti="public.jpeg",
             transfer_name="photo.jpg",
             total_bytes=1024,
-            created_date=721692800000000000,
+            created_date=721692800,  # Apple epoch seconds
         )
         msg = iOSMessage(
             guid="green2blue:att-test",

@@ -110,6 +110,7 @@ class TestPrepareSyncMessages:
 
         assert result.messages_updated == 0
         assert result.messages_already_clean == 2
+        assert result.chats_token_cleared == 0
 
     def test_does_not_modify_non_injected_messages(self, sms_db_with_injected: Path) -> None:
         """Non-green2blue messages are left untouched."""
