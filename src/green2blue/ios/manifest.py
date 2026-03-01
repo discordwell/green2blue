@@ -70,7 +70,7 @@ class ManifestDB:
         if row and row["file"]:
             new_blob = patch_mbfile_blob(row["file"], new_size, new_digest=new_digest)
         else:
-            new_blob = build_mbfile_blob(new_size)
+            new_blob = build_mbfile_blob(new_size, digest=new_digest)
 
         cursor.execute(
             "UPDATE Files SET file = ? WHERE fileID = ?",
@@ -99,6 +99,9 @@ class ManifestDB:
     ) -> str:
         """Add an attachment file entry to Manifest.db.
 
+        Also creates flags=2 directory entries for all parent directories
+        that don't already exist (required by iOS restore).
+
         Args:
             relative_path: Path within the domain, e.g.,
                           'Library/SMS/Attachments/ab/cd/UUID/photo.jpg'.
@@ -110,6 +113,9 @@ class ManifestDB:
         Returns:
             The fileID (hash) for the new entry.
         """
+        # Ensure parent directory entries exist first
+        self._ensure_directory_entries(relative_path, domain)
+
         file_id = compute_file_id(domain, relative_path)
         blob = build_mbfile_blob(
             file_size,
@@ -126,6 +132,46 @@ class ManifestDB:
         self.conn.commit()
         logger.debug("Added attachment entry: %s (%d bytes)", relative_path, file_size)
         return file_id
+
+    def _ensure_directory_entries(self, relative_path: str, domain: str) -> None:
+        """Create flags=2 directory entries for all parent directories.
+
+        iOS restore expects directory entries in Manifest.db for each parent
+        path component. This creates any missing entries.
+
+        Args:
+            relative_path: File path within the domain.
+            domain: The backup domain.
+        """
+        from pathlib import PurePosixPath
+
+        cursor = self.conn.cursor()
+        path = PurePosixPath(relative_path)
+
+        # Walk up the parent chain, collecting directories to create
+        parents = list(path.parents)
+        # PurePosixPath('.').parents includes '.', skip it
+        parents = [p for p in parents if str(p) != "."]
+
+        for parent in parents:
+            parent_str = str(parent)
+            dir_file_id = compute_file_id(domain, parent_str)
+
+            # Check if entry already exists
+            cursor.execute(
+                "SELECT 1 FROM Files WHERE fileID = ?", (dir_file_id,),
+            )
+            if cursor.fetchone() is not None:
+                continue
+
+            # Build directory MBFile blob (mode=0o40755, size=0)
+            dir_blob = build_mbfile_blob(0, mode=0o40755)
+            cursor.execute(
+                """INSERT INTO Files (fileID, domain, relativePath, flags, file)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (dir_file_id, domain, parent_str, 2, dir_blob),
+            )
+            logger.debug("Created directory entry: %s/%s", domain, parent_str)
 
     def get_file_encryption_info(self, file_id: str) -> tuple[bytes, int]:
         """Extract the EncryptionKey and ProtectionClass for a file entry.

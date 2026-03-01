@@ -700,7 +700,8 @@ class TestEncryptedPipeline:
 
         conn = sqlite3.connect(temp_manifest)
         cursor = conn.execute(
-            "SELECT relativePath, file FROM Files WHERE relativePath LIKE '%Attachments%'"
+            "SELECT relativePath, file FROM Files"
+            " WHERE relativePath LIKE '%Attachments%' AND flags = 1"
         )
         rows = cursor.fetchall()
         conn.close()

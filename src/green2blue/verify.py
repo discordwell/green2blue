@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import plistlib
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from green2blue.ios.manifest import ManifestDB, compute_file_id
+from green2blue.ios.plist_utils import extract_mbfile_digest
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +257,7 @@ def _check_manifest(
             # Check digest if the MBFile blob has one
             blob = entry.get("file")
             if blob:
-                stored_digest = _extract_manifest_digest(blob)
+                stored_digest = extract_mbfile_digest(blob)
                 if stored_digest is not None:
                     result.checks_run += 1
                     actual_digest = hashlib.sha1(sms_db_path.read_bytes()).digest()
@@ -273,22 +273,3 @@ def _check_manifest(
         result.add_error(f"Manifest check error: {e}")
 
 
-def _extract_manifest_digest(blob: bytes) -> bytes | None:
-    """Extract the Digest field from an MBFile NSKeyedArchiver blob."""
-    try:
-        plist = plistlib.loads(blob)
-        objects = plist.get("$objects")
-        if not objects:
-            return None
-        for obj in objects:
-            if isinstance(obj, dict) and "Digest" in obj:
-                digest_ref = obj["Digest"]
-                if isinstance(digest_ref, plistlib.UID):
-                    resolved = objects[digest_ref]
-                    if isinstance(resolved, bytes):
-                        return resolved
-                elif isinstance(digest_ref, bytes):
-                    return digest_ref
-    except Exception:
-        pass
-    return None

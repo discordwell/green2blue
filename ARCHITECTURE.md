@@ -30,8 +30,8 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 - **sms_db.py** — Core injection into sms.db. Handle/chat creation with dedup. Message insertion with ~35 columns. Attachment insertion. Join table management. Trigger drop/restore. Single-transaction safety. Generates `message_summary_info` and `attributedBody` blobs.
 - **attributed_body.py** — Generate `attributedBody` typedstream blobs (Apple NSArchiver format, NOT NSKeyedArchiver). Every iOS message with text has this blob; it contains an NSAttributedString with the text and `__kIMMessagePartAttributeName = 0` attribute. Uses the compact NSAttributedString (non-mutable) variant. Verified byte-identical against real iOS 26.2 sms.db (100% match on 7,499+ simple messages). Schema dynamically detected.
 - **message_summary.py** — Generate `message_summary_info` binary plist blobs. Every iOS message with text has this blob; it contains metadata keys (`cmmS\x10`, `cmmAO`, etc.). For SMS messages, the minimal blob `{'cmmS\x10': 0, 'cmmAO': 0}` matches 80%+ of real iOS messages. The schema is dynamically detected so older iOS versions without this column are unaffected.
-- **manifest.py** — Update Manifest.db with new file sizes (sms.db) and new entries (attachments). Computes fileID as `SHA1('{domain}-{relativePath}')`.
-- **plist_utils.py** — NSKeyedArchiver binary plist construction for MBFile objects. Clone-and-patch strategy preferred; build-from-scratch fallback.
+- **manifest.py** — Update Manifest.db with new file sizes (sms.db) and new entries (attachments). Computes fileID as `SHA1('{domain}-{relativePath}')`. Creates `flags=2` directory entries for all parent paths of injected attachments (required by iOS restore).
+- **plist_utils.py** — NSKeyedArchiver binary plist construction for MBFile objects. Uses plistlib roundtrip for digest patching (avoiding raw byte search corruption). Raw patching used only for Size/LastModified when no digest change needed.
 - **attachment.py** — Copy MMS binary files from ZIP into backup directory structure. Path: `{backup}/{hash[:2]}/{hash}`.
 - **prepare_sync.py** — Post-injection CK metadata reset for the iCloud sync reset workflow. Drops triggers, resets injected message/attachment/chat CK state, restores triggers.
 - **crypto.py** — Encrypted backup support (optional). Keybag parsing, PBKDF2 key derivation, AES key unwrap (RFC3394), AES-256-CBC file decrypt/re-encrypt.
@@ -80,7 +80,8 @@ Real iOS 26.2+ uses the `any;-;` prefix for all SMS chats (confirmed from 3,151 
 ### Field Matching (Real iOS 26.2 Comparison)
 Injection output is validated against real iOS backup data. Key field mappings:
 - **message.version** = 10 (not 1)
-- **message.account / account_guid** = NULL for SMS (not 'p:0')
+- **message.account** = `P:+{owner_phone}` (auto-detected from most frequent value in existing messages; 81% of real SMS). Falls back to NULL if no existing messages.
+- **message.account_guid** = device UUID (auto-detected from existing messages; consistent across all messages on a device). Falls back to NULL if no existing messages.
 - **message.ck_record_id / ck_record_change_tag** = `''` (empty string, not NULL) for unsynced messages
 - **message.was_data_detected** = 1, **has_dd_results** = 0 (iOS populates after data detection runs)
 - **message.is_delivered** = 1 for both incoming and outgoing

@@ -21,18 +21,19 @@ def patch_mbfile_blob(
 ) -> bytes:
     """Patch an existing MBFile NSKeyedArchiver blob with new size/mtime/digest.
 
-    Uses raw binary patching to avoid plistlib roundtrip corruption.
-    plistlib re-serializes binary plists with different encoding (key order,
-    offset table layout), which iOS rejects as a corrupt backup.
+    When only patching Size/LastModified, uses raw binary patching to preserve
+    the exact byte layout of real iOS blobs.
 
-    Falls back to plistlib-based patching only if raw patching fails.
+    When patching Digest, always uses plistlib roundtrip to avoid the risk of
+    blind byte search matching Size/LastModified patterns inside the 20-byte
+    digest data and corrupting it.
 
     Args:
         existing_blob: The original binary plist blob from Manifest.db.
         new_size: New file size in bytes.
         new_mtime: New modification time as Unix timestamp. Defaults to now.
-        new_digest: New SHA1 digest (20 bytes). If provided and the blob has a
-            Digest field, it will be updated.
+        new_digest: New SHA1 digest (20 bytes). If provided, the Digest field
+            will be updated or added.
 
     Returns:
         Updated binary plist blob.
@@ -40,43 +41,66 @@ def patch_mbfile_blob(
     if new_mtime is None:
         new_mtime = time.time()
 
-    result = _try_raw_patch(existing_blob, new_size, int(new_mtime), new_digest)
+    # When digest patching is needed, use plistlib roundtrip to avoid
+    # corruption from blind byte search in raw patching.
+    if new_digest is not None:
+        return _patch_via_plistlib(
+            existing_blob, new_size, int(new_mtime), new_digest,
+        )
+
+    # Size/LastModified only: try raw patching first
+    result = _try_raw_patch(existing_blob, new_size, int(new_mtime))
     if result is not None:
         return result
 
-    # Fallback: plistlib roundtrip (may not work for real iOS backups)
+    # Fallback: plistlib roundtrip
+    return _patch_via_plistlib(existing_blob, new_size, int(new_mtime), None)
+
+
+def _patch_via_plistlib(
+    existing_blob: bytes,
+    new_size: int,
+    new_mtime: int,
+    new_digest: bytes | None,
+) -> bytes:
+    """Patch an MBFile blob using plistlib parse/serialize roundtrip.
+
+    This is safe for Manifest.db MBFile blobs. It correctly handles adding
+    or updating the Digest field.
+    """
     try:
         plist = plistlib.loads(existing_blob)
     except Exception:
-        return build_mbfile_blob(new_size, new_mtime)
+        return build_mbfile_blob(new_size, float(new_mtime), digest=new_digest)
 
     objects = plist.get("$objects")
     if not objects:
-        return build_mbfile_blob(new_size, new_mtime)
+        return build_mbfile_blob(new_size, float(new_mtime), digest=new_digest)
 
     for obj in objects:
         if isinstance(obj, dict):
             if "Size" in obj:
                 obj["Size"] = new_size
             if "LastModified" in obj:
-                obj["LastModified"] = int(new_mtime)
+                obj["LastModified"] = new_mtime
 
-    # Patch digest in fallback path
     if new_digest is not None:
-        _patch_digest_plistlib(objects, new_digest)
+        _patch_or_add_digest(plist, objects, new_digest)
 
     return plistlib.dumps(plist, fmt=plistlib.FMT_BINARY)
 
 
 def _try_raw_patch(
-    blob: bytes, new_size: int, new_mtime: int, new_digest: bytes | None = None
+    blob: bytes, new_size: int, new_mtime: int,
 ) -> bytes | None:
-    """Attempt to patch Size, LastModified, and Digest directly in the raw binary plist.
+    """Attempt to patch Size and LastModified directly in the raw binary plist.
 
     Binary plists store integers as type 0x1X where X encodes byte width
-    (0=1B, 1=2B, 2=4B, 3=8B). We locate the fields by first finding their
-    key strings, then patching the integer objects they reference via the
-    offset table.
+    (0=1B, 1=2B, 2=4B, 3=8B). We locate the fields by finding their values
+    via plistlib, then replacing the encoded bytes.
+
+    Only used for Size/LastModified patching. Digest patching always goes
+    through _patch_via_plistlib to avoid blind byte search corruption.
 
     Returns patched blob, or None if raw patching is not feasible.
     """
@@ -110,17 +134,8 @@ def _try_raw_patch(
         return None
 
     # Patch LastModified
-    if old_mtime is not None:
-        if not _replace_int_value(patched, old_mtime, new_mtime):
-            return None
-
-    # Patch Digest
-    if new_digest is not None:
-        old_digest = _extract_digest(objects, mbfile)
-        if old_digest is not None and not _replace_data_value(
-            patched, old_digest, new_digest
-        ):
-            return None
+    if old_mtime is not None and not _replace_int_value(patched, old_mtime, new_mtime):
+        return None
 
     return bytes(patched)
 
@@ -151,14 +166,26 @@ def _replace_int_value(blob: bytearray, old_val: int, new_val: int) -> bool:
     return False
 
 
-def _extract_digest(objects: list, mbfile: dict) -> bytes | None:
-    """Extract the Digest bytes from an MBFile dict's $objects array.
+def extract_mbfile_digest(blob: bytes) -> bytes | None:
+    """Extract the Digest field from an MBFile NSKeyedArchiver blob.
 
-    The Digest field in the MBFile dict is a plistlib.UID referencing
-    a bytes object in the $objects array.
-
-    Returns the digest bytes, or None if no Digest field exists.
+    Returns the SHA1 digest bytes (20 bytes), or None if no Digest field.
     """
+    try:
+        plist = plistlib.loads(blob)
+        objects = plist.get("$objects")
+        if not objects:
+            return None
+    except Exception:
+        return None
+    for obj in objects:
+        if isinstance(obj, dict) and "Digest" in obj:
+            return _resolve_digest_ref(objects, obj)
+    return None
+
+
+def _resolve_digest_ref(objects: list, mbfile: dict) -> bytes | None:
+    """Resolve a Digest field reference in an MBFile dict."""
     digest_ref = mbfile.get("Digest")
     if digest_ref is None:
         return None
@@ -173,26 +200,15 @@ def _extract_digest(objects: list, mbfile: dict) -> bytes | None:
     return None
 
 
-def _replace_data_value(blob: bytearray, old_data: bytes, new_data: bytes) -> bool:
-    """Replace a binary plist data value in-place.
 
-    Both old and new data must be the same length (e.g., 20-byte SHA1 hashes).
+def _patch_or_add_digest(
+    plist: dict, objects: list, new_digest: bytes,
+) -> None:
+    """Patch or add Digest in plistlib-parsed objects.
 
-    Returns True on success, False if the data wasn't found or lengths differ.
+    If the MBFile dict already has a Digest field, update it.
+    If not, add the digest as a new object and reference it via UID.
     """
-    if len(old_data) != len(new_data):
-        return False
-
-    pos = blob.find(old_data)
-    if pos == -1:
-        return False
-
-    blob[pos : pos + len(old_data)] = new_data
-    return True
-
-
-def _patch_digest_plistlib(objects: list, new_digest: bytes) -> None:
-    """Patch digest in plistlib-parsed objects (fallback path)."""
     for obj in objects:
         if isinstance(obj, dict) and "Digest" in obj:
             digest_ref = obj["Digest"]
@@ -200,7 +216,16 @@ def _patch_digest_plistlib(objects: list, new_digest: bytes) -> None:
                 objects[digest_ref] = new_digest
             else:
                 obj["Digest"] = new_digest
-            break
+            return
+
+    # No Digest field found — add one to the MBFile dict
+    for obj in objects:
+        if isinstance(obj, dict) and "Size" in obj:
+            # Insert digest bytes as a new object in $objects
+            new_uid = len(objects)
+            objects.append(new_digest)
+            obj["Digest"] = plistlib.UID(new_uid)
+            return
 
 
 def build_mbfile_blob(
@@ -209,6 +234,7 @@ def build_mbfile_blob(
     mode: int = 0o100644,
     encryption_key: bytes | None = None,
     protection_class: int = 3,
+    digest: bytes | None = None,
 ) -> bytes:
     """Build a minimal MBFile NSKeyedArchiver binary plist from scratch.
 
@@ -221,6 +247,7 @@ def build_mbfile_blob(
         mode: POSIX file mode (default: regular file, 0644).
         encryption_key: Per-file wrapped encryption key blob (for encrypted backups).
         protection_class: iOS protection class (default: 3).
+        digest: SHA1 digest of the file (20 bytes). Included if provided.
 
     Returns:
         Binary plist blob.
@@ -228,8 +255,11 @@ def build_mbfile_blob(
     if mtime is None:
         mtime = time.time()
 
+    # Class reference UID depends on how many objects we'll add
+    # $objects layout: [0]="$null", [1]=MBFile dict, [2+]=optional data, [N]=class dict
+    extra_objects: list[Any] = []
+
     mbfile_dict: dict[str, Any] = {
-        "$class": plistlib.UID(2),
         "Size": size,
         "Mode": mode,
         "LastModified": int(mtime),
@@ -241,8 +271,16 @@ def build_mbfile_blob(
         "ProtectionClass": protection_class,
     }
 
+    if digest is not None:
+        digest_uid = 2 + len(extra_objects)
+        extra_objects.append(digest)
+        mbfile_dict["Digest"] = plistlib.UID(digest_uid)
+
     if encryption_key is not None:
         mbfile_dict["EncryptionKey"] = encryption_key
+
+    class_uid = 2 + len(extra_objects)
+    mbfile_dict["$class"] = plistlib.UID(class_uid)
 
     # Build NSKeyedArchiver structure
     # $objects[0] = "$null" sentinel
@@ -254,6 +292,7 @@ def build_mbfile_blob(
         "$objects": [
             "$null",
             mbfile_dict,
+            *extra_objects,
             {
                 "$classes": ["MBFile", "NSObject"],
                 "$classname": "MBFile",
