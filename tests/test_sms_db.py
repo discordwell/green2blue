@@ -595,6 +595,76 @@ class TestCkChatId:
             assert row["ck_chat_id"].startswith("SMS;-;chat")
 
 
+class TestAccountDetection:
+    def test_detect_account_from_existing(self, empty_sms_db):
+        """Should detect SMS account string from existing messages."""
+        conn = sqlite3.connect(empty_sms_db)
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO message (guid, text, service, account, date) "
+                f"VALUES ('acct-{i}', 'hi', 'SMS', 'P:+15052289549', {i * 100})"
+            )
+        conn.commit()
+        conn.close()
+
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[_make_message()],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "SELECT account FROM message WHERE guid LIKE 'green2blue:%'"
+            )
+            row = cursor.fetchone()
+            assert row["account"] == "P:+15052289549"
+
+    def test_detect_account_guid_from_existing(self, empty_sms_db):
+        """Should detect account_guid UUID from existing messages."""
+        test_guid = "AD9A6DB5-8CDA-48CD-9819-25C5F91E775D"
+        conn = sqlite3.connect(empty_sms_db)
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO message (guid, text, service, account_guid, date) "
+                f"VALUES ('ag-{i}', 'hi', 'SMS', '{test_guid}', {i * 100})"
+            )
+        conn.commit()
+        conn.close()
+
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[_make_message()],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "SELECT account_guid FROM message WHERE guid LIKE 'green2blue:%'"
+            )
+            row = cursor.fetchone()
+            assert row["account_guid"] == test_guid
+
+    def test_empty_db_uses_null(self, empty_sms_db):
+        """No existing messages → account and account_guid should be NULL."""
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[_make_message()],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "SELECT account, account_guid FROM message WHERE guid LIKE 'green2blue:%'"
+            )
+            row = cursor.fetchone()
+            assert row["account"] is None
+            assert row["account_guid"] is None
+
+
 class TestTriggerManagement:
     def test_triggers_restored_on_success(self, empty_sms_db):
         # Add a simple trigger

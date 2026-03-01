@@ -146,9 +146,11 @@ class SMSDatabase:
                     handle_rowids[handle.id] = rowid
                     stats.handles_inserted += 1
 
-            # Detect SMS account_id and destination_caller_id from existing data
+            # Detect SMS metadata from existing data for consistency
             detected_account_id = self._detect_account_id()
             detected_caller_id = self._detect_destination_caller_id()
+            detected_account = self._detect_sms_account()
+            detected_account_guid = self._detect_account_guid()
 
             # Insert chats
             chat_rowids: dict[str, int] = {}
@@ -207,6 +209,8 @@ class SMSDatabase:
                     cursor, msg, handle_rowid,
                     destination_caller_id=detected_caller_id,
                     ck_chat_id=ck_chat_id,
+                    account_override=detected_account,
+                    account_guid_override=detected_account_guid,
                 )
                 stats.messages_inserted += 1
 
@@ -261,6 +265,46 @@ class SMSDatabase:
             "AND account_id IS NOT NULL LIMIT 1"
         ).fetchone()
         return row["account_id"] if row else ""
+
+    def _detect_sms_account(self) -> str:
+        """Detect the SMS account string from existing messages.
+
+        Real iOS sets account to 'P:+{owner_phone}' on ~81% of SMS
+        and 'E:' on ~19%. We detect the most common value.
+
+        Returns:
+            Account string (e.g., 'P:+15052289549'), or empty string.
+        """
+        cursor = self.conn.cursor()
+        row = cursor.execute(
+            "SELECT account, COUNT(*) as cnt "
+            "FROM message "
+            "WHERE account IS NOT NULL AND account != '' "
+            "AND service = 'SMS' "
+            "GROUP BY account "
+            "ORDER BY cnt DESC LIMIT 1"
+        ).fetchone()
+        return row["account"] if row else ""
+
+    def _detect_account_guid(self) -> str:
+        """Detect the account_guid from existing messages.
+
+        Real iOS uses a single device UUID for account_guid on
+        virtually all messages.
+
+        Returns:
+            Account GUID string, or empty string.
+        """
+        cursor = self.conn.cursor()
+        row = cursor.execute(
+            "SELECT account_guid, COUNT(*) as cnt "
+            "FROM message "
+            "WHERE account_guid IS NOT NULL AND account_guid != '' "
+            "AND service = 'SMS' "
+            "GROUP BY account_guid "
+            "ORDER BY cnt DESC LIMIT 1"
+        ).fetchone()
+        return row["account_guid"] if row else ""
 
     def _detect_destination_caller_id(self) -> str:
         """Detect the device owner's phone from existing messages.
@@ -353,9 +397,18 @@ class SMSDatabase:
         *,
         destination_caller_id: str = "",
         ck_chat_id: str = "",
+        account_override: str = "",
+        account_guid_override: str = "",
     ) -> int:
         """Insert a message and return its ROWID."""
         cache_has_attachments = 1 if msg.attachments else 0
+
+        # Use detected account values if the message has none
+        account = msg.account if msg.account else (account_override or None)
+        account_guid = (
+            msg.account_guid if msg.account_guid
+            else (account_guid_override or None)
+        )
 
         # Build column list and values dynamically for optional columns
         has_sr_ck = "sr_ck_sync_state" in self._msg_schema
@@ -445,8 +498,8 @@ class SMSDatabase:
                 msg.text,
                 handle_rowid,
                 msg.service,
-                msg.account,
-                msg.account_guid,
+                account,
+                account_guid,
                 msg.date,
                 msg.date_read,
                 msg.date_delivered,
