@@ -5,6 +5,7 @@ from __future__ import annotations
 import plistlib
 
 from green2blue.ios.message_summary import (
+    _IMESSAGE_BLOB,
     _SMS_BLOB,
     build_message_summary_info,
 )
@@ -72,12 +73,32 @@ class TestBuildMessageSummaryInfo:
         assert parsed == re_parsed
 
     def test_imessage_with_text_returns_blob(self):
-        """iMessage with text should also get a blob (service doesn't matter)."""
+        """iMessage with text should get a blob with ust key."""
         blob = build_message_summary_info(service="iMessage", has_text=True)
         assert blob is not None
+        parsed = plistlib.loads(blob)
+        assert parsed["ust"] is True
+        assert parsed["cmmS\x10"] == 0
+        assert parsed["cmmAO"] == 0
+
+    def test_imessage_blob_is_singleton(self):
+        """iMessage blob should be the pre-computed singleton."""
+        blob = build_message_summary_info(service="iMessage", has_text=True)
+        assert blob is _IMESSAGE_BLOB
+
+    def test_imessage_blob_differs_from_sms(self):
+        """iMessage blob should be different from SMS blob."""
+        sms_blob = build_message_summary_info(service="SMS", has_text=True)
+        im_blob = build_message_summary_info(service="iMessage", has_text=True)
+        assert sms_blob != im_blob
+
+    def test_imessage_without_text_returns_none(self):
+        """iMessage without text should get NULL."""
+        blob = build_message_summary_info(service="iMessage", has_text=False)
+        assert blob is None
 
     def test_rcs_with_text_returns_blob(self):
-        """RCS with text should also get a blob."""
+        """RCS with text should also get a blob (uses SMS blob)."""
         blob = build_message_summary_info(service="RCS", has_text=True)
         assert blob is not None
 

@@ -135,22 +135,25 @@ class SMSDatabase:
             if skip_duplicates:
                 existing_hashes = self._load_existing_message_hashes()
 
-            # Insert handles
-            handle_rowids: dict[str, int] = {}
+            # Insert handles (keyed by (id, service) to support same phone as both SMS and iMessage)
+            handle_rowids: dict[tuple[str, str], int] = {}
             for handle in result.handles:
-                if handle.id in existing_handles:
-                    handle_rowids[handle.id] = existing_handles[handle.id]
+                key = (handle.id, handle.service)
+                if key in existing_handles:
+                    handle_rowids[key] = existing_handles[key]
                     stats.handles_existing += 1
                 else:
                     rowid = self._insert_handle(cursor, handle)
-                    handle_rowids[handle.id] = rowid
+                    handle_rowids[key] = rowid
                     stats.handles_inserted += 1
 
-            # Detect SMS metadata from existing data for consistency
-            detected_account_id = self._detect_account_id()
-            detected_caller_id = self._detect_destination_caller_id()
-            detected_account = self._detect_sms_account()
-            detected_account_guid = self._detect_account_guid()
+            # Detect metadata from existing data for consistency.
+            # Use the service of the first handle to know which service we're injecting.
+            injected_service = result.handles[0].service if result.handles else "SMS"
+            detected_account_id = self._detect_account_id(injected_service)
+            detected_caller_id = self._detect_destination_caller_id(injected_service)
+            detected_account = self._detect_account(injected_service)
+            detected_account_guid = self._detect_account_guid(injected_service)
 
             # Insert chats
             chat_rowids: dict[str, int] = {}
@@ -173,14 +176,18 @@ class SMSDatabase:
                     continue
                 # For 1:1 chats, link the single handle
                 if chat.style == 45:
-                    handle_rowid = handle_rowids.get(chat.chat_identifier)
+                    handle_rowid = handle_rowids.get(
+                        (chat.chat_identifier, chat.service_name)
+                    )
                     if handle_rowid:
                         self._insert_chat_handle_join(cursor, chat_rowid, handle_rowid)
                 else:
                     # Group chat: link all handles in the identifier
                     for phone in chat.chat_identifier.split(","):
                         phone = phone.strip()
-                        handle_rowid = handle_rowids.get(phone)
+                        handle_rowid = handle_rowids.get(
+                            (phone, chat.service_name)
+                        )
                         if handle_rowid:
                             self._insert_chat_handle_join(cursor, chat_rowid, handle_rowid)
 
@@ -193,7 +200,7 @@ class SMSDatabase:
                         stats.messages_skipped += 1
                         continue
 
-                handle_rowid = handle_rowids.get(msg.handle_id)
+                handle_rowid = handle_rowids.get((msg.handle_id, msg.service))
                 if handle_rowid is None:
                     logger.warning("No handle for %r — skipping message", msg.handle_id)
                     stats.messages_skipped += 1
@@ -253,10 +260,10 @@ class SMSDatabase:
         restore_triggers(self.conn, self._saved_triggers)
         self._saved_triggers = []
 
-    def _detect_account_id(self) -> str:
-        """Detect the SMS account_id from existing chats.
+    def _detect_account_id(self, service: str = "SMS") -> str:
+        """Detect the account_id from existing chats for the given service.
 
-        Real iOS assigns a UUID to the SMS account. We read it from
+        Real iOS assigns a UUID to each service account. We read it from
         existing chats so injected chats match.
 
         Returns:
@@ -265,16 +272,18 @@ class SMSDatabase:
         cursor = self.conn.cursor()
         row = cursor.execute(
             "SELECT account_id FROM chat "
-            "WHERE service_name = 'SMS' AND account_id != '' "
-            "AND account_id IS NOT NULL LIMIT 1"
+            "WHERE service_name = ? AND account_id != '' "
+            "AND account_id IS NOT NULL LIMIT 1",
+            (service,),
         ).fetchone()
         return row["account_id"] if row else ""
 
-    def _detect_sms_account(self) -> str:
-        """Detect the SMS account string from existing messages.
+    def _detect_account(self, service: str = "SMS") -> str:
+        """Detect the account string from existing messages for the given service.
 
-        Real iOS sets account to 'P:+{owner_phone}' on ~81% of SMS
-        and 'E:' on ~19%. We detect the most common value.
+        For SMS, real iOS sets account to 'P:+{owner_phone}' on ~81%
+        and 'E:' on ~19%. For iMessage, it's typically an Apple ID email.
+        We detect the most common value.
 
         Returns:
             Account string (e.g., 'P:+15052289549'), or empty string.
@@ -284,14 +293,15 @@ class SMSDatabase:
             "SELECT account, COUNT(*) as cnt "
             "FROM message "
             "WHERE account IS NOT NULL AND account != '' "
-            "AND service = 'SMS' "
+            "AND service = ? "
             "GROUP BY account "
-            "ORDER BY cnt DESC LIMIT 1"
+            "ORDER BY cnt DESC LIMIT 1",
+            (service,),
         ).fetchone()
         return row["account"] if row else ""
 
-    def _detect_account_guid(self) -> str:
-        """Detect the account_guid from existing messages.
+    def _detect_account_guid(self, service: str = "SMS") -> str:
+        """Detect the account_guid from existing messages for the given service.
 
         Real iOS uses a single device UUID for account_guid on
         virtually all messages.
@@ -304,17 +314,18 @@ class SMSDatabase:
             "SELECT account_guid, COUNT(*) as cnt "
             "FROM message "
             "WHERE account_guid IS NOT NULL AND account_guid != '' "
-            "AND service = 'SMS' "
+            "AND service = ? "
             "GROUP BY account_guid "
-            "ORDER BY cnt DESC LIMIT 1"
+            "ORDER BY cnt DESC LIMIT 1",
+            (service,),
         ).fetchone()
         return row["account_guid"] if row else ""
 
-    def _detect_destination_caller_id(self) -> str:
-        """Detect the device owner's phone from existing messages.
+    def _detect_destination_caller_id(self, service: str = "SMS") -> str:
+        """Detect the device owner's phone from existing messages for the given service.
 
         Real iOS sets destination_caller_id to the device owner's
-        E.164 phone on virtually every SMS message. We detect it
+        E.164 phone on virtually every message. We detect it
         from the most frequent value in existing messages.
 
         Returns:
@@ -328,17 +339,18 @@ class SMSDatabase:
             "FROM message "
             "WHERE destination_caller_id IS NOT NULL "
             "AND destination_caller_id != '' "
-            "AND service = 'SMS' "
+            "AND service = ? "
             "GROUP BY destination_caller_id "
-            "ORDER BY cnt DESC LIMIT 1"
+            "ORDER BY cnt DESC LIMIT 1",
+            (service,),
         ).fetchone()
         return row["destination_caller_id"] if row else ""
 
-    def _load_existing_handles(self) -> dict[str, int]:
-        """Load existing handles as {id: ROWID}."""
+    def _load_existing_handles(self) -> dict[tuple[str, str], int]:
+        """Load existing handles as {(id, service): ROWID}."""
         cursor = self.conn.cursor()
-        cursor.execute("SELECT ROWID, id FROM handle")
-        return {row["id"]: row["ROWID"] for row in cursor.fetchall()}
+        cursor.execute("SELECT ROWID, id, service FROM handle")
+        return {(row["id"], row["service"]): row["ROWID"] for row in cursor.fetchall()}
 
     def _load_existing_chats(self) -> dict[str, int]:
         """Load existing chats as {guid: ROWID}."""

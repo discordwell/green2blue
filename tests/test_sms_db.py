@@ -17,20 +17,22 @@ from green2blue.models import (
 )
 
 
-def _make_handle(phone="+12025551234"):
-    return iOSHandle(id=phone, country="us", service="SMS")
+def _make_handle(phone="+12025551234", service="SMS"):
+    return iOSHandle(id=phone, country="us", service=service)
 
 
-def _make_chat(phone="+12025551234"):
+def _make_chat(phone="+12025551234", service="SMS"):
+    account_login = "e:" if service == "iMessage" else "E:"
     return iOSChat(
         guid=f"any;-;{phone}",
         style=45,
         chat_identifier=phone,
-        service_name="SMS",
+        service_name=service,
+        account_login=account_login,
     )
 
 
-def _make_message(phone="+12025551234", text="hello", date=721692800000000000):
+def _make_message(phone="+12025551234", text="hello", date=721692800000000000, service="SMS"):
     return iOSMessage(
         guid=f"green2blue:test-{date}",
         text=text,
@@ -39,7 +41,7 @@ def _make_message(phone="+12025551234", text="hello", date=721692800000000000):
         date_read=date,
         date_delivered=0,
         is_from_me=False,
-        service="SMS",
+        service=service,
         chat_identifier=phone,
     )
 
@@ -846,3 +848,150 @@ class TestReducedSchema:
             assert "preview_generation_state" not in db._att_schema
             assert "original_guid" not in db._att_schema
             assert "sr_ck_sync_state" not in db._att_schema
+
+
+class TestCompositeHandleKey:
+    def test_same_phone_different_service_both_inserted(self, empty_sms_db):
+        """Same phone as SMS and iMessage should create two separate handles."""
+        sms_result = _make_result(
+            handles=[_make_handle("+12025551234")],
+            chats=[_make_chat("+12025551234")],
+            messages=[_make_message("+12025551234", date=100000000)],
+        )
+        im_result = _make_result(
+            handles=[_make_handle(service="iMessage", phone="+12025551234")],
+            chats=[_make_chat(service="iMessage", phone="+12025551234")],
+            messages=[_make_message(
+                service="iMessage", phone="+12025551234", text="imsg", date=200000000,
+            )],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            stats1 = db.inject(sms_result)
+            assert stats1.handles_inserted == 1
+
+            stats2 = db.inject(im_result)
+            assert stats2.handles_inserted == 1
+            assert stats2.handles_existing == 0
+
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT COUNT(*) as cnt FROM handle")
+            assert cursor.fetchone()["cnt"] == 2
+
+            cursor.execute("SELECT id, service FROM handle ORDER BY ROWID")
+            rows = cursor.fetchall()
+            services = {(r["id"], r["service"]) for r in rows}
+            assert ("+12025551234", "SMS") in services
+            assert ("+12025551234", "iMessage") in services
+
+    def test_same_phone_same_service_deduped(self, empty_sms_db):
+        """Same phone and service should be deduped."""
+        result1 = _make_result(
+            handles=[_make_handle("+12025551234")],
+            chats=[_make_chat("+12025551234")],
+            messages=[_make_message("+12025551234", date=100000000)],
+        )
+        result2 = _make_result(
+            handles=[_make_handle("+12025551234")],
+            chats=[_make_chat("+12025551234")],
+            messages=[_make_message("+12025551234", text="second", date=200000000)],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result1)
+            stats2 = db.inject(result2)
+            assert stats2.handles_existing == 1
+            assert stats2.handles_inserted == 0
+
+    def test_load_existing_handles_composite_key(self, empty_sms_db):
+        """_load_existing_handles should return {(id, service): ROWID}."""
+        conn = sqlite3.connect(empty_sms_db)
+        conn.execute(
+            "INSERT INTO handle (id, country, service) VALUES (?, ?, ?)",
+            ("+12025551234", "us", "SMS"),
+        )
+        conn.execute(
+            "INSERT INTO handle (id, country, service) VALUES (?, ?, ?)",
+            ("+12025551234", "us", "iMessage"),
+        )
+        conn.commit()
+        conn.close()
+
+        with SMSDatabase(empty_sms_db) as db:
+            handles = db._load_existing_handles()
+            assert ("+12025551234", "SMS") in handles
+            assert ("+12025551234", "iMessage") in handles
+            assert handles[("+12025551234", "SMS")] != handles[("+12025551234", "iMessage")]
+
+
+class TestIMessageInjection:
+    def test_inject_imessage(self, empty_sms_db):
+        """iMessage injection should set correct service fields."""
+        result = _make_result(
+            handles=[_make_handle(service="iMessage")],
+            chats=[_make_chat(service="iMessage")],
+            messages=[_make_message(service="iMessage")],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            stats = db.inject(result)
+            assert stats.messages_inserted == 1
+
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT service FROM message")
+            assert cursor.fetchone()["service"] == "iMessage"
+
+            cursor.execute("SELECT service FROM handle")
+            assert cursor.fetchone()["service"] == "iMessage"
+
+            cursor.execute("SELECT service_name, account_login FROM chat")
+            row = cursor.fetchone()
+            assert row["service_name"] == "iMessage"
+            assert row["account_login"] == "e:"
+
+    def test_imessage_ck_chat_id(self, empty_sms_db):
+        """ck_chat_id should use iMessage prefix for iMessage messages."""
+        result = _make_result(
+            handles=[_make_handle(service="iMessage", phone="+12025551234")],
+            chats=[_make_chat(service="iMessage", phone="+12025551234")],
+            messages=[_make_message(service="iMessage", phone="+12025551234")],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT ck_chat_id FROM message")
+            row = cursor.fetchone()
+            assert row["ck_chat_id"] == "iMessage;-;+12025551234"
+
+    def test_imessage_chat_handle_join(self, empty_sms_db):
+        """Chat-handle join should work for iMessage handles."""
+        result = _make_result(
+            handles=[_make_handle(service="iMessage")],
+            chats=[_make_chat(service="iMessage")],
+            messages=[_make_message(service="iMessage")],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT COUNT(*) as cnt FROM chat_handle_join")
+            assert cursor.fetchone()["cnt"] == 1
+
+
+class TestServiceDetection:
+    def test_detect_account_for_imessage(self, empty_sms_db):
+        """Account detection should filter by service."""
+        conn = sqlite3.connect(empty_sms_db)
+        conn.execute(
+            "INSERT INTO message (guid, text, service, account, date) "
+            "VALUES ('sms-1', 'hi', 'SMS', 'P:+15052289549', 100)"
+        )
+        conn.execute(
+            "INSERT INTO message (guid, text, service, account, date) "
+            "VALUES ('im-1', 'hi', 'iMessage', 'e:user@icloud.com', 200)"
+        )
+        conn.commit()
+        conn.close()
+
+        with SMSDatabase(empty_sms_db) as db:
+            sms_account = db._detect_account("SMS")
+            assert sms_account == "P:+15052289549"
+
+            im_account = db._detect_account("iMessage")
+            assert im_account == "e:user@icloud.com"

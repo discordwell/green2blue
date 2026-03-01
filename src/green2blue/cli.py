@@ -119,6 +119,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="CloudKit metadata strategy for iCloud Messages sync survival (default: none)",
     )
     inject_parser.add_argument(
+        "--service",
+        type=str,
+        choices=["SMS", "iMessage"],
+        default="SMS",
+        help="Message service type: SMS (green bubbles) or iMessage (blue bubbles) (default: SMS)",
+    )
+    inject_parser.add_argument(
         "-y", "--yes",
         action="store_true",
         default=False,
@@ -310,6 +317,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="CloudKit metadata strategy (default: none)",
     )
     dev_inject_parser.add_argument(
+        "--service",
+        type=str,
+        choices=["SMS", "iMessage"],
+        default="SMS",
+        help="Message service type: SMS (green) or iMessage (blue) (default: SMS)",
+    )
+    dev_inject_parser.add_argument(
         "--keep-backup",
         action="store_true",
         default=False,
@@ -392,6 +406,7 @@ def _cmd_inject(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         password=args.password,
         ck_strategy=ck_strategy,
+        service=args.service,
     )
 
     # Print summary
@@ -916,6 +931,7 @@ def _cmd_device_inject(args: argparse.Namespace) -> int:
         dry_run=False,
         password=args.password,
         ck_strategy=ck_strategy,
+        service=args.service,
     )
 
     # Print injection summary

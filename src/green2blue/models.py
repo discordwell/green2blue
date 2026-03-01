@@ -106,7 +106,7 @@ class iOSChat:
     guid: str  # e.g., "any;-;+12025551234" or "any;-;chat<hash>"
     style: int  # 45=1:1, 43=group
     chat_identifier: str  # E.164 for 1:1, comma-separated for group
-    service_name: str  # "SMS"
+    service_name: str  # "SMS" or "iMessage"
     display_name: str = ""  # User-visible group name, empty for 1:1
     account_id: str = ""  # SMS account UUID (detected from existing chats)
     account_login: str = "E:"  # SMS account login (constant on real iOS)
@@ -139,8 +139,8 @@ class iOSMessage:
     date_read: int  # CoreData timestamp in nanoseconds, 0 if unread
     date_delivered: int  # CoreData timestamp in nanoseconds
     is_from_me: bool  # True if sent by the iPhone owner
-    service: str  # "SMS"
-    account: str | None = None  # SMS account (NULL on real iOS for SMS)
+    service: str  # "SMS" or "iMessage"
+    account: str | None = None  # Account string (NULL on real iOS for SMS)
     account_guid: str | None = None  # SMS account GUID (NULL on real iOS for SMS)
     is_read: bool = True
     is_sent: bool = False

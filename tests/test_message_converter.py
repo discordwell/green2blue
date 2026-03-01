@@ -381,3 +381,60 @@ class TestCKStrategy:
         result = convert_messages([sms1, sms2], ck_strategy=CKStrategy.FAKE_SYNCED)
         assert len(result.messages) == 2
         assert result.messages[0].ck_record_id != result.messages[1].ck_record_id
+
+
+class TestIMessageService:
+    def test_imessage_service_on_messages(self):
+        """Messages should have iMessage service when service='iMessage'."""
+        result = convert_messages([_make_sms()], service="iMessage")
+        msg = result.messages[0]
+        assert msg.service == "iMessage"
+
+    def test_imessage_service_on_handles(self):
+        """Handles should have iMessage service."""
+        result = convert_messages([_make_sms()], service="iMessage")
+        assert result.handles[0].service == "iMessage"
+
+    def test_imessage_service_on_chats(self):
+        """Chats should have iMessage service_name."""
+        result = convert_messages([_make_sms()], service="iMessage")
+        chat = result.chats[0]
+        assert chat.service_name == "iMessage"
+
+    def test_imessage_chat_account_login(self):
+        """iMessage chats should use lowercase 'e:' for account_login."""
+        result = convert_messages([_make_sms()], service="iMessage")
+        assert result.chats[0].account_login == "e:"
+
+    def test_sms_chat_account_login(self):
+        """SMS chats should use uppercase 'E:' for account_login."""
+        result = convert_messages([_make_sms()], service="SMS")
+        assert result.chats[0].account_login == "E:"
+
+    def test_default_service_is_sms(self):
+        """Default service should still be SMS."""
+        result = convert_messages([_make_sms()])
+        assert result.messages[0].service == "SMS"
+        assert result.handles[0].service == "SMS"
+        assert result.chats[0].service_name == "SMS"
+
+    def test_imessage_mms_conversion(self):
+        """MMS messages should also get iMessage service."""
+        result = convert_messages([_make_mms()], service="iMessage")
+        msg = result.messages[0]
+        assert msg.service == "iMessage"
+
+    def test_imessage_chat_guid_unchanged(self):
+        """Chat GUID should still use 'any;-;' prefix regardless of service."""
+        result = convert_messages([_make_sms()], service="iMessage")
+        assert result.chats[0].guid.startswith("any;-;")
+
+    def test_imessage_with_ck_strategy(self):
+        """iMessage service should work with CK strategies."""
+        result = convert_messages(
+            [_make_sms()], ck_strategy=CKStrategy.FAKE_SYNCED, service="iMessage",
+        )
+        msg = result.messages[0]
+        assert msg.service == "iMessage"
+        assert msg.ck_sync_state == 1
+        assert len(msg.ck_record_id) == 64

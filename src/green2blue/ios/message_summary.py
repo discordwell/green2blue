@@ -55,6 +55,14 @@ _SMS_BLOB: bytes = plistlib.dumps(
     fmt=plistlib.FMT_BINARY,
 )
 
+# iMessage blob includes `ust` (uses shared transport) = True.
+# On real iOS, ~40% of SMS also have `ust`, but it's present on virtually
+# all iMessage messages. Including it signals iMessage service.
+_IMESSAGE_BLOB: bytes = plistlib.dumps(
+    {"cmmS\x10": 0, "cmmAO": 0, "ust": True},
+    fmt=plistlib.FMT_BINARY,
+)
+
 
 def build_message_summary_info(
     *,
@@ -81,7 +89,10 @@ def build_message_summary_info(
     if not has_text:
         return None
 
-    # For SMS (the green2blue case), the minimal blob is universal.
+    if service == "iMessage":
+        return _IMESSAGE_BLOB
+
+    # For SMS, the minimal blob is universal.
     # It works for both sent and received, short and long messages,
     # with or without attachments.
     return _SMS_BLOB

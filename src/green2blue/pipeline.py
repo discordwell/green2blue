@@ -66,6 +66,7 @@ def run_pipeline(
     dry_run: bool = False,
     password: str | None = None,
     ck_strategy: CKStrategy = CKStrategy.NONE,
+    service: str = "SMS",
 ) -> PipelineResult:
     """Run the full injection pipeline.
 
@@ -79,6 +80,7 @@ def run_pipeline(
         dry_run: Parse and convert but don't modify the backup.
         password: Backup encryption password (if encrypted).
         ck_strategy: CloudKit metadata strategy for iCloud Messages survival.
+        service: Message service type ("SMS" or "iMessage").
 
     Returns:
         PipelineResult with statistics and verification results.
@@ -114,6 +116,7 @@ def run_pipeline(
             dry_run=dry_run,
             country=country,
             ck_strategy=ck_strategy,
+            service=service,
         )
 
     # Step 3: Parse export ZIP
@@ -126,7 +129,8 @@ def run_pipeline(
         # Step 4: Convert to iOS format
         logger.info("Converting messages...")
         conversion = convert_messages(
-            android_messages, country, skip_duplicates, ck_strategy=ck_strategy,
+            android_messages, country, skip_duplicates,
+            ck_strategy=ck_strategy, service=service,
         )
         result.conversion_warnings = conversion.warnings
         result.skipped_count = conversion.skipped_count
@@ -290,6 +294,7 @@ def _run_encrypted_pipeline(
     dry_run: bool = False,
     country: str = "US",
     ck_strategy: CKStrategy = CKStrategy.NONE,
+    service: str = "SMS",
 ) -> PipelineResult:
     """Run the injection pipeline for an encrypted backup.
 
@@ -340,7 +345,8 @@ def _run_encrypted_pipeline(
             # Step 6: Convert to iOS format
             logger.info("Converting messages...")
             conversion = convert_messages(
-                android_messages, country, skip_duplicates, ck_strategy=ck_strategy,
+                android_messages, country, skip_duplicates,
+                ck_strategy=ck_strategy, service=service,
             )
             result.conversion_warnings = conversion.warnings
             result.skipped_count = conversion.skipped_count

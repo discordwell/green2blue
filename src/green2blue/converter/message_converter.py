@@ -67,6 +67,7 @@ def convert_messages(
     country: str = "US",
     skip_duplicates: bool = True,
     ck_strategy: CKStrategy = CKStrategy.NONE,
+    service: str = "SMS",
 ) -> ConversionResult:
     """Convert a list of Android messages to iOS format.
 
@@ -75,6 +76,7 @@ def convert_messages(
         country: Default country for phone normalization.
         skip_duplicates: If True, skip duplicate messages based on content hash.
         ck_strategy: CloudKit metadata strategy for iCloud Messages survival.
+        service: Message service type ("SMS" or "iMessage").
 
     Returns:
         ConversionResult with iOS messages, handles, and chats.
@@ -82,8 +84,8 @@ def convert_messages(
     result = ConversionResult()
     seen_hashes: set[str] = set()
 
-    # Track handles and chats by identifier for dedup
-    handles_by_id: dict[str, iOSHandle] = {}
+    # Track handles by (id, service) for dedup (matches sms_db composite key)
+    handles_by_id: dict[tuple[str, str], iOSHandle] = {}
     chats_by_id: dict[str, iOSChat] = {}
 
     # Group messages by conversation for chat creation
@@ -92,9 +94,9 @@ def convert_messages(
     for msg in messages:
         try:
             if isinstance(msg, AndroidSMS):
-                ios_msg = _convert_sms(msg, country)
+                ios_msg = _convert_sms(msg, country, service)
             elif isinstance(msg, AndroidMMS):
-                ios_msg = _convert_mms(msg, country)
+                ios_msg = _convert_mms(msg, country, service)
             else:
                 logger.warning("Unknown message type: %s", type(msg).__name__)
                 result.skipped_count += 1
@@ -125,20 +127,22 @@ def convert_messages(
 
         # Track the handle
         handle_id = ios_msg.handle_id
-        if handle_id and handle_id not in handles_by_id:
-            handles_by_id[handle_id] = iOSHandle(
+        handle_key = (handle_id, service)
+        if handle_id and handle_key not in handles_by_id:
+            handles_by_id[handle_key] = iOSHandle(
                 id=handle_id,
                 country=country.lower(),
-                service="SMS",
+                service=service,
             )
 
         # Track group member handles too
         for member in ios_msg.group_members:
-            if member not in handles_by_id:
-                handles_by_id[member] = iOSHandle(
+            member_key = (member, service)
+            if member_key not in handles_by_id:
+                handles_by_id[member_key] = iOSHandle(
                     id=member,
                     country=country.lower(),
-                    service="SMS",
+                    service=service,
                 )
 
         # Determine conversation key
@@ -151,11 +155,14 @@ def convert_messages(
             sample = conv_messages[0]
             guid = compute_chat_guid(conv_key, sample.group_members)
             style = 43 if sample.group_members else 45
+            # iMessage uses lowercase "e:" for account_login; SMS uses "E:"
+            account_login = "e:" if service == "iMessage" else "E:"
             chat = iOSChat(
                 guid=guid,
                 style=style,
                 chat_identifier=conv_key,
-                service_name="SMS",
+                service_name=service,
+                account_login=account_login,
             )
             # Apply CK strategy to chat
             if ck_strategy != CKStrategy.NONE:
@@ -194,7 +201,7 @@ def _apply_ck_strategy_to_chat(chat: iOSChat, strategy: CKStrategy) -> iOSChat:
     return chat
 
 
-def _convert_sms(sms: AndroidSMS, country: str) -> iOSMessage | None:
+def _convert_sms(sms: AndroidSMS, country: str, service: str = "SMS") -> iOSMessage | None:
     """Convert a single Android SMS to an iOS message."""
     phone = normalize_phone(sms.address, country)
     is_from_me = sms.type == 2  # type 2 = sent
@@ -221,12 +228,12 @@ def _convert_sms(sms: AndroidSMS, country: str) -> iOSMessage | None:
         is_from_me=is_from_me,
         is_sent=is_sent,
         is_read=bool(sms.read),
-        service="SMS",
+        service=service,
         chat_identifier=phone,
     )
 
 
-def _convert_mms(mms: AndroidMMS, country: str) -> iOSMessage | None:
+def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMessage | None:
     """Convert a single Android MMS to an iOS message."""
     is_from_me = mms.msg_box == 2  # msg_box 2 = sent
 
@@ -332,7 +339,7 @@ def _convert_mms(mms: AndroidMMS, country: str) -> iOSMessage | None:
         is_from_me=is_from_me,
         is_sent=is_from_me,
         is_read=bool(mms.read),
-        service="SMS",
+        service=service,
         attachments=tuple(attachments),
         chat_identifier=chat_identifier,
         group_members=group_members,

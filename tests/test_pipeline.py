@@ -283,6 +283,48 @@ class TestFullPipeline:
         conn.close()
         assert handle_id == "+12025551234"
 
+    def test_imessage_service_injection(self, tmp_dir):
+        """Pipeline should thread service='iMessage' through to sms.db."""
+        backup_dir = _create_full_backup(tmp_dir)
+        zip_path = _create_export_zip(tmp_dir)
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            service="iMessage",
+        )
+
+        assert result.injection_stats.messages_inserted == 2
+
+        # Verify service fields in sms.db
+        sms_hash = get_sms_db_hash()
+        sms_db = backup_dir / sms_hash[:2] / sms_hash
+        conn = sqlite3.connect(sms_db)
+        conn.row_factory = sqlite3.Row
+
+        # Messages should have iMessage service
+        cursor = conn.execute("SELECT service FROM message")
+        for row in cursor.fetchall():
+            assert row["service"] == "iMessage"
+
+        # Handles should have iMessage service
+        cursor = conn.execute("SELECT service FROM handle")
+        for row in cursor.fetchall():
+            assert row["service"] == "iMessage"
+
+        # Chats should have iMessage service and lowercase account_login
+        cursor = conn.execute("SELECT service_name, account_login FROM chat")
+        for row in cursor.fetchall():
+            assert row["service_name"] == "iMessage"
+            assert row["account_login"] == "e:"
+
+        # ck_chat_id should use iMessage prefix
+        cursor = conn.execute("SELECT ck_chat_id FROM message")
+        for row in cursor.fetchall():
+            assert row["ck_chat_id"].startswith("iMessage;-;")
+
+        conn.close()
+
 
 class TestRealSMSIEFormat:
     """Tests using the real SMS Import/Export format (__sender_address / __recipient_addresses)."""
