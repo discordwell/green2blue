@@ -1,5 +1,15 @@
 # Session Summaries
 
+## 2026-02-28T22:30Z - Field-identical iOS data matching from real backup comparison
+- Compared real iOS 26.2 sms.db field-by-field against green2blue output
+- Fixed 15+ field mismatches to match real iOS behavior:
+  - message: version=10, account/account_guid=NULL, ck_record_id/tag='', was_data_detected=1, has_dd_results=1, is_delivered=True always
+  - chat: account_login='E:', server_change_token='', group_id=UUID, account_id auto-detected from existing chats
+  - attachment: created_date in seconds (not ns), start_date=0, original_guid=guid, preview_generation_state
+- Updated prepare_sync.py: CK field resets use '' not NULL, server_change_token '' not NULL
+- Updated ARCHITECTURE.md with field matching documentation
+- 258 tests pass, lint clean
+
 ## 2026-02-28T20:00Z - CloudKit metadata for iCloud Messages sync survival
 - Added CKStrategy enum (none/fake-synced/pending-upload) to models.py
 - Added ck_sync_state, ck_record_id, ck_record_change_tag fields to iOSMessage

@@ -178,7 +178,7 @@ def _apply_ck_strategy(msg: iOSMessage, strategy: CKStrategy) -> iOSMessage:
                        ck_record_change_tag="1")
     elif strategy == CKStrategy.PENDING_UPLOAD:
         return replace(msg, ck_sync_state=0, ck_record_id=record_id,
-                       ck_record_change_tag=None)
+                       ck_record_change_tag="")
     return msg
 
 
@@ -220,7 +220,6 @@ def _convert_sms(sms: AndroidSMS, country: str) -> iOSMessage | None:
         date_delivered=date_delivered_ns,
         is_from_me=is_from_me,
         is_sent=is_sent,
-        is_delivered=is_sent,
         is_read=bool(sms.read),
         service="SMS",
         chat_identifier=phone,
@@ -307,6 +306,9 @@ def _convert_mms(mms: AndroidMMS, country: str) -> iOSMessage | None:
             f"/{att_uuid}/{filename}"
         )
 
+        # created_date is in Apple epoch seconds (not nanoseconds like message.date)
+        att_created_date_s = date_ns // 1_000_000_000
+
         attachments.append(iOSAttachment(
             guid=f"green2blue-att:{att_uuid}",
             filename=ios_path,
@@ -315,7 +317,7 @@ def _convert_mms(mms: AndroidMMS, country: str) -> iOSMessage | None:
             transfer_name=filename,
             total_bytes=0,  # Updated during pipeline when file is copied
             source_data_path=part.data_path,
-            created_date=date_ns,
+            created_date=att_created_date_s,
         ))
 
     msg_guid = f"green2blue:{uuid.uuid4()}"
@@ -329,7 +331,6 @@ def _convert_mms(mms: AndroidMMS, country: str) -> iOSMessage | None:
         date_delivered=date_delivered_ns,
         is_from_me=is_from_me,
         is_sent=is_from_me,
-        is_delivered=is_from_me,
         is_read=bool(mms.read),
         service="SMS",
         attachments=tuple(attachments),

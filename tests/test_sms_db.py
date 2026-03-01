@@ -342,8 +342,8 @@ class TestCloudKitMetadata:
             cursor.execute("SELECT ck_sync_state, ck_record_id, ck_record_change_tag FROM message")
             row = cursor.fetchone()
             assert row["ck_sync_state"] == 0
-            assert row["ck_record_id"] is None
-            assert row["ck_record_change_tag"] is None
+            assert row["ck_record_id"] == ""
+            assert row["ck_record_change_tag"] == ""
 
     def test_message_fake_synced(self, empty_sms_db):
         """Messages with fake-synced strategy should have ck_sync_state=1 and record ID."""
@@ -392,7 +392,7 @@ class TestCloudKitMetadata:
             chat_identifier="+12025551234",
             ck_sync_state=0,
             ck_record_id=record_id,
-            ck_record_change_tag=None,
+            ck_record_change_tag="",
         )
         result = _make_result(
             handles=[_make_handle()],
@@ -406,7 +406,7 @@ class TestCloudKitMetadata:
             row = cursor.fetchone()
             assert row["ck_sync_state"] == 0
             assert row["ck_record_id"] == record_id
-            assert row["ck_record_change_tag"] is None
+            assert row["ck_record_change_tag"] == ""
 
     def test_chat_ck_metadata(self, empty_sms_db):
         """Chat CK metadata should be written to the chat table."""

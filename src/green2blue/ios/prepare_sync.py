@@ -69,29 +69,31 @@ def prepare_sync(db_path: Path) -> PrepareSyncResult:
 
         # --- 1. Reset CK metadata on injected messages ---
         # Find injected messages that need updating
+        # Real iOS uses empty strings (not NULL) for unsynced CK fields
         needs_update = cursor.execute(
             "SELECT COUNT(*) as cnt FROM message "
             "WHERE guid LIKE 'green2blue:%' "
-            "AND (ck_sync_state != 0 OR ck_record_id IS NOT NULL "
-            "     OR ck_record_change_tag IS NOT NULL)"
+            "AND (ck_sync_state != 0 OR (ck_record_id IS NOT NULL AND ck_record_id != '') "
+            "     OR (ck_record_change_tag IS NOT NULL AND ck_record_change_tag != ''))"
         ).fetchone()["cnt"]
         result.messages_updated = needs_update
 
         already_clean = cursor.execute(
             "SELECT COUNT(*) as cnt FROM message "
             "WHERE guid LIKE 'green2blue:%' "
-            "AND ck_sync_state = 0 AND ck_record_id IS NULL "
-            "AND ck_record_change_tag IS NULL"
+            "AND ck_sync_state = 0 "
+            "AND (ck_record_id IS NULL OR ck_record_id = '') "
+            "AND (ck_record_change_tag IS NULL OR ck_record_change_tag = '')"
         ).fetchone()["cnt"]
         result.messages_already_clean = already_clean
 
         if needs_update > 0:
             cursor.execute(
-                "UPDATE message SET ck_sync_state = 0, ck_record_id = NULL, "
-                "ck_record_change_tag = NULL "
+                "UPDATE message SET ck_sync_state = 0, ck_record_id = '', "
+                "ck_record_change_tag = '' "
                 "WHERE guid LIKE 'green2blue:%' "
-                "AND (ck_sync_state != 0 OR ck_record_id IS NOT NULL "
-                "     OR ck_record_change_tag IS NOT NULL)"
+                "AND (ck_sync_state != 0 OR (ck_record_id IS NOT NULL AND ck_record_id != '') "
+                "     OR (ck_record_change_tag IS NOT NULL AND ck_record_change_tag != ''))"
             )
 
         # --- 2. Reset CK metadata on injected attachments ---
@@ -142,9 +144,10 @@ def prepare_sync(db_path: Path) -> PrepareSyncResult:
 
             # Clear server_change_token on all affected chats
             # (forces full reconciliation for those conversations)
-            if chat["server_change_token"] is not None:
+            token = chat["server_change_token"]
+            if token is not None and token != "":
                 cursor.execute(
-                    "UPDATE chat SET server_change_token = NULL WHERE ROWID = ?",
+                    "UPDATE chat SET server_change_token = '' WHERE ROWID = ?",
                     (chat_rowid,),
                 )
                 result.chats_token_cleared += 1

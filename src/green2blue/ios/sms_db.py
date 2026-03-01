@@ -122,6 +122,9 @@ class SMSDatabase:
                     handle_rowids[handle.id] = rowid
                     stats.handles_inserted += 1
 
+            # Detect SMS account_id from existing chats for consistency
+            detected_account_id = self._detect_account_id()
+
             # Insert chats
             chat_rowids: dict[str, int] = {}
             for chat in result.chats:
@@ -129,6 +132,10 @@ class SMSDatabase:
                     chat_rowids[chat.guid] = existing_chats[chat.guid]
                     stats.chats_existing += 1
                 else:
+                    # Apply detected account_id if chat has none
+                    if detected_account_id and not chat.account_id:
+                        from dataclasses import replace as dc_replace
+                        chat = dc_replace(chat, account_id=detected_account_id)
                     rowid = self._insert_chat(cursor, chat)
                     chat_rowids[chat.guid] = rowid
                     stats.chats_inserted += 1
@@ -204,6 +211,23 @@ class SMSDatabase:
         restore_triggers(self.conn, self._saved_triggers)
         self._saved_triggers = []
 
+    def _detect_account_id(self) -> str:
+        """Detect the SMS account_id from existing chats.
+
+        Real iOS assigns a UUID to the SMS account. We read it from
+        existing chats so injected chats match.
+
+        Returns:
+            Account UUID string, or empty string if no existing chats.
+        """
+        cursor = self.conn.cursor()
+        row = cursor.execute(
+            "SELECT account_id FROM chat "
+            "WHERE service_name = 'SMS' AND account_id != '' "
+            "AND account_id IS NOT NULL LIMIT 1"
+        ).fetchone()
+        return row["account_id"] if row else ""
+
     def _load_existing_handles(self) -> dict[str, int]:
         """Load existing handles as {id: ROWID}."""
         cursor = self.conn.cursor()
@@ -241,11 +265,15 @@ class SMSDatabase:
 
     def _insert_chat(self, cursor: sqlite3.Cursor, chat: iOSChat) -> int:
         """Insert a chat and return its ROWID."""
+        import uuid as _uuid
+
+        group_id = str(_uuid.uuid4()).upper()
         cursor.execute(
             """INSERT INTO chat (guid, style, state, account_id, chat_identifier,
                                  service_name, display_name, account_login,
+                                 group_id, server_change_token,
                                  ck_sync_state, cloudkit_record_id)
-               VALUES (?, ?, 3, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, 3, ?, ?, ?, ?, ?, ?, '', ?, ?)""",
             (
                 chat.guid,
                 chat.style,
@@ -253,7 +281,8 @@ class SMSDatabase:
                 chat.chat_identifier,
                 chat.service_name,
                 chat.display_name,
-                chat.account_id,
+                chat.account_login,
+                group_id,
                 chat.ck_sync_state,
                 chat.cloudkit_record_id,
             ),
@@ -307,9 +336,9 @@ class SMSDatabase:
                 ?, ?, ?, ?, ?,
                 ?, ?, ?,
                 ?, 0, 0, 0,
-                1, 0, 0, 0, 0,
-                0, 0, 0,
-                0, 0, 0, 0,
+                10, 0, 0, 0, 0,
+                0, 1, 0,
+                0, 0, 1, 0,
                 0, 0, 0,
                 0, 0, 0,
                 0, 0, 0, 0,
@@ -328,7 +357,7 @@ class SMSDatabase:
                 msg.text,
                 handle_rowid,
                 msg.service,
-                msg.account_guid,
+                msg.account,
                 msg.account_guid,
                 msg.date,
                 msg.date_read,
@@ -353,16 +382,31 @@ class SMSDatabase:
         self, cursor: sqlite3.Cursor, att: iOSAttachment, is_outgoing: bool
     ) -> int:
         """Insert an attachment and return its ROWID."""
+        # Determine preview_generation_state from UTI
+        # Real iOS: 1 = image preview generated, 2 = video preview generated
+        if att.uti.startswith("public.") and att.uti in (
+            "public.jpeg", "public.png", "public.heic", "public.heif",
+            "public.webp", "public.tiff",
+        ) or att.uti in ("com.compuserve.gif", "com.microsoft.bmp"):
+            preview_state = 1
+        elif att.uti in (
+            "public.mpeg-4", "public.3gpp", "public.3gpp2",
+            "com.apple.quicktime-movie", "org.webmproject.webm",
+        ):
+            preview_state = 2
+        else:
+            preview_state = 0
+
         cursor.execute(
             """INSERT INTO attachment (
                 guid, created_date, start_date, filename, uti, mime_type,
                 transfer_state, is_outgoing, transfer_name, total_bytes,
+                original_guid, preview_generation_state,
                 is_sticker, hide_attachment, ck_sync_state, sr_ck_sync_state,
                 is_commsafety_sensitive
-            ) VALUES (?, ?, ?, ?, ?, ?, 5, ?, ?, ?, 0, 0, 0, 0, 0)""",
+            ) VALUES (?, ?, 0, ?, ?, ?, 5, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0)""",
             (
                 att.guid,
-                att.created_date,
                 att.created_date,
                 att.filename,
                 att.uti,
@@ -370,6 +414,8 @@ class SMSDatabase:
                 int(is_outgoing),
                 att.transfer_name,
                 att.total_bytes,
+                att.guid,
+                preview_state,
             ),
         )
         return cursor.lastrowid

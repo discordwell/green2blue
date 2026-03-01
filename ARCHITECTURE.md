@@ -75,6 +75,24 @@ RCS messages appear as regular SMS or MMS records with no special type marker. T
 
 Real iOS 26.2+ uses the `any;-;` prefix for all SMS chats (confirmed from 3,151 chats in a real backup).
 
+### Field Matching (Real iOS 26.2 Comparison)
+Injection output is validated against real iOS backup data. Key field mappings:
+- **message.version** = 10 (not 1)
+- **message.account / account_guid** = NULL for SMS (not 'p:0')
+- **message.ck_record_id / ck_record_change_tag** = `''` (empty string, not NULL) for unsynced messages
+- **message.was_data_detected** = 1, **has_dd_results** = 1
+- **message.is_delivered** = 1 for both incoming and outgoing
+- **chat.account_login** = `'E:'` (constant for SMS accounts)
+- **chat.account_id** = device UUID (auto-detected from existing chats)
+- **chat.server_change_token** = `''` (empty string, not NULL)
+- **chat.group_id** = generated UUID per chat
+- **attachment.created_date** = Apple epoch **seconds** (NOT nanoseconds like message.date)
+- **attachment.start_date** = 0
+- **attachment.original_guid** = same as guid
+- **attachment.preview_generation_state** = 1 (image), 2 (video), 0 (other)
+- Attachments stored in **MediaDomain** (not HomeDomain)
+- Attachment paths: two-level hex subdirs `{hash[:2]}/{hash[2:4]}/{UUID}/{filename}`
+
 ### Backup File Layout
 Files are stored as `{backup_dir}/{SHA1[:2]}/{SHA1}` where SHA1 is computed from `{domain}-{relativePath}`.
 

@@ -108,7 +108,8 @@ class iOSChat:
     chat_identifier: str  # E.164 for 1:1, comma-separated for group
     service_name: str  # "SMS"
     display_name: str = ""  # User-visible group name, empty for 1:1
-    account_id: str = "p:0"  # Default local account
+    account_id: str = ""  # SMS account UUID (detected from existing chats)
+    account_login: str = "E:"  # SMS account login (constant on real iOS)
     ck_sync_state: int = 0  # CloudKit sync state (0=unsynced, 1=synced)
     cloudkit_record_id: str = ""  # CloudKit record ID (empty string on real iOS)
 
@@ -123,7 +124,7 @@ class iOSAttachment:
     uti: str  # Uniform Type Identifier, e.g., "public.jpeg"
     transfer_name: str  # Display filename
     total_bytes: int  # File size in bytes
-    created_date: int  # CoreData timestamp in nanoseconds
+    created_date: int  # Apple epoch seconds (NOT nanoseconds like message.date)
     source_data_path: str | None = None  # Original path in export ZIP
 
 
@@ -139,10 +140,11 @@ class iOSMessage:
     date_delivered: int  # CoreData timestamp in nanoseconds
     is_from_me: bool  # True if sent by the iPhone owner
     service: str  # "SMS"
-    account_guid: str = "p:0"
+    account: str | None = None  # SMS account (NULL on real iOS for SMS)
+    account_guid: str | None = None  # SMS account GUID (NULL on real iOS for SMS)
     is_read: bool = True
     is_sent: bool = False
-    is_delivered: bool = False
+    is_delivered: bool = True  # Real iOS = 1 for both incoming and outgoing
     is_finished: bool = True
     was_downgraded: bool = False
     group_title: str = ""
@@ -150,8 +152,8 @@ class iOSMessage:
     chat_identifier: str = ""  # Set during conversion for grouping
     group_members: tuple[str, ...] = ()  # All E.164 numbers for group chats
     ck_sync_state: int = 0  # CloudKit sync state
-    ck_record_id: str | None = None  # CloudKit record ID (64-char hex)
-    ck_record_change_tag: str | None = None  # CloudKit change tag
+    ck_record_id: str = ""  # CloudKit record ID (empty string when unsynced)
+    ck_record_change_tag: str = ""  # CloudKit change tag (empty string when unsynced)
 
 
 def compute_chat_guid(

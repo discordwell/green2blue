@@ -310,15 +310,15 @@ class TestCKStrategy:
         result = convert_messages([_make_sms()])
         msg = result.messages[0]
         assert msg.ck_sync_state == 0
-        assert msg.ck_record_id is None
-        assert msg.ck_record_change_tag is None
+        assert msg.ck_record_id == ""
+        assert msg.ck_record_change_tag == ""
 
     def test_none_strategy_explicit(self):
         """Explicit none strategy is same as default."""
         result = convert_messages([_make_sms()], ck_strategy=CKStrategy.NONE)
         msg = result.messages[0]
         assert msg.ck_sync_state == 0
-        assert msg.ck_record_id is None
+        assert msg.ck_record_id == ""
 
     def test_fake_synced_sets_state_1(self):
         """Fake-synced strategy sets ck_sync_state=1."""
@@ -362,10 +362,10 @@ class TestCKStrategy:
         assert len(msg.ck_record_id) == 64
 
     def test_pending_upload_no_change_tag(self):
-        """Pending-upload strategy has no change tag."""
+        """Pending-upload strategy has empty change tag."""
         result = convert_messages([_make_sms()], ck_strategy=CKStrategy.PENDING_UPLOAD)
         msg = result.messages[0]
-        assert msg.ck_record_change_tag is None
+        assert msg.ck_record_change_tag == ""
 
     def test_fake_synced_mms(self):
         """Fake-synced strategy works with MMS messages too."""

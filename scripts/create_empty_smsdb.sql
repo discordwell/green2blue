@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS attachment (
     ck_sync_state INTEGER DEFAULT 0,
     ck_record_id TEXT,
     original_guid TEXT,
+    preview_generation_state INTEGER DEFAULT 0,
     sr_ck_sync_state INTEGER DEFAULT 0,
     sr_ck_record_id TEXT,
     is_commsafety_sensitive INTEGER DEFAULT 0,

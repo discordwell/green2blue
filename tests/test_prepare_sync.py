@@ -80,8 +80,8 @@ class TestPrepareSyncMessages:
 
         for row in rows:
             assert row["ck_sync_state"] == 0
-            assert row["ck_record_id"] is None
-            assert row["ck_record_change_tag"] is None
+            assert row["ck_record_id"] == ""
+            assert row["ck_record_change_tag"] == ""
 
     def test_already_clean_messages_unchanged(self, empty_sms_db: Path) -> None:
         """Messages already at ck_sync_state=0 with no CK IDs are counted but not updated."""
@@ -156,7 +156,7 @@ class TestPrepareSyncChats:
         ).fetchone()
         conn.close()
 
-        assert row["server_change_token"] is None
+        assert row["server_change_token"] == ""
 
     def test_does_not_clear_token_on_unaffected_chats(
         self, sms_db_with_injected: Path
@@ -267,7 +267,7 @@ class TestPrepareSyncChats:
         assert row["ck_sync_state"] == 1
         assert row["cloudkit_record_id"] == "real-chat-ck-id"
         # But server_change_token cleared
-        assert row["server_change_token"] is None
+        assert row["server_change_token"] == ""
 
 
 class TestPrepareSyncAttachments:
