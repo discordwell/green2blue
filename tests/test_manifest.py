@@ -89,7 +89,7 @@ class TestManifestDB:
 
     def test_detect_attachment_domain_default(self, manifest_db):
         with ManifestDB(manifest_db) as m:
-            assert m.detect_attachment_domain() == "HomeDomain"
+            assert m.detect_attachment_domain() == "MediaDomain"
 
     def test_detect_attachment_domain_from_existing(self, manifest_db):
         # Insert a MediaDomain attachment entry

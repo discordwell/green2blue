@@ -25,7 +25,7 @@ def sms_db_with_injected(empty_sms_db: Path) -> Path:
         "INSERT INTO chat (ROWID, guid, style, chat_identifier, "
         "service_name, ck_sync_state, cloudkit_record_id, "
         "server_change_token) "
-        "VALUES (1, 'SMS;-;+12025551234', 45, '+12025551234', "
+        "VALUES (1, 'any;-;+12025551234', 45, '+12025551234', "
         "'SMS', 1, 'fake-ck-id-chat', 'token123')"
     )
 
@@ -166,7 +166,7 @@ class TestPrepareSyncChats:
         conn.execute(
             "INSERT INTO chat (ROWID, guid, style, chat_identifier, service_name, "
             "server_change_token) "
-            "VALUES (99, 'SMS;-;+15551112222', 45, '+15551112222', 'SMS', 'keep-this-token')"
+            "VALUES (99, 'any;-;+15551112222', 45, '+15551112222', 'SMS', 'keep-this-token')"
         )
         conn.commit()
         conn.close()
@@ -198,7 +198,7 @@ class TestPrepareSyncChats:
         conn.close()
 
         assert row["ck_sync_state"] == 0
-        assert row["cloudkit_record_id"] is None
+        assert row["cloudkit_record_id"] == ""
 
     def test_preserves_ck_on_mixed_chats(self, empty_sms_db: Path) -> None:
         """Mixed chats (pre-existing + injected) keep CK state, only lose server_change_token."""
@@ -215,7 +215,7 @@ class TestPrepareSyncChats:
             "INSERT INTO chat (ROWID, guid, style, chat_identifier, "
             "service_name, ck_sync_state, cloudkit_record_id, "
             "server_change_token) "
-            "VALUES (1, 'SMS;-;+12025551234', 45, '+12025551234', "
+            "VALUES (1, 'any;-;+12025551234', 45, '+12025551234', "
             "'SMS', 1, 'real-chat-ck-id', 'change-token-xyz')"
         )
 

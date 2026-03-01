@@ -201,7 +201,7 @@ class ManifestDB:
         """Detect whether attachments use HomeDomain or MediaDomain.
 
         Queries existing attachment entries to determine convention.
-        Defaults to HomeDomain if none exist.
+        Defaults to MediaDomain (standard on iOS 26.2+).
         """
         cursor = self.conn.cursor()
         cursor.execute(
@@ -212,7 +212,7 @@ class ManifestDB:
         row = cursor.fetchone()
         if row:
             return row["domain"]
-        return "HomeDomain"
+        return "MediaDomain"
 
 
 def compute_file_id(domain: str, relative_path: str) -> str:

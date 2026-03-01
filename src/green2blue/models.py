@@ -103,14 +103,14 @@ def generate_ck_record_id(guid: str, salt: str = "green2blue-ck") -> str:
 class iOSChat:
     """A conversation in sms.db (chat table)."""
 
-    guid: str  # e.g., "SMS;-;+12025551234" or "SMS;-;chat<hash>"
+    guid: str  # e.g., "any;-;+12025551234" or "any;-;chat<hash>"
     style: int  # 45=1:1, 43=group
     chat_identifier: str  # E.164 for 1:1, comma-separated for group
     service_name: str  # "SMS"
     display_name: str = ""  # User-visible group name, empty for 1:1
     account_id: str = "p:0"  # Default local account
     ck_sync_state: int = 0  # CloudKit sync state (0=unsynced, 1=synced)
-    cloudkit_record_id: str | None = None  # CloudKit record ID
+    cloudkit_record_id: str = ""  # CloudKit record ID (empty string on real iOS)
 
 
 @dataclass(frozen=True)
@@ -160,8 +160,10 @@ def compute_chat_guid(
 ) -> str:
     """Compute the iOS chat GUID for a conversation.
 
-    1:1 chats: ``SMS;-;+12025551234``
-    Group chats: ``SMS;-;chat{sha256(sorted_members)[:16]}``
+    1:1 chats: ``any;-;+12025551234``
+    Group chats: ``any;-;chat{sha256(sorted_members)[:16]}``
+
+    Real iOS 26.2+ uses the ``any;-;`` prefix for all SMS chats.
 
     Args:
         chat_identifier: Phone number (1:1) or comma-separated phones (group).
@@ -174,8 +176,8 @@ def compute_chat_guid(
         sorted_members = sorted(group_members)
         hash_input = ",".join(sorted_members)
         chat_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
-        return f"SMS;-;chat{chat_hash}"
-    return f"SMS;-;{chat_identifier}"
+        return f"any;-;chat{chat_hash}"
+    return f"any;-;{chat_identifier}"
 
 
 def message_content_hash(msg: iOSMessage) -> str:

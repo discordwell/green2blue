@@ -23,7 +23,7 @@ def _make_handle(phone="+12025551234"):
 
 def _make_chat(phone="+12025551234"):
     return iOSChat(
-        guid=f"SMS;-;{phone}",
+        guid=f"any;-;{phone}",
         style=45,
         chat_identifier=phone,
         service_name="SMS",
@@ -125,12 +125,12 @@ class TestChatInsertion:
             cursor = db.conn.cursor()
             cursor.execute("SELECT guid, style, chat_identifier FROM chat")
             row = cursor.fetchone()
-            assert row["guid"] == "SMS;-;+12025551234"
+            assert row["guid"] == "any;-;+12025551234"
             assert row["style"] == 45
 
     def test_insert_group_chat(self, empty_sms_db):
         group_chat = iOSChat(
-            guid="SMS;-;chatabc123",
+            guid="any;-;chatabc123",
             style=43,
             chat_identifier="+12025551111,+12025552222,+12025553333",
             service_name="SMS",
@@ -410,9 +410,9 @@ class TestCloudKitMetadata:
 
     def test_chat_ck_metadata(self, empty_sms_db):
         """Chat CK metadata should be written to the chat table."""
-        chat_record_id = generate_ck_record_id("SMS;-;+12025551234", salt="green2blue-ck-chat")
+        chat_record_id = generate_ck_record_id("any;-;+12025551234", salt="green2blue-ck-chat")
         chat = iOSChat(
-            guid="SMS;-;+12025551234",
+            guid="any;-;+12025551234",
             style=45,
             chat_identifier="+12025551234",
             service_name="SMS",

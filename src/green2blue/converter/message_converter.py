@@ -6,6 +6,7 @@ UUIDs for message GUIDs, and maps Android type codes to iOS boolean flags.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections import defaultdict
@@ -294,12 +295,17 @@ def _convert_mms(mms: AndroidMMS, country: str) -> iOSMessage | None:
         if not part.data_path:
             continue
 
-        att_uuid = str(uuid.uuid4())
+        att_uuid = str(uuid.uuid4()).upper()
         filename = part.filename or f"attachment_{att_uuid[:8]}"
         uti = MIME_TO_UTI.get(part.content_type, "public.data")
 
-        # iOS attachment path will be set during injection
-        ios_path = f"~/Library/SMS/Attachments/{att_uuid[:2]}/{att_uuid}/{filename}"
+        # iOS attachment path: two hex-byte subdirs from UUID hash, then UUID dir
+        # Real iOS: Library/SMS/Attachments/c6/06/DBD8A706-.../image000000.jpg
+        att_hash = hashlib.sha256(att_uuid.encode()).hexdigest()
+        ios_path = (
+            f"~/Library/SMS/Attachments/{att_hash[:2]}/{att_hash[2:4]}"
+            f"/{att_uuid}/{filename}"
+        )
 
         attachments.append(iOSAttachment(
             guid=f"green2blue-att:{att_uuid}",

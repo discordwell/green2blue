@@ -187,7 +187,7 @@ class TestJoinTableConsistency:
         handle_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
             "INSERT INTO chat (guid, style, chat_identifier, service_name) "
-            "VALUES ('SMS;-;+1234', 45, '+1234', 'SMS')"
+            "VALUES ('any;-;+1234', 45, '+1234', 'SMS')"
         )
         chat_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(

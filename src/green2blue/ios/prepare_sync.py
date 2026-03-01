@@ -156,10 +156,11 @@ def prepare_sync(db_path: Path) -> PrepareSyncResult:
             else:
                 # Pure-injected chat: safe to reset CK state entirely
                 if (chat["ck_sync_state"] != 0
-                        or chat["cloudkit_record_id"] is not None):
+                        or (chat["cloudkit_record_id"] is not None
+                            and chat["cloudkit_record_id"] != "")):
                     cursor.execute(
                         "UPDATE chat SET ck_sync_state = 0, "
-                        "cloudkit_record_id = NULL WHERE ROWID = ?",
+                        "cloudkit_record_id = '' WHERE ROWID = ?",
                         (chat_rowid,),
                     )
                     result.chats_ck_reset += 1

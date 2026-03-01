@@ -70,8 +70,10 @@ RCS messages appear as regular SMS or MMS records with no special type marker. T
 - **message_attachment_join** — Links attachments to messages
 
 ### Chat GUID Format
-- 1:1: `SMS;-;+12025551234`
-- Group: `SMS;-;chat{sha256(sorted_phones)[:16]}`
+- 1:1: `any;-;+12025551234`
+- Group: `any;-;chat{sha256(sorted_phones)[:16]}`
+
+Real iOS 26.2+ uses the `any;-;` prefix for all SMS chats (confirmed from 3,151 chats in a real backup).
 
 ### Backup File Layout
 Files are stored as `{backup_dir}/{SHA1[:2]}/{SHA1}` where SHA1 is computed from `{domain}-{relativePath}`.

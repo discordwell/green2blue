@@ -167,7 +167,7 @@ def inject_test_matrix(sms_db_path: Path) -> None:
         dt = base + timedelta(minutes=i * 5)
         date_ns = unix_ms_to_ios_ns(int(dt.timestamp() * 1000))
         msg_guid = f"green2blue:sync-test-{i+1}"
-        chat_guid = f"SMS;-;{phone}"
+        chat_guid = f"any;-;{phone}"
 
         # Generate record IDs where needed
         ck_record_id = test["ck_record_id"]
@@ -450,7 +450,7 @@ def print_injection_summary(sms_db_path: Path) -> None:
     # Chat CK state
     print("\n  Chat CloudKit states:")
     for _i, test in enumerate(TEST_MESSAGES):
-        chat_guid = f"SMS;-;{test['phone']}"
+        chat_guid = f"any;-;{test['phone']}"
         row = conn.execute(
             "SELECT ck_sync_state, cloudkit_record_id FROM chat WHERE guid = ?",
             (chat_guid,),

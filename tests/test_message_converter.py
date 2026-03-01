@@ -73,7 +73,7 @@ class TestSMSConversion:
         assert len(result.chats) == 1
         chat = result.chats[0]
         assert chat.style == 45
-        assert chat.guid == "SMS;-;+12025551234"
+        assert chat.guid == "any;-;+12025551234"
 
     def test_timestamp_conversion(self):
         sms = _make_sms(date=1700000000000)
@@ -217,7 +217,7 @@ class TestGroupMMS:
         mms = _make_mms(addresses=addresses)
         result = convert_messages([mms])
         guid = result.chats[0].guid
-        assert guid.startswith("SMS;-;chat")
+        assert guid.startswith("any;-;chat")
 
     def test_group_handles_created(self):
         addresses = (
@@ -282,14 +282,14 @@ class TestEdgeCases:
 class TestComputeChatGuid:
     def test_1to1_chat(self):
         guid = compute_chat_guid("+12025551234")
-        assert guid == "SMS;-;+12025551234"
+        assert guid == "any;-;+12025551234"
 
     def test_group_chat_deterministic(self):
         members = ("+12025551111", "+12025552222", "+12025553333")
         guid1 = compute_chat_guid("+12025551111,+12025552222,+12025553333", members)
         guid2 = compute_chat_guid("+12025551111,+12025552222,+12025553333", members)
         assert guid1 == guid2
-        assert guid1.startswith("SMS;-;chat")
+        assert guid1.startswith("any;-;chat")
 
     def test_group_chat_order_independent(self):
         """Members are sorted, so order shouldn't matter."""
