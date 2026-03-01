@@ -193,7 +193,11 @@ class SMSDatabase:
                         stats.messages_skipped += 1
                         continue
 
-                handle_rowid = handle_rowids.get(msg.handle_id, 0)
+                handle_rowid = handle_rowids.get(msg.handle_id)
+                if handle_rowid is None:
+                    logger.warning("No handle for %r — skipping message", msg.handle_id)
+                    stats.messages_skipped += 1
+                    continue
 
                 # Determine which chat this message belongs to
                 chat_key = msg.chat_identifier or msg.handle_id

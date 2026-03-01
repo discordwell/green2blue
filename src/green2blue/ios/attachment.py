@@ -14,8 +14,8 @@ iOS SMS attachment path format:
 
 from __future__ import annotations
 
+import hashlib
 import logging
-import shutil
 from pathlib import Path
 
 from green2blue.ios.manifest import ManifestDB, compute_file_id
@@ -65,6 +65,7 @@ def copy_attachment_to_backup(
     if encrypted_backup is not None:
         # Encrypted path: encrypt the file data before writing
         plaintext = source_path.read_bytes()
+        digest = hashlib.sha1(plaintext).digest()
         encrypted_data, enc_key_blob = encrypted_backup.encrypt_new_file(
             plaintext, protection_class,
         )
@@ -75,14 +76,19 @@ def copy_attachment_to_backup(
         manifest.add_attachment_entry(
             ios_relative_path, file_size, domain,
             encryption_key=enc_key_blob, protection_class=protection_class,
+            digest=digest,
         )
     else:
-        # Unencrypted path: copy plaintext
-        shutil.copy2(source_path, dest_path)
+        # Unencrypted path: read once for both digest and copy
+        content = source_path.read_bytes()
+        digest = hashlib.sha1(content).digest()
+        dest_path.write_bytes(content)
         logger.debug("Copied attachment: %s -> %s", source_path.name, dest_path)
 
         # Register in Manifest.db
-        manifest.add_attachment_entry(ios_relative_path, file_size, domain)
+        manifest.add_attachment_entry(
+            ios_relative_path, file_size, domain, digest=digest,
+        )
 
     return file_size
 

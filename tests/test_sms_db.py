@@ -715,3 +715,134 @@ class TestTriggerManagement:
             cursor.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
             triggers = [r["name"] for r in cursor.fetchall()]
             assert "test_trigger2" in triggers
+
+
+class TestMissingHandle:
+    def test_missing_handle_skips_message(self, empty_sms_db):
+        """Message with unknown handle_id should be skipped, not inserted with handle_id=0."""
+        # Create a message referencing a handle that is NOT in the handles list
+        msg = iOSMessage(
+            guid="green2blue:orphan-handle",
+            text="orphan message",
+            handle_id="+19995550000",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier="+19995550000",
+        )
+        chat = iOSChat(
+            guid="any;-;+19995550000",
+            style=45,
+            chat_identifier="+19995550000",
+            service_name="SMS",
+        )
+        # Deliberately omit the handle for +19995550000
+        result = _make_result(
+            handles=[_make_handle("+12025551234")],
+            chats=[chat],
+            messages=[msg],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            stats = db.inject(result)
+            assert stats.messages_skipped == 1
+            assert stats.messages_inserted == 0
+            assert db.get_message_count() == 0
+
+    def test_missing_handle_does_not_insert_zero(self, empty_sms_db):
+        """Ensure no message is inserted with handle_id=0."""
+        msg = iOSMessage(
+            guid="green2blue:zero-handle",
+            text="zero handle msg",
+            handle_id="+19995550000",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier="+19995550000",
+        )
+        result = _make_result(
+            handles=[],
+            chats=[],
+            messages=[msg],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT COUNT(*) as cnt FROM message WHERE handle_id = 0")
+            assert cursor.fetchone()["cnt"] == 0
+
+
+class TestReducedSchema:
+    """Tests against an older iOS schema missing optional columns."""
+
+    def test_inject_sms_reduced_schema(self, reduced_schema_sms_db):
+        """SMS injection should work on a schema without optional columns."""
+        result = _make_result(
+            handles=[_make_handle("+12025551234")],
+            chats=[_make_chat("+12025551234")],
+            messages=[_make_message("+12025551234")],
+        )
+        with SMSDatabase(reduced_schema_sms_db) as db:
+            stats = db.inject(result)
+            assert stats.messages_inserted == 1
+            assert stats.handles_inserted == 1
+            assert stats.chats_inserted == 1
+
+            cursor = db.conn.cursor()
+            cursor.execute("SELECT text, service FROM message")
+            row = cursor.fetchone()
+            assert row["text"] == "hello"
+            assert row["service"] == "SMS"
+
+    def test_inject_mms_reduced_schema(self, reduced_schema_sms_db):
+        """MMS with attachment should work on reduced schema."""
+        att = iOSAttachment(
+            guid="green2blue-att:reduced",
+            filename="~/Library/SMS/Attachments/ab/test-uuid/photo.jpg",
+            mime_type="image/jpeg",
+            uti="public.jpeg",
+            transfer_name="photo.jpg",
+            total_bytes=1024,
+            created_date=721692800,
+        )
+        msg = iOSMessage(
+            guid="green2blue:reduced-mms",
+            text="check this",
+            handle_id="+12025551234",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier="+12025551234",
+            attachments=(att,),
+        )
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[msg],
+        )
+        with SMSDatabase(reduced_schema_sms_db) as db:
+            stats = db.inject(result)
+            assert stats.messages_inserted == 1
+            assert stats.attachments_inserted == 1
+
+            # Verify attachment doesn't have preview_generation_state or original_guid
+            cursor = db.conn.cursor()
+            cols = {r[1] for r in cursor.execute("PRAGMA table_info(attachment)").fetchall()}
+            assert "preview_generation_state" not in cols
+            assert "original_guid" not in cols
+
+    def test_schema_detection(self, reduced_schema_sms_db):
+        """_inspect_schema should correctly report missing optional columns."""
+        with SMSDatabase(reduced_schema_sms_db) as db:
+            assert "message_summary_info" not in db._msg_schema
+            assert "destination_caller_id" not in db._msg_schema
+            assert "ck_chat_id" not in db._msg_schema
+            assert "sr_ck_sync_state" not in db._msg_schema
+            assert "preview_generation_state" not in db._att_schema
+            assert "original_guid" not in db._att_schema
+            assert "sr_ck_sync_state" not in db._att_schema

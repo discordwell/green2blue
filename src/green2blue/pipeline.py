@@ -152,62 +152,70 @@ def run_pipeline(
         # Step 6: Inject into sms.db
         sms_db_file = get_sms_db_path(backup_info.path)
 
-        logger.info("Injecting messages into sms.db...")
-        with SMSDatabase(sms_db_file) as db:
-            result.injection_stats = db.inject(conversion, skip_duplicates)
-
-        logger.info("Injection complete: %s", result.injection_stats)
-
-        # Run prepare-sync if using icloud-reset strategy
-        if ck_strategy == CKStrategy.ICLOUD_RESET:
-            from green2blue.ios.prepare_sync import prepare_sync
-
-            logger.info("Running prepare-sync for icloud-reset strategy...")
-            prepare_sync(sms_db_file)
-
-        # Step 7: Copy attachments + Step 8: Update Manifest.db
-        logger.info("Updating Manifest.db and copying attachments...")
-        manifest_path = backup_info.path / "Manifest.db"
-        attachment_sizes: dict[str, int] = {}  # guid → file_size
-
-        with ManifestDB(manifest_path) as manifest:
-            if include_attachments and export.has_attachments():
-                domain = manifest.detect_attachment_domain()
-                for msg in conversion.messages:
-                    for att in msg.attachments:
-                        file_size = _copy_message_attachment(
-                            att, msg, export, backup_info.path, manifest, domain
-                        )
-                        if file_size > 0:
-                            attachment_sizes[att.guid] = file_size
-                            result.total_attachments_copied += 1
-
-        # Update attachment sizes in sms.db (must happen before digest)
-        if attachment_sizes:
+        try:
+            logger.info("Injecting messages into sms.db...")
             with SMSDatabase(sms_db_file) as db:
-                db.update_attachment_sizes(attachment_sizes)
+                result.injection_stats = db.inject(conversion, skip_duplicates)
 
-        # Update Manifest.db with final sms.db size and digest
-        # (after all sms.db modifications are complete)
-        with ManifestDB(manifest_path) as manifest:
-            sms_db_size = sms_db_file.stat().st_size
-            sms_db_digest = hashlib.sha1(sms_db_file.read_bytes()).digest()
-            manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
+            logger.info("Injection complete: %s", result.injection_stats)
 
-        # Step 9: Verify
-        logger.info("Verifying backup integrity...")
-        result.verification = verify_backup(
-            backup_info.path,
-            sms_db_file,
-            manifest_path,
-        )
+            # Run prepare-sync if using icloud-reset strategy
+            if ck_strategy == CKStrategy.ICLOUD_RESET:
+                from green2blue.ios.prepare_sync import prepare_sync
 
-        if result.verification.passed:
-            logger.info("Verification PASSED (%d/%d checks)",
-                        result.verification.checks_passed,
-                        result.verification.checks_run)
-        else:
-            logger.warning("Verification FAILED: %s", result.verification.errors)
+                logger.info("Running prepare-sync for icloud-reset strategy...")
+                prepare_sync(sms_db_file)
+
+            # Step 7: Copy attachments + Step 8: Update Manifest.db
+            logger.info("Updating Manifest.db and copying attachments...")
+            manifest_path = backup_info.path / "Manifest.db"
+            attachment_sizes: dict[str, int] = {}  # guid → file_size
+
+            with ManifestDB(manifest_path) as manifest:
+                if include_attachments and export.has_attachments():
+                    domain = manifest.detect_attachment_domain()
+                    for msg in conversion.messages:
+                        for att in msg.attachments:
+                            file_size = _copy_message_attachment(
+                                att, msg, export, backup_info.path, manifest, domain
+                            )
+                            if file_size > 0:
+                                attachment_sizes[att.guid] = file_size
+                                result.total_attachments_copied += 1
+
+            # Update attachment sizes in sms.db (must happen before digest)
+            if attachment_sizes:
+                with SMSDatabase(sms_db_file) as db:
+                    db.update_attachment_sizes(attachment_sizes)
+
+            # Update Manifest.db with final sms.db size and digest
+            # (after all sms.db modifications are complete)
+            with ManifestDB(manifest_path) as manifest:
+                sms_db_size = sms_db_file.stat().st_size
+                sms_db_digest = hashlib.sha1(sms_db_file.read_bytes()).digest()
+                manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
+
+            # Step 9: Verify
+            logger.info("Verifying backup integrity...")
+            result.verification = verify_backup(
+                backup_info.path,
+                sms_db_file,
+                manifest_path,
+            )
+
+            if result.verification.passed:
+                logger.info("Verification PASSED (%d/%d checks)",
+                            result.verification.checks_passed,
+                            result.verification.checks_run)
+            else:
+                logger.warning("Verification FAILED: %s", result.verification.errors)
+
+        except Exception:
+            logger.error(
+                "Pipeline failed after modifying backup. "
+                "Restore from safety copy: %s", result.safety_copy_path,
+            )
+            raise
 
     return result
 

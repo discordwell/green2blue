@@ -96,6 +96,7 @@ class ManifestDB:
         domain: str = "HomeDomain",
         encryption_key: bytes | None = None,
         protection_class: int = 3,
+        digest: bytes | None = None,
     ) -> str:
         """Add an attachment file entry to Manifest.db.
 
@@ -109,6 +110,7 @@ class ManifestDB:
             domain: The backup domain (default: HomeDomain).
             encryption_key: Per-file wrapped encryption key blob (encrypted backups).
             protection_class: iOS protection class (default: 3).
+            digest: SHA1 digest of the file content (20 bytes).
 
         Returns:
             The fileID (hash) for the new entry.
@@ -121,6 +123,7 @@ class ManifestDB:
             file_size,
             encryption_key=encryption_key,
             protection_class=protection_class,
+            digest=digest,
         )
 
         cursor = self.conn.cursor()

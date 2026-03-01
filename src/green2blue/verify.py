@@ -100,7 +100,7 @@ def _check_foreign_keys(db_path: Path, result: VerificationResult) -> None:
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("""
             SELECT COUNT(*) FROM message m
-            WHERE m.handle_id > 0
+            WHERE m.handle_id != 0
             AND m.handle_id NOT IN (SELECT ROWID FROM handle)
         """)
         orphaned = cursor.fetchone()[0]

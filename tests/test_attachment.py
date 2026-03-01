@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 
 from green2blue.ios.attachment import copy_attachment_to_backup, resolve_attachment_paths
 from green2blue.ios.manifest import ManifestDB, compute_file_id
+from green2blue.ios.plist_utils import extract_mbfile_digest
 
 
 @pytest.fixture
@@ -88,6 +90,30 @@ class TestCopyAttachmentToBackup:
             manifest,
         )
         assert size == 0
+
+    def test_attachment_digest_stored(self, tmp_dir, manifest):
+        """Attachment SHA-1 digest should be stored in the Manifest.db MBFile blob."""
+        source = tmp_dir / "source" / "photo.jpg"
+        source.parent.mkdir(exist_ok=True)
+        file_content = b"\xff\xd8\xff\xe0" + b"digest_test_data"
+        source.write_bytes(file_content)
+
+        backup_dir = tmp_dir / "backup"
+        backup_dir.mkdir()
+
+        ios_path = "Library/SMS/Attachments/cd/test-uuid/photo.jpg"
+        copy_attachment_to_backup(
+            source, ios_path, backup_dir, manifest, domain="HomeDomain"
+        )
+
+        # Read the MBFile blob and verify digest matches
+        file_id = compute_file_id("HomeDomain", ios_path)
+        entry = manifest.get_entry(file_id)
+        assert entry is not None
+
+        stored_digest = extract_mbfile_digest(entry["file"])
+        expected_digest = hashlib.sha1(file_content).digest()
+        assert stored_digest == expected_digest
 
 
 class TestResolveAttachmentPaths:

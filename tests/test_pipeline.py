@@ -477,6 +477,31 @@ class TestPipelineEdgeCases:
         assert result.injection_stats.messages_inserted == 0
         assert result.verification.passed
 
+    def test_pipeline_error_logs_safety_copy(self, tmp_dir):
+        """Pipeline failure after injection should log safety copy path and re-raise."""
+        from unittest.mock import patch
+
+        backup_dir = _create_full_backup(tmp_dir)
+
+        with patch(
+            "green2blue.ios.sms_db.SMSDatabase.update_attachment_sizes",
+            side_effect=RuntimeError("simulated failure"),
+        ):
+            # Force at least one attachment so update_attachment_sizes is called
+            sub_dir = tmp_dir / "sub"
+            sub_dir.mkdir()
+            zip_with_att = _create_export_zip(
+                sub_dir,
+                records=[SAMPLE_MMS],
+                attachment_data={"data/parts/image_001.jpg": b"\xff\xd8\xff\xe0fake"},
+            )
+
+            with pytest.raises(RuntimeError, match="simulated failure"):
+                run_pipeline(
+                    export_path=zip_with_att,
+                    backup_path_or_udid=str(backup_dir),
+                )
+
 
 def _build_keybag_tlv(tag: bytes, value: bytes) -> bytes:
     """Build a single TLV record for a keybag."""

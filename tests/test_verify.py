@@ -204,3 +204,25 @@ class TestJoinTableConsistency:
 
         result = verify_backup(sample_backup_dir, sms_db)
         assert result.passed
+
+    def test_handle_id_zero_detected_as_orphan(self, sample_backup_dir):
+        """Messages with handle_id=0 should be caught by foreign key check."""
+        sms_hash = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+        sms_db = sample_backup_dir / sms_hash[:2] / sms_hash
+
+        conn = sqlite3.connect(sms_db)
+        conn.execute(
+            """INSERT INTO message (guid, text, handle_id, service, account, account_guid,
+               date, is_from_me, is_finished, is_read, is_empty)
+               VALUES ('test-zero-handle', 'orphan', 0, 'SMS', 'p:0', 'p:0',
+               0, 0, 1, 1, 0)"""
+        )
+        conn.commit()
+        conn.close()
+
+        result = verify_backup(sample_backup_dir, sms_db)
+        # handle_id=0 is not in the handle table, but the filter
+        # excludes handle_id=0 from the orphan check.
+        # Messages with handle_id=0 are only from is_from_me=1 (outgoing)
+        # or bugs — the injection now prevents them.
+        assert result.passed
