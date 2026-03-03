@@ -154,3 +154,15 @@ class WrongPasswordError(CryptoError):
     """The backup password is incorrect."""
 
     hint = "The password you entered is incorrect. Please try again."
+
+
+# --- Overwrite errors ---
+
+
+class InsufficientSacrificeError(Green2BlueError):
+    """The sacrifice message pool is smaller than the number of messages to inject."""
+
+    hint = (
+        "Select sacrifice chats with enough messages to cover the Android export. "
+        "Use 'green2blue diagnose' to see message counts per chat."
+    )

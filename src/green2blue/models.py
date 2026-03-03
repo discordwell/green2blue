@@ -75,6 +75,13 @@ class iOSHandle:
     uncanonicalized_id: str | None = None  # Original unsanitized number
 
 
+class InjectionMode(Enum):
+    """How messages are written into sms.db."""
+
+    INSERT = "insert"  # Insert new rows (default)
+    OVERWRITE = "overwrite"  # UPDATE existing sacrifice messages
+
+
 class CKStrategy(Enum):
     """CloudKit sync metadata strategy for injected messages."""
 

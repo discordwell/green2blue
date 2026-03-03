@@ -126,6 +126,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Message service type: SMS (green bubbles) or iMessage (blue bubbles) (default: SMS)",
     )
     inject_parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["insert", "overwrite"],
+        default="insert",
+        help="Injection mode: insert new rows or overwrite sacrifice messages (default: insert)",
+    )
+    inject_parser.add_argument(
+        "--sacrifice-chat",
+        type=int,
+        action="append",
+        default=None,
+        dest="sacrifice_chats",
+        help="Chat ROWID to sacrifice (repeatable, required for --mode overwrite)",
+    )
+    inject_parser.add_argument(
+        "--disable-icloud-sync",
+        action="store_true",
+        default=False,
+        help="Set CloudKitSyncingEnabled=False in backup to prevent iCloud Messages wipe",
+    )
+    inject_parser.add_argument(
         "-y", "--yes",
         action="store_true",
         default=False,
@@ -377,8 +398,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def _cmd_inject(args: argparse.Namespace) -> int:
     """Execute the inject command."""
     from green2blue.ios.backup import find_backup
-    from green2blue.models import CKStrategy
+    from green2blue.models import CKStrategy, InjectionMode
     from green2blue.pipeline import run_pipeline
+
+    # Validate overwrite mode requirements
+    injection_mode = InjectionMode(args.mode)
+    if injection_mode == InjectionMode.OVERWRITE and not args.sacrifice_chats:
+        print("Error: --mode overwrite requires at least one --sacrifice-chat", file=sys.stderr)
+        return 1
 
     # Resolve backup with interactive confirmation
     backup_info = find_backup(args.backup, args.backup_root)
@@ -407,11 +434,26 @@ def _cmd_inject(args: argparse.Namespace) -> int:
         password=args.password,
         ck_strategy=ck_strategy,
         service=args.service,
+        injection_mode=injection_mode,
+        sacrifice_chats=args.sacrifice_chats,
+        disable_icloud_sync=args.disable_icloud_sync,
     )
 
     # Print summary
+    ow_stats = result.overwrite_stats
     stats = result.injection_stats
-    if stats:
+    if ow_stats:
+        print("\n--- Overwrite Summary ---")
+        print(f"Messages parsed:      {result.total_messages_parsed}")
+        print(f"Sacrifice pool:       {ow_stats.sacrifice_pool_size}")
+        print(f"Messages overwritten: {ow_stats.messages_overwritten}")
+        print(f"Messages skipped:     {ow_stats.messages_skipped + result.skipped_count}")
+        reused_h = ow_stats.handles_existing
+        print(f"Handles created:      {ow_stats.handles_inserted} (reused: {reused_h})")
+        reused_c = ow_stats.chats_existing
+        print(f"Chats created:        {ow_stats.chats_inserted} (reused: {reused_c})")
+        print(f"Attachments:          {ow_stats.attachments_inserted}")
+    elif stats:
         print("\n--- Injection Summary ---")
         print(f"Messages parsed:   {result.total_messages_parsed}")
         print(f"Messages injected: {stats.messages_inserted}")

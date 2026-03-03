@@ -27,7 +27,7 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 
 ### `ios/`
 - **backup.py** — Discover iPhone backups at platform-specific paths. Read metadata from Info.plist/Manifest.plist/Status.plist. Smart auto-selection: picks the most recent uninjected backup when multiple exist. Creates `.restore_checkpoint_` safety copies before modification. Filters out checkpoint directories from backup listings. Validate backup structure.
-- **sms_db.py** — Core injection into sms.db. Handle/chat creation with dedup (composite key `(id, service)` allows same phone as both SMS and iMessage). Message insertion with ~35 columns. Attachment insertion. Join table management. Trigger drop/restore. Single-transaction safety. Generates `message_summary_info` and `attributedBody` blobs. Detection queries (`_detect_account_id`, etc.) are parameterized by service.
+- **sms_db.py** — Core injection into sms.db. Handle/chat creation with dedup (composite key `(id, service)` allows same phone as both SMS and iMessage). Message insertion with ~35 columns. Overwrite mode: UPDATE existing sacrifice messages preserving CK metadata. Attachment insertion. Join table management. Trigger drop/restore. Single-transaction safety. Generates `message_summary_info` and `attributedBody` blobs. Detection queries (`_detect_account_id`, etc.) are parameterized by service.
 - **attributed_body.py** — Generate `attributedBody` typedstream blobs (Apple NSArchiver format, NOT NSKeyedArchiver). Every iOS message with text has this blob; it contains an NSAttributedString with the text and `__kIMMessagePartAttributeName = 0` attribute. Uses the compact NSAttributedString (non-mutable) variant. Verified byte-identical against real iOS 26.2 sms.db (100% match on 7,499+ simple messages). Schema dynamically detected.
 - **message_summary.py** — Generate `message_summary_info` binary plist blobs. Every iOS message with text has this blob; it contains metadata keys (`cmmS\x10`, `cmmAO`, etc.). For SMS messages, the minimal blob `{'cmmS\x10': 0, 'cmmAO': 0}` matches 80%+ of real iOS messages. The schema is dynamically detected so older iOS versions without this column are unaffected.
 - **manifest.py** — Update Manifest.db with new file sizes (sms.db) and new entries (attachments). Computes fileID as `SHA1('{domain}-{relativePath}')`. Creates `flags=2` directory entries for all parent paths of injected attachments (required by iOS restore).
@@ -42,7 +42,7 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 - **pipeline.py** — Orchestrates full flow: find backup → safety copy → parse → convert → inject → copy attachments → update manifest → verify.
 - **verify.py** — Post-injection checks: SQLite integrity, foreign key consistency, join table consistency, attachment files exist, Manifest.db entry present.
 - **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`, `diagnose`, `prepare-sync`, `device` (with sub-subcommands: `list`, `backup`, `inject`, `restore`). Interactive backup confirmation prompt on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin). `--service SMS|iMessage` flag on `inject` and `device inject` controls bubble color.
-- **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`). Also `CKStrategy` enum (none, fake-synced, pending-upload, icloud-reset) and `generate_ck_record_id()` helper.
+- **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`). Also `InjectionMode` enum (insert, overwrite), `CKStrategy` enum (none, fake-synced, pending-upload, icloud-reset), and `generate_ck_record_id()` helper.
 - **exceptions.py** — Hierarchy with user-friendly `hint` attributes.
 
 ## Data Flow
@@ -189,6 +189,30 @@ The `--service` flag controls whether injected messages appear as green SMS bubb
 Chat GUIDs are unchanged — all chats use the `any;-;` prefix regardless of service.
 
 Handles are deduped by composite key `(id, service)`, so the same phone number can exist as both an SMS and iMessage handle in sms.db. This matches real iOS behavior.
+
+### Overwrite Mode (`--mode overwrite`)
+
+Instead of INSERTing new message rows, overwrite mode UPDATEs existing "sacrifice" messages. This preserves the original ROWIDs, GUIDs, and CloudKit metadata (`ck_sync_state`, `ck_record_id`, `ck_record_change_tag`), making injected messages indistinguishable from real iOS messages to CloudKit reconciliation.
+
+**Usage:** `green2blue inject export.zip --mode overwrite --sacrifice-chat 86753 --sacrifice-chat 53849`
+
+**Flow:**
+1. User specifies sacrifice chat ROWIDs (conversations to repurpose)
+2. Messages from those chats form a "sacrifice pool" (oldest first)
+3. If pool < messages to inject, `InsufficientSacrificeError` is raised
+4. For each Android message, a sacrifice message is popped and:
+   - Content columns are UPDATEd: `text`, `attributedBody`, `message_summary_info`, `date`, `handle_id`, direction flags
+   - CK columns are **preserved**: `ck_sync_state`, `ck_record_id`, `ck_record_change_tag`
+   - ROWID and original GUID are preserved (no `green2blue:` prefix)
+   - `chat_message_join` is updated to move the message to the target chat
+   - Old attachment joins are removed, new ones inserted
+5. Handles and chats for Android contacts are created as needed (same as INSERT mode)
+
+### iCloud Sync Disable (`--disable-icloud-sync`)
+
+Flips `CloudKitSyncingEnabled = False` in `com.apple.madrid.plist` inside the backup. After restore, iCloud Messages is disabled, preventing CloudKit from wiping local messages during Apple ID sign-in.
+
+**Implementation:** Computes `fileID = SHA1("HomeDomain-Library/Preferences/com.apple.madrid.plist")`, reads the plist, sets the flag, re-serializes, updates the Manifest.db entry with new size/digest. Works for both encrypted and unencrypted backups.
 
 ### CK Strategy Options (`--ck-strategy`)
 

@@ -849,3 +849,148 @@ class TestEncryptedPipeline:
         assert result1.injection_stats.messages_inserted == 2
         assert result2.injection_stats.messages_skipped == 2
         assert result2.injection_stats.messages_inserted == 0
+
+
+def _populate_backup_with_sacrifice(backup_dir: Path, chat_identifier: str, count: int) -> int:
+    """Insert sacrifice messages into a backup's sms.db for overwrite testing.
+
+    Returns the chat ROWID.
+    """
+    import uuid
+
+    sms_hash = get_sms_db_hash()
+    sms_db = backup_dir / sms_hash[:2] / sms_hash
+    conn = sqlite3.connect(sms_db)
+
+    conn.execute(
+        "INSERT INTO handle (id, country, service) VALUES (?, 'us', 'SMS')",
+        (chat_identifier,),
+    )
+    handle_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    chat_guid = f"any;-;{chat_identifier}"
+    conn.execute(
+        """INSERT INTO chat (guid, style, state, chat_identifier, service_name,
+                             account_login, group_id, server_change_token,
+                             ck_sync_state, cloudkit_record_id)
+           VALUES (?, 45, 3, ?, 'SMS', 'E:', ?, '', 1, '')""",
+        (chat_guid, chat_identifier, str(uuid.uuid4())),
+    )
+    chat_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    conn.execute(
+        "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
+        (chat_rowid, handle_rowid),
+    )
+
+    base_date = 700000000000000000
+    for i in range(count):
+        msg_guid = f"sacrifice-{uuid.uuid4()}"
+        ck_record_id = f"{'b' * 60}{i:04d}"
+        msg_date = base_date + i * 1000000000
+        conn.execute(
+            """INSERT INTO message (guid, text, handle_id, service, date,
+                                    date_read, date_delivered, is_from_me,
+                                    is_read, is_delivered, is_finished,
+                                    ck_sync_state, ck_record_id, ck_record_change_tag)
+               VALUES (?, ?, ?, 'SMS', ?, ?, ?, 0, 1, 1, 1, 1, ?, '99')""",
+            (msg_guid, f"sacrifice {i}", handle_rowid, msg_date, msg_date, msg_date, ck_record_id),
+        )
+        rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (?, ?, ?)",
+            (chat_rowid, rowid, msg_date),
+        )
+
+    conn.commit()
+    conn.close()
+    return chat_rowid
+
+
+class TestOverwritePipeline:
+    """Integration tests for overwrite mode through the full pipeline."""
+
+    def test_overwrite_pipeline_basic(self, tmp_dir):
+        """Overwrite mode should UPDATE sacrifice messages instead of INSERT."""
+        from green2blue.models import InjectionMode
+
+        backup_dir = _create_full_backup(tmp_dir)
+        sacrifice_chat_id = _populate_backup_with_sacrifice(
+            backup_dir, "+15551110000", 3,
+        )
+
+        zip_path = _create_export_zip(tmp_dir)
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            injection_mode=InjectionMode.OVERWRITE,
+            sacrifice_chats=[sacrifice_chat_id],
+        )
+
+        assert result.overwrite_stats is not None
+        assert result.overwrite_stats.messages_overwritten == 2
+        assert result.overwrite_stats.sacrifice_pool_size == 3
+        assert result.injection_stats is None
+        assert result.verification is not None
+        assert result.verification.passed
+
+        # Verify CK metadata preserved on overwritten messages
+        sms_hash = get_sms_db_hash()
+        sms_db = backup_dir / sms_hash[:2] / sms_hash
+        conn = sqlite3.connect(sms_db)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT ck_sync_state, ck_record_id, ck_record_change_tag "
+            "FROM message WHERE text LIKE 'Hello%'"
+        ).fetchall()
+        for row in rows:
+            assert row["ck_sync_state"] == 1
+            assert len(row["ck_record_id"]) == 64
+            assert row["ck_record_change_tag"] == "99"
+        conn.close()
+
+    def test_overwrite_pipeline_icloud_disable(self, tmp_dir):
+        """Pipeline with --disable-icloud-sync should flip madrid.plist flag."""
+        backup_dir = _create_full_backup(tmp_dir)
+
+        # Create com.apple.madrid.plist in the backup
+        madrid_domain = "HomeDomain"
+        madrid_path = "Library/Preferences/com.apple.madrid.plist"
+        from green2blue.ios.manifest import compute_file_id
+        madrid_file_id = compute_file_id(madrid_domain, madrid_path)
+
+        madrid_dir = backup_dir / madrid_file_id[:2]
+        madrid_dir.mkdir(exist_ok=True)
+        madrid_plist = {
+            "CloudKitSyncingEnabled": True,
+            "OtherSetting": 42,
+        }
+        (madrid_dir / madrid_file_id).write_bytes(
+            plistlib.dumps(madrid_plist, fmt=plistlib.FMT_BINARY)
+        )
+
+        # Add madrid.plist to Manifest.db
+        manifest_db = backup_dir / "Manifest.db"
+        conn = sqlite3.connect(manifest_db)
+        conn.execute(
+            "INSERT INTO Files (fileID, domain, relativePath, flags, file) VALUES (?, ?, ?, ?, ?)",
+            (madrid_file_id, madrid_domain, madrid_path, 1, b""),
+        )
+        conn.commit()
+        conn.close()
+
+        zip_path = _create_export_zip(tmp_dir)
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            disable_icloud_sync=True,
+        )
+
+        assert result.injection_stats.messages_inserted == 2
+
+        # Verify madrid.plist was modified
+        modified_data = (madrid_dir / madrid_file_id).read_bytes()
+        modified_plist = plistlib.loads(modified_data)
+        assert modified_plist["CloudKitSyncingEnabled"] is False
+        assert modified_plist["OtherSetting"] == 42

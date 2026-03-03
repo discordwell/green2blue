@@ -17,10 +17,11 @@ import hashlib
 import logging
 import sqlite3
 import uuid
+from collections import deque
 from dataclasses import replace as dc_replace
 from pathlib import Path
 
-from green2blue.exceptions import DatabaseError
+from green2blue.exceptions import DatabaseError, InsufficientSacrificeError
 from green2blue.ios.attributed_body import build_attributed_body
 from green2blue.ios.message_summary import build_message_summary_info
 from green2blue.ios.trigger_utils import (
@@ -128,68 +129,21 @@ class SMSDatabase:
 
             cursor = self.conn.cursor()
 
-            # Load existing data for dedup
-            existing_handles = self._load_existing_handles()
-            existing_chats = self._load_existing_chats()
+            # Load existing message hashes for dedup
             existing_hashes = set()
             if skip_duplicates:
                 existing_hashes = self._load_existing_message_hashes()
 
-            # Insert handles (keyed by (id, service) to support same phone as both SMS and iMessage)
-            handle_rowids: dict[tuple[str, str], int] = {}
-            for handle in result.handles:
-                key = (handle.id, handle.service)
-                if key in existing_handles:
-                    handle_rowids[key] = existing_handles[key]
-                    stats.handles_existing += 1
-                else:
-                    rowid = self._insert_handle(cursor, handle)
-                    handle_rowids[key] = rowid
-                    stats.handles_inserted += 1
+            # Create/dedup handles, chats, and join links
+            handle_rowids, chat_rowids = self._resolve_handles_and_chats(
+                cursor, result, stats,
+            )
 
-            # Detect metadata from existing data for consistency.
-            # Use the service of the first handle to know which service we're injecting.
+            # Detect inject-specific metadata from existing data
             injected_service = result.handles[0].service if result.handles else "SMS"
-            detected_account_id = self._detect_account_id(injected_service)
             detected_caller_id = self._detect_destination_caller_id(injected_service)
             detected_account = self._detect_account(injected_service)
             detected_account_guid = self._detect_account_guid(injected_service)
-
-            # Insert chats
-            chat_rowids: dict[str, int] = {}
-            for chat in result.chats:
-                if chat.guid in existing_chats:
-                    chat_rowids[chat.guid] = existing_chats[chat.guid]
-                    stats.chats_existing += 1
-                else:
-                    # Apply detected account_id if chat has none
-                    if detected_account_id and not chat.account_id:
-                        chat = dc_replace(chat, account_id=detected_account_id)
-                    rowid = self._insert_chat(cursor, chat)
-                    chat_rowids[chat.guid] = rowid
-                    stats.chats_inserted += 1
-
-            # Link handles to chats
-            for chat in result.chats:
-                chat_rowid = chat_rowids.get(chat.guid)
-                if chat_rowid is None:
-                    continue
-                # For 1:1 chats, link the single handle
-                if chat.style == 45:
-                    handle_rowid = handle_rowids.get(
-                        (chat.chat_identifier, chat.service_name)
-                    )
-                    if handle_rowid:
-                        self._insert_chat_handle_join(cursor, chat_rowid, handle_rowid)
-                else:
-                    # Group chat: link all handles in the identifier
-                    for phone in chat.chat_identifier.split(","):
-                        phone = phone.strip()
-                        handle_rowid = handle_rowids.get(
-                            (phone, chat.service_name)
-                        )
-                        if handle_rowid:
-                            self._insert_chat_handle_join(cursor, chat_rowid, handle_rowid)
 
             # Insert messages
             for msg in result.messages:
@@ -245,6 +199,70 @@ class SMSDatabase:
         finally:
             # Always restore triggers, whether injection succeeded or failed
             self._restore_triggers()
+
+    def _resolve_handles_and_chats(
+        self,
+        cursor: sqlite3.Cursor,
+        result: ConversionResult,
+        stats: _BaseStats,
+    ) -> tuple[dict[tuple[str, str], int], dict[str, int]]:
+        """Create/dedup handles and chats, link via join table.
+
+        Shared between inject() and overwrite().
+
+        Returns:
+            (handle_rowids, chat_rowids) mappings.
+        """
+        existing_handles = self._load_existing_handles()
+        existing_chats = self._load_existing_chats()
+
+        injected_service = result.handles[0].service if result.handles else "SMS"
+        detected_account_id = self._detect_account_id(injected_service)
+
+        handle_rowids: dict[tuple[str, str], int] = {}
+        for handle in result.handles:
+            key = (handle.id, handle.service)
+            if key in existing_handles:
+                handle_rowids[key] = existing_handles[key]
+                stats.handles_existing += 1
+            else:
+                rowid = self._insert_handle(cursor, handle)
+                handle_rowids[key] = rowid
+                stats.handles_inserted += 1
+
+        chat_rowids: dict[str, int] = {}
+        for chat in result.chats:
+            if chat.guid in existing_chats:
+                chat_rowids[chat.guid] = existing_chats[chat.guid]
+                stats.chats_existing += 1
+            else:
+                if detected_account_id and not chat.account_id:
+                    chat = dc_replace(chat, account_id=detected_account_id)
+                rowid = self._insert_chat(cursor, chat)
+                chat_rowids[chat.guid] = rowid
+                stats.chats_inserted += 1
+
+        # Link handles to chats
+        for chat in result.chats:
+            chat_rowid = chat_rowids.get(chat.guid)
+            if chat_rowid is None:
+                continue
+            if chat.style == 45:
+                handle_rowid = handle_rowids.get(
+                    (chat.chat_identifier, chat.service_name)
+                )
+                if handle_rowid:
+                    self._insert_chat_handle_join(cursor, chat_rowid, handle_rowid)
+            else:
+                for phone in chat.chat_identifier.split(","):
+                    phone = phone.strip()
+                    handle_rowid = handle_rowids.get(
+                        (phone, chat.service_name)
+                    )
+                    if handle_rowid:
+                        self._insert_chat_handle_join(cursor, chat_rowid, handle_rowid)
+
+        return handle_rowids, chat_rowids
 
     def _drop_triggers(self) -> None:
         """Drop all triggers from sms.db, saving their CREATE SQL.
@@ -622,6 +640,213 @@ class SMSDatabase:
         cursor.execute("SELECT COUNT(*) as cnt FROM message")
         return cursor.fetchone()["cnt"]
 
+    def overwrite(
+        self,
+        result: ConversionResult,
+        sacrifice_chat_ids: list[int],
+    ) -> OverwriteStats:
+        """Overwrite sacrifice messages with converted Android messages.
+
+        UPDATE existing rows instead of INSERTing new ones, preserving
+        ROWIDs, GUIDs, and CloudKit metadata so messages appear
+        indistinguishable from real iOS messages.
+
+        Args:
+            result: The conversion result with messages, handles, and chats.
+            sacrifice_chat_ids: ROWIDs of chats whose messages form the sacrifice pool.
+
+        Returns:
+            OverwriteStats with counts of overwritten records.
+        """
+        if not self.conn:
+            raise DatabaseError("Database not open. Call open() first.")
+
+        stats = OverwriteStats()
+
+        try:
+            self._drop_triggers()
+
+            cursor = self.conn.cursor()
+
+            # Load sacrifice messages (oldest first)
+            sacrifice_pool = self._load_sacrifice_messages(cursor, sacrifice_chat_ids)
+            stats.sacrifice_pool_size = len(sacrifice_pool)
+
+            if len(sacrifice_pool) < len(result.messages):
+                raise InsufficientSacrificeError(
+                    f"Sacrifice pool has {len(sacrifice_pool)} messages but "
+                    f"{len(result.messages)} are needed.",
+                )
+
+            # Create/dedup handles, chats, and join links
+            handle_rowids, chat_rowids = self._resolve_handles_and_chats(
+                cursor, result, stats,
+            )
+
+            # Overwrite messages
+            pool = deque(sacrifice_pool)
+            for msg in result.messages:
+                handle_rowid = handle_rowids.get((msg.handle_id, msg.service))
+                if handle_rowid is None:
+                    logger.warning("No handle for %r — skipping message", msg.handle_id)
+                    stats.messages_skipped += 1
+                    continue
+
+                sacrifice = pool.popleft()
+
+                # Determine target chat
+                chat_key = msg.chat_identifier or msg.handle_id
+                chat_guid = compute_chat_guid(chat_key, msg.group_members)
+                target_chat_rowid = chat_rowids.get(chat_guid)
+
+                self._overwrite_message(
+                    cursor, sacrifice["rowid"], msg, handle_rowid,
+                )
+                stats.messages_overwritten += 1
+
+                # Move message from sacrifice chat to target chat
+                if target_chat_rowid:
+                    self._move_message_to_chat(
+                        cursor, sacrifice["rowid"], target_chat_rowid, msg.date,
+                    )
+
+                # Remove old attachment joins and add new ones
+                self._remove_old_attachments(cursor, sacrifice["rowid"])
+                for att in msg.attachments:
+                    att_rowid = self._insert_attachment(cursor, att, msg.is_from_me)
+                    self._insert_message_attachment_join(cursor, sacrifice["rowid"], att_rowid)
+                    stats.attachments_inserted += 1
+
+            self.conn.commit()
+            return stats
+
+        except Exception:
+            self.conn.rollback()
+            raise
+
+        finally:
+            self._restore_triggers()
+
+    def _load_sacrifice_messages(
+        self, cursor: sqlite3.Cursor, chat_ids: list[int],
+    ) -> list[dict]:
+        """Load messages from sacrifice chats, oldest first.
+
+        Returns list of dicts with rowid, guid, ck_sync_state,
+        ck_record_id, ck_record_change_tag.
+        """
+        if not chat_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in chat_ids)
+        cursor.execute(
+            f"""SELECT m.ROWID as rowid, m.guid, m.ck_sync_state,
+                       m.ck_record_id, m.ck_record_change_tag
+                FROM message m
+                JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+                WHERE cmj.chat_id IN ({placeholders})
+                ORDER BY m.date ASC""",
+            chat_ids,
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _overwrite_message(
+        self,
+        cursor: sqlite3.Cursor,
+        sacrifice_rowid: int,
+        msg: iOSMessage,
+        handle_rowid: int,
+    ) -> None:
+        """UPDATE content columns of a sacrifice message, preserving CK metadata."""
+        cache_has_attachments = 1 if msg.attachments else 0
+
+        # Build optional column updates
+        has_msi = "message_summary_info" in self._msg_schema
+        has_ab = "attributedBody" in self._msg_schema
+
+        msi_blob = build_message_summary_info(
+            service=msg.service,
+            is_from_me=msg.is_from_me,
+            has_text=bool(msg.text),
+        ) if has_msi else None
+
+        ab_blob = build_attributed_body(msg.text) if has_ab else None
+
+        opt_sets = ""
+        opt_params: list = []
+        if has_msi:
+            opt_sets += ", message_summary_info = ?"
+            opt_params.append(msi_blob)
+        if has_ab:
+            opt_sets += ", attributedBody = ?"
+            opt_params.append(ab_blob)
+
+        cursor.execute(
+            f"""UPDATE message SET
+                text = ?,
+                handle_id = ?,
+                service = ?,
+                date = ?,
+                date_read = ?,
+                date_delivered = ?,
+                is_from_me = ?,
+                is_sent = ?,
+                is_delivered = ?,
+                is_read = ?,
+                is_finished = ?,
+                is_empty = ?,
+                was_downgraded = ?,
+                cache_has_attachments = ?,
+                group_title = ?{opt_sets}
+            WHERE ROWID = ?""",
+            (
+                msg.text,
+                handle_rowid,
+                msg.service,
+                msg.date,
+                msg.date_read,
+                msg.date_delivered,
+                int(msg.is_from_me),
+                int(msg.is_sent),
+                int(msg.is_delivered),
+                int(msg.is_read),
+                int(msg.is_finished),
+                0 if msg.text else 1,
+                int(msg.was_downgraded),
+                cache_has_attachments,
+                msg.group_title,
+                *opt_params,
+                sacrifice_rowid,
+            ),
+        )
+
+    def _move_message_to_chat(
+        self,
+        cursor: sqlite3.Cursor,
+        message_id: int,
+        new_chat_id: int,
+        new_date: int,
+    ) -> None:
+        """Move a message from its current chat to a new chat."""
+        cursor.execute(
+            "DELETE FROM chat_message_join WHERE message_id = ?",
+            (message_id,),
+        )
+        cursor.execute(
+            """INSERT OR IGNORE INTO chat_message_join
+               (chat_id, message_id, message_date) VALUES (?, ?, ?)""",
+            (new_chat_id, message_id, new_date),
+        )
+
+    def _remove_old_attachments(
+        self, cursor: sqlite3.Cursor, message_id: int,
+    ) -> None:
+        """Remove old attachment joins for a message."""
+        cursor.execute(
+            "DELETE FROM message_attachment_join WHERE message_id = ?",
+            (message_id,),
+        )
+
     def integrity_check(self) -> bool:
         """Run PRAGMA integrity_check on the database."""
         cursor = self.conn.cursor()
@@ -630,22 +855,48 @@ class SMSDatabase:
         return result == "ok"
 
 
-class InjectionStats:
-    """Statistics from an injection operation."""
+class _BaseStats:
+    """Shared metrics between injection modes."""
 
     def __init__(self):
         self.handles_inserted: int = 0
         self.handles_existing: int = 0
         self.chats_inserted: int = 0
         self.chats_existing: int = 0
-        self.messages_inserted: int = 0
         self.messages_skipped: int = 0
         self.attachments_inserted: int = 0
+
+
+class InjectionStats(_BaseStats):
+    """Statistics from an injection operation."""
+
+    def __init__(self):
+        super().__init__()
+        self.messages_inserted: int = 0
 
     def __repr__(self) -> str:
         return (
             f"InjectionStats(messages={self.messages_inserted}, "
             f"skipped={self.messages_skipped}, "
+            f"handles={self.handles_inserted} new/{self.handles_existing} existing, "
+            f"chats={self.chats_inserted} new/{self.chats_existing} existing, "
+            f"attachments={self.attachments_inserted})"
+        )
+
+
+class OverwriteStats(_BaseStats):
+    """Statistics from an overwrite operation."""
+
+    def __init__(self):
+        super().__init__()
+        self.sacrifice_pool_size: int = 0
+        self.messages_overwritten: int = 0
+
+    def __repr__(self) -> str:
+        return (
+            f"OverwriteStats(overwritten={self.messages_overwritten}, "
+            f"skipped={self.messages_skipped}, "
+            f"sacrifice_pool={self.sacrifice_pool_size}, "
             f"handles={self.handles_inserted} new/{self.handles_existing} existing, "
             f"chats={self.chats_inserted} new/{self.chats_existing} existing, "
             f"attachments={self.attachments_inserted})"
