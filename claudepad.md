@@ -1,13 +1,51 @@
 # Session Summaries
 
-## 2026-03-01T08:00Z - Implemented destination_caller_id and ck_chat_id
-- Added `_detect_destination_caller_id()` to SMSDatabase: auto-detects device owner's phone from most frequent value in existing messages
-- Added `ck_chat_id` derivation: replaces `any;-;` prefix in chat GUID with `{service};-;` (e.g., `SMS;-;+phone`)
-- Both use dynamic schema detection via `_inspect_schema()`
-- Added `ck_chat_id TEXT` column to test schema (create_empty_smsdb.sql + conftest.py)
-- 5 new tests (3 destination_caller_id + 2 ck_chat_id), 316 total, lint clean
-- Updated ARCHITECTURE.md with new field documentation
-- All 4 iOS-generated blob/field gaps now closed: attributedBody, message_summary_info, destination_caller_id, ck_chat_id
+## 2026-03-03T19:00Z - CLONE injection mode (Hack Patrol approach)
+- Added `InjectionMode.CLONE` — third mode alongside INSERT and OVERWRITE
+- Faithfully reproduces Hack Patrol (2022) single-SMS injection technique
+- Clones last existing incoming SMS message, inheriting ALL columns including CK metadata
+- Key Hack Patrol choices flagged with `# HACK_PATROL_NOTE:` comments:
+  - No trigger dropping (will fail on real sms.db with iOS triggers)
+  - CK metadata duplicated (same ck_record_id on all cloned messages)
+  - message_summary_info inherited, not generated per-message
+  - Chat GUID "SMS;-;" prefix (not "any;-;"), is_filtered=1
+  - Plain UUID message GUID (no "green2blue:" prefix)
+  - Binary template attributedBody (128 UTF-16 limit, fallback for longer)
+- New files: `tests/test_clone.py` (48 tests across 12 classes)
+- New classes: `CloneStats`, `CloneSourceError`, `_build_hackpatrol_attributed_body()`
+- Pipeline + CLI fully integrated (both encrypted/unencrypted paths)
+- 479 tests (48 new), lint clean
+
+## 2026-03-01T14:00Z - iCloud sign-in kills restored messages; overwrite POC built
+- Root cause confirmed: CK reconciliation during Apple ID sign-in wipes all local messages
+- Without Apple ID: 104K messages load fine from pristine backup sms.db
+- Unencrypted backups don't restore messages (Apple gates SMS behind encryption flag)
+- Built `scripts/wet_test_overwrite.py` — UPDATE existing messages instead of INSERT
+- CK metadata analysis: all messages have unique ck_record_id (64-char hex), base-36 change tags
+- `CloudKitSyncingEnabled` flag found in `com.apple.madrid.plist` — can disable in backup
+- Organized pristine backups in `.pristine_backups/` by date, cleaned up ~160GB of old copies
+- IsFullBackup finding: Apple sets False on all backups; True = full wipe (NOT what we want)
+- Next: test if `CloudKitSyncingEnabled=False` in backup survives Apple ID sign-in
+
+## 2026-03-01T08:40Z - Fixed Manifest.db digest corruption + missing directory entries
+- Two critical bugs found during backup restore investigation:
+  1. Digest corruption: _try_raw_patch blind byte search matched Size/LastModified inside SHA1 digest data
+  2. Missing flags=2 directory entries for injected attachment parent paths
+- Fix: digest patching now always uses plistlib roundtrip; raw patching only for Size/LastModified
+- Fix: _ensure_directory_entries creates flags=2 entries for all parent paths
+- Extracted shared extract_mbfile_digest() to plist_utils.py (eliminated 3x duplication)
+- Removed dead code (_replace_data_value, unused new_digest param in _try_raw_patch)
+- Fixed non-atomic commit in _ensure_directory_entries
+- 330 tests (11 new), lint clean
+
+## 2026-03-01T08:00Z - Closed all iOS-generated field gaps
+- Implemented destination_caller_id, ck_chat_id, account, account_guid auto-detection
+- All auto-detect from most frequent values in existing messages (parallels _detect_account_id pattern)
+- ck_chat_id derived from chat GUID: replace `any;-;` prefix with `{service};-;`
+- Added `ck_chat_id TEXT` column to test schemas
+- Final comparison: 85/97 match, 7 inherently different, 3 CK sync (by design), 2 correct-as-is
+- 319 tests (8 new), lint clean
+- All iOS-generated fields now closed: attributedBody, message_summary_info, destination_caller_id, ck_chat_id, account, account_guid
 
 ## 2026-03-01T06:00Z - Reverse-engineered attributedBody typedstream format
 - Analyzed 26,891 real iOS 26.2 attributedBody blobs from sms.db backup
@@ -90,12 +128,11 @@
 - MMS `date` is in seconds; SMS `date` is in milliseconds
 
 ## Real backup injection comparison results (94 message columns)
-- 83 columns match perfectly between injected and real iOS SMS
+- 85 columns match perfectly between injected and real iOS SMS
 - 7 inherently different (ROWID, guid, text, handle_id, date, date_read, date_delivered)
-- 2 remaining are iOS-generated blobs we don't create:
-  - destination_caller_id (user phone), ck_chat_id (chat GUID)
-- attributedBody is now generated (see below)
-- message_summary_info is now generated (see below)
+- 3 intentionally different: ck_sync_state/ck_record_id/ck_record_change_tag (unsynced by design)
+- 2 correct-as-is: ck_chat_id (different conversation, same format), fallback_hash (89.7% NULL)
+- All iOS-generated fields now populated: attributedBody, message_summary_info, destination_caller_id, ck_chat_id, account, account_guid
 - Real iOS `has_dd_results`: mostly 0 (iOS populates after data detection runs)
 - Real iOS `was_data_detected`: mostly 1 (flag that detection should run)
 - Real iOS `group_title`: NULL for 1:1, subject string for MMS groups
@@ -121,6 +158,7 @@
 - Must physically move backup directories out of MobileSync/Backup/ for Finder to stop showing them
 - Unplugging and replugging iPhone may be needed to refresh Finder's backup list
 - Restore checkpoint + secondary backups all show same timestamp in Finder (from shared Info.plist Date field), making it impossible for users to distinguish — hide extras before restore
+- **IsFullBackup: Apple/Finder sets `False` on ALL backups for this device.** `True` = full wipe-and-restore; `False` = partial overlay (no wipe). Previous sessions manually set `True` which likely caused restore failures. Codebase does NOT set this flag. NEVER set to `True` without explicit reason.
 
 ## message_summary_info plist structure (reverse-engineered from real iOS 26.2)
 - Binary plist dict on every message with text (27,033/27,050 messages in real backup)

@@ -21,7 +21,7 @@ from collections import deque
 from dataclasses import replace as dc_replace
 from pathlib import Path
 
-from green2blue.exceptions import DatabaseError, InsufficientSacrificeError
+from green2blue.exceptions import CloneSourceError, DatabaseError, InsufficientSacrificeError
 from green2blue.ios.attributed_body import build_attributed_body
 from green2blue.ios.message_summary import build_message_summary_info
 from green2blue.ios.trigger_utils import (
@@ -847,6 +847,284 @@ class SMSDatabase:
             (message_id,),
         )
 
+    # --- Clone mode (Hack Patrol approach) ---
+
+    def _clone_last_incoming_message(self, cursor: sqlite3.Cursor) -> sqlite3.Row | None:
+        """Find the last incoming SMS message to use as clone source.
+
+        # HACK_PATROL_NOTE: Cloning from the last row inherits CK metadata,
+        # but all cloned messages will share the same ck_record_id — CloudKit
+        # will detect these as duplicates. green2blue's INSERT mode generates
+        # unique IDs; OVERWRITE mode preserves original unique IDs.
+        """
+        return cursor.execute(
+            "SELECT * FROM message "
+            "WHERE is_from_me = 0 AND service = 'SMS' "
+            "ORDER BY ROWID DESC LIMIT 1",
+        ).fetchone()
+
+    def _clone_last_sms_handle(self, cursor: sqlite3.Cursor) -> sqlite3.Row | None:
+        """Find the last SMS handle to clone from."""
+        return cursor.execute(
+            "SELECT * FROM handle "
+            "WHERE service = 'SMS' "
+            "ORDER BY ROWID DESC LIMIT 1",
+        ).fetchone()
+
+    def _clone_last_sms_chat(self, cursor: sqlite3.Cursor) -> sqlite3.Row | None:
+        """Find the last SMS chat to clone from."""
+        return cursor.execute(
+            "SELECT * FROM chat "
+            "WHERE service_name = 'SMS' "
+            "ORDER BY ROWID DESC LIMIT 1",
+        ).fetchone()
+
+    def _clone_insert_handle(
+        self,
+        cursor: sqlite3.Cursor,
+        source: sqlite3.Row,
+        phone: str,
+    ) -> int:
+        """Clone a handle from source, overriding id and uncanonicalized_id.
+
+        # HACK_PATROL_NOTE: Sets uncanonicalized_id = id. Real iOS may differ
+        # (e.g., uncanonicalized_id could be the raw dialed number).
+        # green2blue's INSERT mode uses explicit iOSHandle model values.
+        """
+        col_names = source.keys()
+        values = dict(zip(col_names, tuple(source), strict=True))
+        values["id"] = phone
+        values["uncanonicalized_id"] = phone  # HACK_PATROL_NOTE: same as id
+
+        # Remove ROWID so SQLite assigns a new one
+        values.pop("ROWID", None)
+
+        cols = list(values.keys())
+        placeholders = ", ".join("?" for _ in cols)
+        cursor.execute(
+            f"INSERT INTO handle ({', '.join(cols)}) VALUES ({placeholders})",
+            tuple(values.values()),
+        )
+        return cursor.lastrowid
+
+    def _clone_insert_chat(
+        self,
+        cursor: sqlite3.Cursor,
+        source: sqlite3.Row,
+        phone: str,
+    ) -> int:
+        """Clone a chat from source with Hack Patrol overrides.
+
+        # HACK_PATROL_NOTE: Uses "SMS;-;" prefix instead of "any;-;".
+        # Real iOS 17+ uses "any;-;" for all chats.
+        # green2blue's INSERT mode uses "any;-;" (correct for modern iOS).
+
+        # HACK_PATROL_NOTE: Sets is_filtered=1, hiding the chat from the
+        # primary inbox. green2blue's INSERT mode uses is_filtered=0 (visible).
+        """
+        col_names = source.keys()
+        values = dict(zip(col_names, tuple(source), strict=True))
+
+        # Hack Patrol overrides
+        values["guid"] = f"SMS;-;{phone}"  # HACK_PATROL_NOTE: "SMS;-;" not "any;-;"
+        values["chat_identifier"] = phone
+        values["is_filtered"] = 1  # HACK_PATROL_NOTE: hidden from inbox
+        values["group_id"] = str(uuid.uuid4()).upper()
+
+        # Remove ROWID so SQLite assigns a new one
+        values.pop("ROWID", None)
+
+        cols = list(values.keys())
+        placeholders = ", ".join("?" for _ in cols)
+        cursor.execute(
+            f"INSERT INTO chat ({', '.join(cols)}) VALUES ({placeholders})",
+            tuple(values.values()),
+        )
+        return cursor.lastrowid
+
+    def _clone_insert_message(
+        self,
+        cursor: sqlite3.Cursor,
+        source: sqlite3.Row,
+        overrides: dict,
+    ) -> int:
+        """Clone ALL columns from source message, applying overrides.
+
+        # HACK_PATROL_NOTE: Inherits message_summary_info from source instead
+        # of generating per-message. Wrong blob for new content/direction.
+        # green2blue's INSERT mode generates correct MSI per message.
+
+        # HACK_PATROL_NOTE: CK metadata (ck_sync_state, ck_record_id,
+        # ck_record_change_tag) is duplicated from source. All cloned messages
+        # share the same ck_record_id — CloudKit detects duplicates.
+        # green2blue's INSERT mode generates unique IDs; OVERWRITE preserves
+        # original unique IDs from sacrifice messages.
+        """
+        col_names = source.keys()
+        values = dict(zip(col_names, tuple(source), strict=True))
+
+        # Apply overrides
+        values.update(overrides)
+
+        # Remove ROWID so SQLite assigns a new one
+        values.pop("ROWID", None)
+
+        cols = list(values.keys())
+        placeholders = ", ".join("?" for _ in cols)
+        cursor.execute(
+            f"INSERT INTO message ({', '.join(cols)}) VALUES ({placeholders})",
+            tuple(values.values()),
+        )
+        return cursor.lastrowid
+
+    def clone(self, result: ConversionResult) -> CloneStats:
+        """Clone existing messages to inject new content (Hack Patrol approach).
+
+        Faithfully reproduces the Hack Patrol (2022) single-SMS injection
+        technique: clone the last existing database row and modify specific
+        fields, inheriting ALL other columns including CloudKit metadata.
+
+        # HACK_PATROL_NOTE: Does NOT drop triggers. Real iOS triggers call
+        # internal functions that fail outside the device, so green2blue's
+        # INSERT/OVERWRITE modes drop triggers before injection and restore
+        # them after. Hack Patrol leaves them in place.
+
+        # HACK_PATROL_NOTE: No duplicate detection. green2blue's INSERT mode
+        # uses content-hash dedup to avoid creating duplicate messages.
+
+        Args:
+            result: The conversion result with messages, handles, and chats.
+
+        Returns:
+            CloneStats with counts of cloned records.
+        """
+        if not self.conn:
+            raise DatabaseError("Database not open. Call open() first.")
+
+        stats = CloneStats()
+
+        try:
+            cursor = self.conn.cursor()
+
+            # Find clone sources
+            source_msg = self._clone_last_incoming_message(cursor)
+            if source_msg is None:
+                raise CloneSourceError(
+                    "No incoming SMS message found to clone from.",
+                )
+
+            source_handle = self._clone_last_sms_handle(cursor)
+            if source_handle is None:
+                raise CloneSourceError(
+                    "No SMS handle found to clone from.",
+                )
+
+            source_chat = self._clone_last_sms_chat(cursor)
+            if source_chat is None:
+                raise CloneSourceError(
+                    "No SMS chat found to clone from.",
+                )
+
+            stats.clone_source_rowid = source_msg["ROWID"]
+            stats.ck_metadata_duplicated = bool(source_msg["ck_record_id"])
+
+            # Track created handles and chats for reuse
+            handle_cache: dict[str, int] = {}  # phone -> rowid
+            chat_cache: dict[str, int] = {}  # phone -> rowid
+
+            for msg in result.messages:
+                phone = msg.handle_id
+
+                # Create or reuse handle
+                if phone in handle_cache:
+                    handle_rowid = handle_cache[phone]
+                else:
+                    # Check if handle already exists
+                    existing = cursor.execute(
+                        "SELECT ROWID FROM handle WHERE id = ? AND service = 'SMS'",
+                        (phone,),
+                    ).fetchone()
+                    if existing:
+                        handle_rowid = existing[0]
+                        stats.handles_existing += 1
+                    else:
+                        handle_rowid = self._clone_insert_handle(
+                            cursor, source_handle, phone,
+                        )
+                        stats.handles_inserted += 1
+                    handle_cache[phone] = handle_rowid
+
+                # Create or reuse chat
+                # HACK_PATROL_NOTE: "SMS;-;" prefix, not "any;-;"
+                chat_guid = f"SMS;-;{phone}"
+                if phone in chat_cache:
+                    chat_rowid = chat_cache[phone]
+                else:
+                    existing_chat = cursor.execute(
+                        "SELECT ROWID FROM chat WHERE guid = ?",
+                        (chat_guid,),
+                    ).fetchone()
+                    if existing_chat:
+                        chat_rowid = existing_chat[0]
+                        stats.chats_existing += 1
+                    else:
+                        chat_rowid = self._clone_insert_chat(
+                            cursor, source_chat, phone,
+                        )
+                        stats.chats_inserted += 1
+
+                        # Link handle to chat
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO chat_handle_join "
+                            "(chat_id, handle_id) VALUES (?, ?)",
+                            (chat_rowid, handle_rowid),
+                        )
+                    chat_cache[phone] = chat_rowid
+
+                # Clone message with overrides
+                # HACK_PATROL_NOTE: Plain UUID guid, no "green2blue:" prefix.
+                # green2blue's INSERT mode prefixes with "green2blue:" for
+                # easy identification of injected messages.
+                msg_guid = str(uuid.uuid4()).upper()
+
+                ab_blob = _build_hackpatrol_attributed_body(msg.text)
+
+                overrides = {
+                    "guid": msg_guid,
+                    "handle_id": handle_rowid,
+                    "text": msg.text,
+                    "date": msg.date,
+                    "date_read": msg.date_read,
+                    "date_delivered": msg.date_delivered,
+                    "is_from_me": int(msg.is_from_me),
+                    "is_sent": int(msg.is_sent),
+                    "is_read": int(msg.is_read),
+                }
+
+                # Only override attributedBody if schema has it
+                if "attributedBody" in self._msg_schema:
+                    overrides["attributedBody"] = ab_blob
+
+                msg_rowid = self._clone_insert_message(
+                    cursor, source_msg, overrides,
+                )
+
+                # Create chat_message_join
+                cursor.execute(
+                    "INSERT OR IGNORE INTO chat_message_join "
+                    "(chat_id, message_id, message_date) VALUES (?, ?, ?)",
+                    (chat_rowid, msg_rowid, msg.date),
+                )
+
+                stats.messages_cloned += 1
+
+            self.conn.commit()
+            return stats
+
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def integrity_check(self) -> bool:
         """Run PRAGMA integrity_check on the database."""
         cursor = self.conn.cursor()
@@ -901,5 +1179,109 @@ class OverwriteStats(_BaseStats):
             f"chats={self.chats_inserted} new/{self.chats_existing} existing, "
             f"attachments={self.attachments_inserted})"
         )
+
+
+class CloneStats:
+    """Statistics from a clone operation (Hack Patrol approach)."""
+
+    def __init__(self):
+        self.messages_cloned: int = 0
+        self.clone_source_rowid: int = 0
+        self.ck_metadata_duplicated: bool = False
+        self.handles_inserted: int = 0
+        self.handles_existing: int = 0
+        self.chats_inserted: int = 0
+        self.chats_existing: int = 0
+
+    def __repr__(self) -> str:
+        return (
+            f"CloneStats(cloned={self.messages_cloned}, "
+            f"source_rowid={self.clone_source_rowid}, "
+            f"ck_duplicated={self.ck_metadata_duplicated}, "
+            f"handles={self.handles_inserted} new/{self.handles_existing} existing, "
+            f"chats={self.chats_inserted} new/{self.chats_existing} existing)"
+        )
+
+
+def _build_hackpatrol_attributed_body(text: str | None) -> bytes | None:
+    """Build an attributedBody blob using the Hack Patrol binary template.
+
+    This uses a simplified binary template approach with a single-byte
+    length prefix, limiting text to 255 UTF-8 bytes. For longer text,
+    falls back to the proper typedstream builder.
+
+    # HACK_PATROL_NOTE: 255 char limit is fragile. green2blue's
+    # build_attributed_body() handles any length via proper typedstream encoding.
+    """
+    if not text:
+        return None
+
+    text_bytes = text.encode("utf-8")
+    if len(text_bytes) > 255:
+        # HACK_PATROL_NOTE: Fallback to proper builder for long messages.
+        # Real Hack Patrol would truncate or fail here.
+        return build_attributed_body(text)
+
+    utf16_len = len(text.encode("utf-16-le")) // 2
+
+    # Simplified template: header + single-byte length + text + attributes
+    # This matches the Hack Patrol binary template approach
+    header = bytes.fromhex(
+        "040b73747265616d747970656481e803"
+        "840140"
+        "848484124e53417474726962757465645374"
+        "72696e6700"
+        "8484084e534f626a65637400"
+        "85"
+        "92"
+        "848484084e53537472696e6701"
+        "94"
+        "84012b"
+    )
+
+    middle = bytes.fromhex("86" "84026949")
+
+    suffix = bytes.fromhex(
+        "92"
+        "8484840c4e5344696374696f6e61727900"
+        "94"
+        "840169"
+        "01"
+        "92"
+        "8496"
+        "96"
+        "1d"
+        "5f5f6b494d4d6573736167655061727441"
+        "74747269627574654e616d65"
+        "86"
+        "92"
+        "848484084e534e756d62657200"
+        "8484074e5356616c756500"
+        "94"
+        "84012a"
+        "84"
+        "9999"
+        "00"
+        "868686"
+    )
+
+    # Single-byte length for UTF-16 attribute run length
+    if utf16_len < 128:
+        run_len_byte = bytes([utf16_len])
+    else:
+        # HACK_PATROL_NOTE: Single-byte encoding can't represent >= 128.
+        # Proper typedstream uses multi-byte format. Fall back.
+        return build_attributed_body(text)
+
+    # Single-byte length prefix (max 255)
+    return (
+        header
+        + bytes([len(text_bytes)])
+        + text_bytes
+        + middle
+        + b"\x01"
+        + run_len_byte
+        + suffix
+    )
 
 

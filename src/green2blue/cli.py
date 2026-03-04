@@ -128,9 +128,10 @@ def _build_parser() -> argparse.ArgumentParser:
     inject_parser.add_argument(
         "--mode",
         type=str,
-        choices=["insert", "overwrite"],
+        choices=["insert", "overwrite", "clone"],
         default="insert",
-        help="Injection mode: insert new rows or overwrite sacrifice messages (default: insert)",
+        help="Injection mode: insert new rows, overwrite sacrifice messages, "
+             "or clone existing (Hack Patrol) (default: insert)",
     )
     inject_parser.add_argument(
         "--sacrifice-chat",
@@ -440,9 +441,20 @@ def _cmd_inject(args: argparse.Namespace) -> int:
     )
 
     # Print summary
+    cl_stats = result.clone_stats
     ow_stats = result.overwrite_stats
     stats = result.injection_stats
-    if ow_stats:
+    if cl_stats:
+        print("\n--- Clone Summary (Hack Patrol) ---")
+        print(f"Messages parsed:      {result.total_messages_parsed}")
+        print(f"Messages cloned:      {cl_stats.messages_cloned}")
+        print(f"Clone source ROWID:   {cl_stats.clone_source_rowid}")
+        print(f"CK metadata duped:    {'yes' if cl_stats.ck_metadata_duplicated else 'no'}")
+        reused_h = cl_stats.handles_existing
+        print(f"Handles created:      {cl_stats.handles_inserted} (reused: {reused_h})")
+        reused_c = cl_stats.chats_existing
+        print(f"Chats created:        {cl_stats.chats_inserted} (reused: {reused_c})")
+    elif ow_stats:
         print("\n--- Overwrite Summary ---")
         print(f"Messages parsed:      {result.total_messages_parsed}")
         print(f"Sacrifice pool:       {ow_stats.sacrifice_pool_size}")

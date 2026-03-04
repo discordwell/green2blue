@@ -166,3 +166,15 @@ class InsufficientSacrificeError(Green2BlueError):
         "Select sacrifice chats with enough messages to cover the Android export. "
         "Use 'green2blue diagnose' to see message counts per chat."
     )
+
+
+# --- Clone errors ---
+
+
+class CloneSourceError(Green2BlueError):
+    """No suitable source message/chat/handle exists to clone from."""
+
+    hint = (
+        "Clone mode requires at least one existing incoming SMS message in sms.db. "
+        "The backup must have real SMS conversations to clone from."
+    )

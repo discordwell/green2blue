@@ -80,6 +80,7 @@ class InjectionMode(Enum):
 
     INSERT = "insert"  # Insert new rows (default)
     OVERWRITE = "overwrite"  # UPDATE existing sacrifice messages
+    CLONE = "clone"  # Clone last existing message (Hack Patrol approach)
 
 
 class CKStrategy(Enum):

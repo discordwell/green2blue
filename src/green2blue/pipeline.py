@@ -33,7 +33,7 @@ from green2blue.ios.backup import (
     validate_backup,
 )
 from green2blue.ios.manifest import ManifestDB, compute_file_id
-from green2blue.ios.sms_db import InjectionStats, OverwriteStats, SMSDatabase
+from green2blue.ios.sms_db import CloneStats, InjectionStats, OverwriteStats, SMSDatabase
 from green2blue.models import CKStrategy, InjectionMode, iOSAttachment, iOSMessage
 from green2blue.parser.ndjson_parser import parse_ndjson
 from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
@@ -48,6 +48,7 @@ class PipelineResult:
 
     injection_stats: InjectionStats | None = None
     overwrite_stats: OverwriteStats | None = None
+    clone_stats: CloneStats | None = None
     verification: VerificationResult | None = None
     safety_copy_path: Path | None = None
     backup_path: Path | None = None
@@ -174,6 +175,11 @@ def run_pipeline(
                         conversion, sacrifice_chats or [],
                     )
                 logger.info("Overwrite complete: %s", result.overwrite_stats)
+            elif injection_mode == InjectionMode.CLONE:
+                logger.info("Cloning messages into sms.db (Hack Patrol)...")
+                with SMSDatabase(sms_db_file) as db:
+                    result.clone_stats = db.clone(conversion)
+                logger.info("Clone complete: %s", result.clone_stats)
             else:
                 logger.info("Injecting messages into sms.db...")
                 with SMSDatabase(sms_db_file) as db:
@@ -469,7 +475,7 @@ def _run_encrypted_pipeline(
             result.safety_copy_path = create_safety_copy(backup_info.path)
             logger.info("Safety copy at: %s", result.safety_copy_path)
 
-            # Step 8: Inject/overwrite into the temp decrypted sms.db
+            # Step 8: Inject/overwrite/clone into the temp decrypted sms.db
             if injection_mode == InjectionMode.OVERWRITE:
                 logger.info("Overwriting sacrifice messages in decrypted sms.db...")
                 with SMSDatabase(temp_sms_path) as db:
@@ -477,6 +483,11 @@ def _run_encrypted_pipeline(
                         conversion, sacrifice_chats or [],
                     )
                 logger.info("Overwrite complete: %s", result.overwrite_stats)
+            elif injection_mode == InjectionMode.CLONE:
+                logger.info("Cloning messages into decrypted sms.db (Hack Patrol)...")
+                with SMSDatabase(temp_sms_path) as db:
+                    result.clone_stats = db.clone(conversion)
+                logger.info("Clone complete: %s", result.clone_stats)
             else:
                 logger.info("Injecting messages into decrypted sms.db...")
                 with SMSDatabase(temp_sms_path) as db:
