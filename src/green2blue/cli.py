@@ -858,6 +858,28 @@ def _print_post_restore_instructions() -> None:
     print("  3. Open Messages — your injected conversations should appear")
 
 
+def _resolve_restore_target(backup_path: Path, target_udid: str) -> tuple[Path, Path | None, str]:
+    """Resolve the restore root, selected backup dir, and restore mode."""
+    if (backup_path / "Manifest.db").exists() or (backup_path / "Manifest.mbdb").exists():
+        backup_dir = backup_path
+        backup_root = backup_path.parent
+    else:
+        backup_root = backup_path
+        candidate = backup_root / target_udid
+        backup_dir = candidate if candidate.is_dir() else None
+        if backup_dir is None:
+            candidates = [
+                entry for entry in backup_root.iterdir()
+                if entry.is_dir()
+                and ((entry / "Manifest.db").exists() or (entry / "Manifest.mbdb").exists())
+            ]
+            if len(candidates) == 1:
+                backup_dir = candidates[0]
+
+    restore_mode = "synthetic" if backup_dir and (backup_dir / "Manifest.mbdb").exists() else "full"
+    return backup_root, backup_dir, restore_mode
+
+
 def _cmd_device_list(args: argparse.Namespace) -> int:
     """List connected iOS devices."""
     from green2blue.ios.device import list_devices
@@ -1031,21 +1053,13 @@ def _cmd_device_inject(args: argparse.Namespace) -> int:
 
 def _cmd_device_restore(args: argparse.Namespace) -> int:
     """Restore an already-modified backup to a device."""
-    from green2blue.ios.device import list_devices, restore_backup
+    from green2blue.ios.device import list_devices, push_synthetic_backup, restore_backup
 
     # Validate backup path
     backup_path = args.backup_path
     if not backup_path.exists():
         print(f"Backup not found: {backup_path}", file=sys.stderr)
         return 1
-
-    # Find the backup root (parent of UDID dir)
-    # The backup_path could be either the UDID dir or its parent
-    if (backup_path / "Manifest.db").exists() or (backup_path / "Manifest.mbdb").exists():
-        # User passed the UDID directory directly; parent is the backup root
-        backup_root = backup_path.parent
-    else:
-        backup_root = backup_path
 
     # Resolve target device early to avoid confusing errors after confirmation
     devices = list_devices()
@@ -1069,6 +1083,8 @@ def _cmd_device_restore(args: argparse.Namespace) -> int:
             print(f"  {d.udid}  {d.name} (iOS {d.ios_version})", file=sys.stderr)
         return 1
 
+    backup_root, _, restore_mode = _resolve_restore_target(backup_path, target.udid)
+
     # Confirm
     if not args.yes and sys.stdin.isatty():
         print(f"\nTarget: {target.name} (iOS {target.ios_version})")
@@ -1086,12 +1102,19 @@ def _cmd_device_restore(args: argparse.Namespace) -> int:
     def progress(pct: float) -> None:
         print(f"\r  Restore progress: {pct:.1f}%", end="", flush=True)
 
-    restore_backup(
-        backup_dir=backup_root,
-        udid=target.udid,
-        password=args.password,
-        progress_cb=progress,
-    )
+    if restore_mode == "synthetic":
+        push_synthetic_backup(
+            backup_dir=backup_root,
+            udid=target.udid,
+            progress_cb=progress,
+        )
+    else:
+        restore_backup(
+            backup_dir=backup_root,
+            udid=target.udid,
+            password=args.password,
+            progress_cb=progress,
+        )
 
     _print_post_restore_instructions()
 

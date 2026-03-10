@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,7 +37,40 @@ class PrepareSyncResult:
     chats_preserved: int = 0
 
 
-def prepare_sync(db_path: Path) -> PrepareSyncResult:
+def _selector_clause(
+    rowids: Iterable[int] | None,
+    guid_pattern: str,
+    id_column: str = "ROWID",
+) -> tuple[str, tuple[int, ...]]:
+    """Build a WHERE selector for either explicit rowids or a GUID pattern."""
+    if rowids is None:
+        return f"guid LIKE '{guid_pattern}'", ()
+
+    values = tuple(sorted(set(rowids)))
+    if not values:
+        return "1 = 0", ()
+
+    placeholders = ",".join("?" for _ in values)
+    return f"{id_column} IN ({placeholders})", values
+
+
+def _qualify_selector(selector: str, alias: str) -> str:
+    """Qualify a selector clause for use against an aliased table."""
+    if selector == "1 = 0":
+        return selector
+    if selector.startswith("guid "):
+        return selector.replace("guid", f"{alias}.guid", 1)
+    if selector.startswith("ROWID "):
+        return selector.replace("ROWID", f"{alias}.ROWID", 1)
+    return selector
+
+
+def prepare_sync(
+    db_path: Path,
+    *,
+    message_rowids: Iterable[int] | None = None,
+    attachment_rowids: Iterable[int] | None = None,
+) -> PrepareSyncResult:
     """Prepare an injected sms.db for the iCloud sync reset workflow.
 
     Resets CloudKit metadata on injected messages so iOS treats them as
@@ -51,6 +85,10 @@ def prepare_sync(db_path: Path) -> PrepareSyncResult:
 
     Args:
         db_path: Path to the sms.db file.
+        message_rowids: Optional explicit message ROWIDs to reset. If omitted,
+            defaults to `green2blue:` GUIDs.
+        attachment_rowids: Optional explicit attachment ROWIDs to reset. If
+            omitted, defaults to `green2blue-att:` GUIDs.
 
     Returns:
         PrepareSyncResult with operation counts.
@@ -59,6 +97,7 @@ def prepare_sync(db_path: Path) -> PrepareSyncResult:
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    saved_triggers: list[str] = []
 
     try:
         # Drop triggers — iOS triggers call internal functions that
@@ -66,24 +105,31 @@ def prepare_sync(db_path: Path) -> PrepareSyncResult:
         saved_triggers = drop_triggers(conn)
 
         cursor = conn.cursor()
+        msg_selector, msg_params = _selector_clause(message_rowids, "green2blue:%")
+        att_selector, att_params = _selector_clause(
+            attachment_rowids, "green2blue-att:%",
+        )
+        msg_selector_alias = _qualify_selector(msg_selector, "m")
 
         # --- 1. Reset CK metadata on injected messages ---
         # Find injected messages that need updating
         # Real iOS uses empty strings (not NULL) for unsynced CK fields
         needs_update = cursor.execute(
             "SELECT COUNT(*) as cnt FROM message "
-            "WHERE guid LIKE 'green2blue:%' "
+            f"WHERE {msg_selector} "
             "AND (ck_sync_state != 0 OR (ck_record_id IS NOT NULL AND ck_record_id != '') "
-            "     OR (ck_record_change_tag IS NOT NULL AND ck_record_change_tag != ''))"
+            "     OR (ck_record_change_tag IS NOT NULL AND ck_record_change_tag != ''))",
+            msg_params,
         ).fetchone()["cnt"]
         result.messages_updated = needs_update
 
         already_clean = cursor.execute(
             "SELECT COUNT(*) as cnt FROM message "
-            "WHERE guid LIKE 'green2blue:%' "
+            f"WHERE {msg_selector} "
             "AND ck_sync_state = 0 "
             "AND (ck_record_id IS NULL OR ck_record_id = '') "
-            "AND (ck_record_change_tag IS NULL OR ck_record_change_tag = '')"
+            "AND (ck_record_change_tag IS NULL OR ck_record_change_tag = '')",
+            msg_params,
         ).fetchone()["cnt"]
         result.messages_already_clean = already_clean
 
@@ -91,31 +137,35 @@ def prepare_sync(db_path: Path) -> PrepareSyncResult:
             cursor.execute(
                 "UPDATE message SET ck_sync_state = 0, ck_record_id = '', "
                 "ck_record_change_tag = '' "
-                "WHERE guid LIKE 'green2blue:%' "
+                f"WHERE {msg_selector} "
                 "AND (ck_sync_state != 0 OR (ck_record_id IS NOT NULL AND ck_record_id != '') "
-                "     OR (ck_record_change_tag IS NOT NULL AND ck_record_change_tag != ''))"
+                "     OR (ck_record_change_tag IS NOT NULL AND ck_record_change_tag != ''))",
+                msg_params,
             )
 
         # --- 2. Reset CK metadata on injected attachments ---
         att_needs_update = cursor.execute(
             "SELECT COUNT(*) as cnt FROM attachment "
-            "WHERE guid LIKE 'green2blue-att:%' "
-            "AND (ck_sync_state != 0 OR ck_record_id IS NOT NULL)"
+            f"WHERE {att_selector} "
+            "AND (ck_sync_state != 0 OR ck_record_id IS NOT NULL)",
+            att_params,
         ).fetchone()["cnt"]
         result.attachments_updated = att_needs_update
 
         att_already_clean = cursor.execute(
             "SELECT COUNT(*) as cnt FROM attachment "
-            "WHERE guid LIKE 'green2blue-att:%' "
-            "AND ck_sync_state = 0 AND ck_record_id IS NULL"
+            f"WHERE {att_selector} "
+            "AND ck_sync_state = 0 AND ck_record_id IS NULL",
+            att_params,
         ).fetchone()["cnt"]
         result.attachments_already_clean = att_already_clean
 
         if att_needs_update > 0:
             cursor.execute(
                 "UPDATE attachment SET ck_sync_state = 0, ck_record_id = NULL "
-                "WHERE guid LIKE 'green2blue-att:%' "
-                "AND (ck_sync_state != 0 OR ck_record_id IS NOT NULL)"
+                f"WHERE {att_selector} "
+                "AND (ck_sync_state != 0 OR ck_record_id IS NOT NULL)",
+                att_params,
             )
 
         # --- 3 & 4 & 5. Handle chats ---
@@ -126,7 +176,8 @@ def prepare_sync(db_path: Path) -> PrepareSyncResult:
             "FROM chat c "
             "INNER JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID "
             "INNER JOIN message m ON m.ROWID = cmj.message_id "
-            "WHERE m.guid LIKE 'green2blue:%'"
+            f"WHERE {msg_selector_alias}",
+            msg_params,
         ).fetchall()
 
         for chat in affected_chats:
@@ -136,8 +187,8 @@ def prepare_sync(db_path: Path) -> PrepareSyncResult:
             non_injected = cursor.execute(
                 "SELECT COUNT(*) as cnt FROM chat_message_join cmj "
                 "INNER JOIN message m ON m.ROWID = cmj.message_id "
-                "WHERE cmj.chat_id = ? AND m.guid NOT LIKE 'green2blue:%'",
-                (chat_rowid,),
+                f"WHERE cmj.chat_id = ? AND NOT ({msg_selector_alias})",
+                (chat_rowid, *msg_params),
             ).fetchone()["cnt"]
 
             is_mixed = non_injected > 0

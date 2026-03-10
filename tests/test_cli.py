@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import argparse
 import plistlib
 import sqlite3
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from green2blue.cli import _confirm_backup, _show_backup_list, main
+from green2blue.cli import _cmd_device_restore, _confirm_backup, _show_backup_list, main
 from green2blue.ios.backup import BackupInfo, get_sms_db_hash
+from green2blue.ios.device import DeviceInfo
 
 
 def _create_backup(root: Path, udid: str, device_name: str = "Test iPhone") -> Path:
@@ -75,6 +77,14 @@ def _create_export_zip(root: Path) -> Path:
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("messages.ndjson", json.dumps(record) + "\n")
     return zip_path
+
+
+def _create_synthetic_backup(root: Path, udid: str) -> Path:
+    """Create a minimal synthetic backup directory with Manifest.mbdb."""
+    backup_dir = root / udid
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    (backup_dir / "Manifest.mbdb").write_bytes(b"synthetic-backup")
+    return backup_dir
 
 
 class TestConfirmBackup:
@@ -188,3 +198,68 @@ class TestYesFlag:
             "--backup", str(backup_path),
         ])
         assert ret == 0
+
+
+class TestDeviceRestoreRouting:
+    def test_device_restore_uses_synthetic_push(self, tmp_dir):
+        root = tmp_dir / "synthetic_backups"
+        root.mkdir()
+        _create_synthetic_backup(root, "SYNTH-UDID")
+        args = argparse.Namespace(
+            backup_path=root,
+            udid="SYNTH-UDID",
+            yes=True,
+            password=None,
+        )
+        device = DeviceInfo(
+            udid="SYNTH-UDID",
+            name="Test iPhone",
+            ios_version="18.0",
+            is_paired=True,
+        )
+
+        with (
+            patch("green2blue.ios.device.list_devices", return_value=[device]),
+            patch("green2blue.ios.device.push_synthetic_backup") as push_mock,
+            patch("green2blue.ios.device.restore_backup") as restore_mock,
+            patch("green2blue.cli._print_post_restore_instructions"),
+        ):
+            ret = _cmd_device_restore(args)
+
+        assert ret == 0
+        push_mock.assert_called_once()
+        restore_mock.assert_not_called()
+        assert push_mock.call_args.kwargs["backup_dir"] == root
+        assert push_mock.call_args.kwargs["udid"] == "SYNTH-UDID"
+
+    def test_device_restore_uses_full_restore_for_manifest_db(self, tmp_dir):
+        root = tmp_dir / "full_backups"
+        root.mkdir()
+        _create_backup(root, "FULL-UDID")
+        args = argparse.Namespace(
+            backup_path=root,
+            udid="FULL-UDID",
+            yes=True,
+            password="secret",
+        )
+        device = DeviceInfo(
+            udid="FULL-UDID",
+            name="Test iPhone",
+            ios_version="18.0",
+            is_paired=True,
+        )
+
+        with (
+            patch("green2blue.ios.device.list_devices", return_value=[device]),
+            patch("green2blue.ios.device.push_synthetic_backup") as push_mock,
+            patch("green2blue.ios.device.restore_backup") as restore_mock,
+            patch("green2blue.cli._print_post_restore_instructions"),
+        ):
+            ret = _cmd_device_restore(args)
+
+        assert ret == 0
+        push_mock.assert_not_called()
+        restore_mock.assert_called_once()
+        assert restore_mock.call_args.kwargs["backup_dir"] == root
+        assert restore_mock.call_args.kwargs["udid"] == "FULL-UDID"
+        assert restore_mock.call_args.kwargs["password"] == "secret"

@@ -31,6 +31,7 @@ from green2blue.ios.trigger_utils import (
 from green2blue.models import (
     ConversionResult,
     compute_chat_guid,
+    compute_ck_chat_id,
     iOSAttachment,
     iOSChat,
     iOSHandle,
@@ -164,11 +165,9 @@ class SMSDatabase:
                 chat_key = msg.chat_identifier or msg.handle_id
                 chat_guid = compute_chat_guid(chat_key, msg.group_members)
 
-                # Derive ck_chat_id: replace "any;-;" prefix with "{service};-;"
-                if chat_guid.startswith("any;-;"):
-                    ck_chat_id = f"{msg.service};-;{chat_guid[6:]}"
-                else:
-                    ck_chat_id = chat_guid
+                ck_chat_id = compute_ck_chat_id(
+                    msg.service, chat_key, msg.group_members,
+                )
 
                 msg_rowid = self._insert_message(
                     cursor, msg, handle_rowid,
@@ -218,6 +217,7 @@ class SMSDatabase:
 
         injected_service = result.handles[0].service if result.handles else "SMS"
         detected_account_id = self._detect_account_id(injected_service)
+        detected_account_login = self._detect_account_login(injected_service)
 
         handle_rowids: dict[tuple[str, str], int] = {}
         for handle in result.handles:
@@ -236,8 +236,13 @@ class SMSDatabase:
                 chat_rowids[chat.guid] = existing_chats[chat.guid]
                 stats.chats_existing += 1
             else:
+                updates = {}
                 if detected_account_id and not chat.account_id:
-                    chat = dc_replace(chat, account_id=detected_account_id)
+                    updates["account_id"] = detected_account_id
+                if detected_account_login:
+                    updates["account_login"] = detected_account_login
+                if updates:
+                    chat = dc_replace(chat, **updates)
                 rowid = self._insert_chat(cursor, chat)
                 chat_rowids[chat.guid] = rowid
                 stats.chats_inserted += 1
@@ -254,8 +259,7 @@ class SMSDatabase:
                 if handle_rowid:
                     self._insert_chat_handle_join(cursor, chat_rowid, handle_rowid)
             else:
-                for phone in chat.chat_identifier.split(","):
-                    phone = phone.strip()
+                for phone in chat.participants:
                     handle_rowid = handle_rowids.get(
                         (phone, chat.service_name)
                     )
@@ -289,12 +293,27 @@ class SMSDatabase:
         """
         cursor = self.conn.cursor()
         row = cursor.execute(
-            "SELECT account_id FROM chat "
+            "SELECT account_id, COUNT(*) as cnt FROM chat "
             "WHERE service_name = ? AND account_id != '' "
-            "AND account_id IS NOT NULL LIMIT 1",
+            "AND account_id IS NOT NULL "
+            "GROUP BY account_id "
+            "ORDER BY cnt DESC LIMIT 1",
             (service,),
         ).fetchone()
         return row["account_id"] if row else ""
+
+    def _detect_account_login(self, service: str = "SMS") -> str:
+        """Detect the account_login from existing chats for the given service."""
+        cursor = self.conn.cursor()
+        row = cursor.execute(
+            "SELECT account_login, COUNT(*) as cnt FROM chat "
+            "WHERE service_name = ? AND account_login != '' "
+            "AND account_login IS NOT NULL "
+            "GROUP BY account_login "
+            "ORDER BY cnt DESC LIMIT 1",
+            (service,),
+        ).fetchone()
+        return row["account_login"] if row else ""
 
     def _detect_account(self, service: str = "SMS") -> str:
         """Detect the account string from existing messages for the given service.
@@ -381,12 +400,36 @@ class SMSDatabase:
         cursor = self.conn.cursor()
         hashes = set()
         cursor.execute("""
-            SELECT m.text, m.date, h.id as handle_id
+            SELECT DISTINCT
+                m.service,
+                m.text,
+                m.date,
+                h.id as handle_id,
+                COALESCE(c.chat_identifier, '') as chat_identifier,
+                CASE
+                    WHEN c.style = 43 THEN COALESCE((
+                        SELECT GROUP_CONCAT(sorted_handles.id, ',')
+                        FROM (
+                            SELECT h2.id
+                            FROM chat_handle_join chj2
+                            JOIN handle h2 ON h2.ROWID = chj2.handle_id
+                            WHERE chj2.chat_id = c.ROWID
+                            ORDER BY h2.id
+                        ) AS sorted_handles
+                    ), '')
+                    ELSE ''
+                END AS group_members
             FROM message m
             LEFT JOIN handle h ON m.handle_id = h.ROWID
+            LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            LEFT JOIN chat c ON c.ROWID = cmj.chat_id
         """)
         for row in cursor.fetchall():
-            content = f"{row['handle_id'] or ''}|{row['date']}|{row['text'] or ''}"
+            content = (
+                f"{row['service']}|{row['handle_id'] or ''}|"
+                f"{row['chat_identifier']}|{row['group_members']}|"
+                f"{row['date']}|{row['text'] or ''}"
+            )
             hashes.add(hashlib.sha256(content.encode()).hexdigest())
         return hashes
 
@@ -683,6 +726,12 @@ class SMSDatabase:
                 cursor, result, stats,
             )
 
+            # Detect inject-specific metadata from existing data
+            injected_service = result.handles[0].service if result.handles else "SMS"
+            detected_caller_id = self._detect_destination_caller_id(injected_service)
+            detected_account = self._detect_account(injected_service)
+            detected_account_guid = self._detect_account_guid(injected_service)
+
             # Overwrite messages
             pool = deque(sacrifice_pool)
             for msg in result.messages:
@@ -698,11 +747,19 @@ class SMSDatabase:
                 chat_key = msg.chat_identifier or msg.handle_id
                 chat_guid = compute_chat_guid(chat_key, msg.group_members)
                 target_chat_rowid = chat_rowids.get(chat_guid)
+                ck_chat_id = compute_ck_chat_id(
+                    msg.service, chat_key, msg.group_members,
+                )
 
                 self._overwrite_message(
                     cursor, sacrifice["rowid"], msg, handle_rowid,
+                    destination_caller_id=detected_caller_id,
+                    ck_chat_id=ck_chat_id,
+                    account_override=detected_account,
+                    account_guid_override=detected_account_guid,
                 )
                 stats.messages_overwritten += 1
+                stats.message_rowids.append(sacrifice["rowid"])
 
                 # Move message from sacrifice chat to target chat
                 if target_chat_rowid:
@@ -716,6 +773,7 @@ class SMSDatabase:
                     att_rowid = self._insert_attachment(cursor, att, msg.is_from_me)
                     self._insert_message_attachment_join(cursor, sacrifice["rowid"], att_rowid)
                     stats.attachments_inserted += 1
+                    stats.attachment_rowids.append(att_rowid)
 
             self.conn.commit()
             return stats
@@ -756,9 +814,19 @@ class SMSDatabase:
         sacrifice_rowid: int,
         msg: iOSMessage,
         handle_rowid: int,
+        *,
+        destination_caller_id: str = "",
+        ck_chat_id: str = "",
+        account_override: str = "",
+        account_guid_override: str = "",
     ) -> None:
         """UPDATE content columns of a sacrifice message, preserving CK metadata."""
         cache_has_attachments = 1 if msg.attachments else 0
+        account = msg.account if msg.account else (account_override or None)
+        account_guid = (
+            msg.account_guid if msg.account_guid
+            else (account_guid_override or None)
+        )
 
         # Build optional column updates
         has_msi = "message_summary_info" in self._msg_schema
@@ -780,12 +848,20 @@ class SMSDatabase:
         if has_ab:
             opt_sets += ", attributedBody = ?"
             opt_params.append(ab_blob)
+        if "destination_caller_id" in self._msg_schema:
+            opt_sets += ", destination_caller_id = ?"
+            opt_params.append(destination_caller_id or None)
+        if "ck_chat_id" in self._msg_schema:
+            opt_sets += ", ck_chat_id = ?"
+            opt_params.append(ck_chat_id)
 
         cursor.execute(
             f"""UPDATE message SET
                 text = ?,
                 handle_id = ?,
                 service = ?,
+                account = ?,
+                account_guid = ?,
                 date = ?,
                 date_read = ?,
                 date_delivered = ?,
@@ -803,6 +879,8 @@ class SMSDatabase:
                 msg.text,
                 handle_rowid,
                 msg.service,
+                account,
+                account_guid,
                 msg.date,
                 msg.date_read,
                 msg.date_delivered,
@@ -1108,6 +1186,7 @@ class SMSDatabase:
                 msg_rowid = self._clone_insert_message(
                     cursor, source_msg, overrides,
                 )
+                stats.message_rowids.append(msg_rowid)
 
                 # Create chat_message_join
                 cursor.execute(
@@ -1169,6 +1248,8 @@ class OverwriteStats(_BaseStats):
         super().__init__()
         self.sacrifice_pool_size: int = 0
         self.messages_overwritten: int = 0
+        self.message_rowids: list[int] = []
+        self.attachment_rowids: list[int] = []
 
     def __repr__(self) -> str:
         return (
@@ -1192,6 +1273,8 @@ class CloneStats:
         self.handles_existing: int = 0
         self.chats_inserted: int = 0
         self.chats_existing: int = 0
+        self.message_rowids: list[int] = []
+        self.attachment_rowids: list[int] = []
 
     def __repr__(self) -> str:
         return (
@@ -1283,5 +1366,3 @@ def _build_hackpatrol_attributed_body(text: str | None) -> bytes | None:
         + run_len_byte
         + suffix
     )
-
-

@@ -58,6 +58,35 @@ class PipelineResult:
     skipped_count: int = 0
 
 
+def _run_prepare_sync_for_result(
+    db_path: Path,
+    *,
+    ck_strategy: CKStrategy,
+    injection_mode: InjectionMode,
+    result: PipelineResult,
+) -> None:
+    """Run prepare-sync with the right selectors for the active injection mode."""
+    if ck_strategy != CKStrategy.ICLOUD_RESET:
+        return
+
+    from green2blue.ios.prepare_sync import prepare_sync
+
+    kwargs = {}
+    if injection_mode == InjectionMode.OVERWRITE and result.overwrite_stats is not None:
+        kwargs = {
+            "message_rowids": result.overwrite_stats.message_rowids,
+            "attachment_rowids": result.overwrite_stats.attachment_rowids,
+        }
+    elif injection_mode == InjectionMode.CLONE and result.clone_stats is not None:
+        kwargs = {
+            "message_rowids": result.clone_stats.message_rowids,
+            "attachment_rowids": result.clone_stats.attachment_rowids,
+        }
+
+    logger.info("Running prepare-sync for icloud-reset strategy...")
+    prepare_sync(db_path, **kwargs)
+
+
 def run_pipeline(
     export_path: Path | str,
     backup_path_or_udid: str | None = None,
@@ -186,12 +215,12 @@ def run_pipeline(
                     result.injection_stats = db.inject(conversion, skip_duplicates)
                 logger.info("Injection complete: %s", result.injection_stats)
 
-            # Run prepare-sync if using icloud-reset strategy
-            if ck_strategy == CKStrategy.ICLOUD_RESET:
-                from green2blue.ios.prepare_sync import prepare_sync
-
-                logger.info("Running prepare-sync for icloud-reset strategy...")
-                prepare_sync(sms_db_file)
+            _run_prepare_sync_for_result(
+                sms_db_file,
+                ck_strategy=ck_strategy,
+                injection_mode=injection_mode,
+                result=result,
+            )
 
             # Step 7: Copy attachments + Step 8: Update Manifest.db
             logger.info("Updating Manifest.db and copying attachments...")
@@ -494,12 +523,12 @@ def _run_encrypted_pipeline(
                     result.injection_stats = db.inject(conversion, skip_duplicates)
                 logger.info("Injection complete: %s", result.injection_stats)
 
-            # Run prepare-sync if using icloud-reset strategy
-            if ck_strategy == CKStrategy.ICLOUD_RESET:
-                from green2blue.ios.prepare_sync import prepare_sync
-
-                logger.info("Running prepare-sync for icloud-reset strategy...")
-                prepare_sync(temp_sms_path)
+            _run_prepare_sync_for_result(
+                temp_sms_path,
+                ck_strategy=ck_strategy,
+                injection_mode=injection_mode,
+                result=result,
+            )
 
             # Step 9: Copy + encrypt attachments, update temp Manifest.db
             logger.info("Updating Manifest.db and copying attachments...")

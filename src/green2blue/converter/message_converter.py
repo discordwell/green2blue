@@ -21,6 +21,7 @@ from green2blue.models import (
     CKStrategy,
     ConversionResult,
     compute_chat_guid,
+    compute_group_chat_identifier,
     generate_ck_record_id,
     iOSAttachment,
     iOSChat,
@@ -162,6 +163,7 @@ def convert_messages(
                 style=style,
                 chat_identifier=conv_key,
                 service_name=service,
+                participants=sample.group_members,
                 account_login=account_login,
             )
             # Apply CK strategy to chat
@@ -208,12 +210,12 @@ def _convert_sms(sms: AndroidSMS, country: str, service: str = "SMS") -> iOSMess
     is_sent = is_from_me
 
     date_ns = unix_ms_to_ios_ns(sms.date)
-    date_read_ns = date_ns if sms.read else 0
-    date_delivered_ns = date_ns if is_sent else 0
+    date_read_ns = 0 if is_from_me else (date_ns if sms.read else 0)
+    date_delivered_ns = 0 if service == "SMS" else (date_ns if is_sent else 0)
 
     if sms.date_sent and sms.date_sent > 0:
         sent_ns = unix_ms_to_ios_ns(sms.date_sent)
-        if is_from_me:
+        if is_from_me and service != "SMS":
             date_delivered_ns = sent_ns
 
     msg_guid = f"green2blue:{uuid.uuid4()}"
@@ -227,7 +229,8 @@ def _convert_sms(sms: AndroidSMS, country: str, service: str = "SMS") -> iOSMess
         date_delivered=date_delivered_ns,
         is_from_me=is_from_me,
         is_sent=is_sent,
-        is_read=bool(sms.read),
+        is_read=False if is_from_me else bool(sms.read),
+        is_delivered=False if is_from_me and service == "SMS" else True,
         service=service,
         chat_identifier=phone,
     )
@@ -274,17 +277,20 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
     is_group = len(unique_phones) > 2
     group_members = tuple(unique_phones) if is_group else ()
 
-    # Build chat identifier: comma-joined for group, single phone for 1:1
-    chat_identifier = ",".join(unique_phones) if is_group else handle_phone
+    # Group chats use opaque chat identifiers on modern iOS.
+    chat_identifier = (
+        compute_group_chat_identifier(group_members)
+        if is_group else handle_phone
+    )
 
     # MMS dates are in seconds
     date_ns = unix_s_to_ios_ns(mms.date)
-    date_read_ns = date_ns if mms.read else 0
-    date_delivered_ns = date_ns if is_from_me else 0
+    date_read_ns = 0 if is_from_me else (date_ns if mms.read else 0)
+    date_delivered_ns = 0 if service == "SMS" else (date_ns if is_from_me else 0)
 
     if mms.date_sent and mms.date_sent > 0:
         sent_ns = unix_s_to_ios_ns(mms.date_sent)
-        if is_from_me:
+        if is_from_me and service != "SMS":
             date_delivered_ns = sent_ns
 
     # Extract text body from parts
@@ -338,12 +344,12 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
         date_delivered=date_delivered_ns,
         is_from_me=is_from_me,
         is_sent=is_from_me,
-        is_read=bool(mms.read),
+        is_read=False if is_from_me else bool(mms.read),
+        is_delivered=False if is_from_me and service == "SMS" else True,
         service=service,
         attachments=tuple(attachments),
         chat_identifier=chat_identifier,
         group_members=group_members,
         group_title=mms.sub,  # None for 1:1, subject string for group MMS
     )
-
 

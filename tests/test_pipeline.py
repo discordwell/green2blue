@@ -950,6 +950,46 @@ class TestOverwritePipeline:
             assert row["ck_record_change_tag"] == "99"
         conn.close()
 
+    def test_overwrite_pipeline_icloud_reset_targets_overwritten_rows(self, tmp_dir):
+        """icloud-reset should clean overwritten rows even though their GUIDs are preserved."""
+        from green2blue.models import CKStrategy, InjectionMode
+
+        backup_dir = _create_full_backup(tmp_dir)
+        sacrifice_chat_id = _populate_backup_with_sacrifice(
+            backup_dir, "+15551110000", 3,
+        )
+        zip_path = _create_export_zip(tmp_dir)
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            injection_mode=InjectionMode.OVERWRITE,
+            sacrifice_chats=[sacrifice_chat_id],
+            ck_strategy=CKStrategy.ICLOUD_RESET,
+        )
+
+        assert result.overwrite_stats is not None
+        assert result.overwrite_stats.messages_overwritten == 2
+        assert len(result.overwrite_stats.message_rowids) == 2
+
+        sms_hash = get_sms_db_hash()
+        sms_db = backup_dir / sms_hash[:2] / sms_hash
+        conn = sqlite3.connect(sms_db)
+        conn.row_factory = sqlite3.Row
+        placeholders = ",".join("?" for _ in result.overwrite_stats.message_rowids)
+        rows = conn.execute(
+            "SELECT ROWID, ck_sync_state, ck_record_id, ck_record_change_tag "
+            f"FROM message WHERE ROWID IN ({placeholders}) ORDER BY ROWID",
+            result.overwrite_stats.message_rowids,
+        ).fetchall()
+        conn.close()
+
+        assert len(rows) == 2
+        for row in rows:
+            assert row["ck_sync_state"] == 0
+            assert row["ck_record_id"] == ""
+            assert row["ck_record_change_tag"] == ""
+
     def test_overwrite_pipeline_icloud_disable(self, tmp_dir):
         """Pipeline with --disable-icloud-sync should flip madrid.plist flag."""
         backup_dir = _create_full_backup(tmp_dir)

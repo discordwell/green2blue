@@ -59,7 +59,10 @@ class TestSMSConversion:
         msg = result.messages[0]
         assert msg.is_from_me
         assert msg.is_sent
-        assert msg.is_delivered
+        assert not msg.is_delivered
+        assert not msg.is_read
+        assert msg.date_read == 0
+        assert msg.date_delivered == 0
 
     def test_handle_created(self):
         result = convert_messages([_make_sms()])
@@ -137,15 +140,25 @@ class TestMMSConversion:
         assert msg.is_sent
 
     def test_sent_mms_date_sent_used(self):
-        """Sent MMS should use date_sent for date_delivered when available."""
+        """Sent iMessage-style MMS should use date_sent for date_delivered."""
         mms = _make_mms(msg_box=2, date=1700000000, date_sent=1700000005)
-        result = convert_messages([mms])
+        result = convert_messages([mms], service="iMessage")
         msg = result.messages[0]
         expected_delivered = unix_s_to_ios_ns(1700000005)
         assert msg.date_delivered == expected_delivered
         # date should still use the regular date field
         expected_date = unix_s_to_ios_ns(1700000000)
         assert msg.date == expected_date
+
+    def test_sent_sms_mms_not_marked_delivered(self):
+        """Sent SMS/MMS should default to undelivered until iOS updates it."""
+        mms = _make_mms(msg_box=2, date=1700000000, date_sent=1700000005)
+        result = convert_messages([mms])
+        msg = result.messages[0]
+        assert msg.date_delivered == 0
+        assert not msg.is_delivered
+        assert not msg.is_read
+        assert msg.date_read == 0
 
     def test_received_mms_date_sent_ignored(self):
         """Received MMS should not set date_delivered from date_sent."""
@@ -216,8 +229,12 @@ class TestGroupMMS:
         )
         mms = _make_mms(addresses=addresses)
         result = convert_messages([mms])
-        guid = result.chats[0].guid
-        assert guid.startswith("any;-;chat")
+        chat = result.chats[0]
+        assert chat.chat_identifier.startswith("chat")
+        assert chat.guid.startswith("any;+;chat")
+        assert chat.participants == (
+            "+12025551111", "+12025552222", "+12025553333",
+        )
 
     def test_group_handles_created(self):
         addresses = (
@@ -286,10 +303,10 @@ class TestComputeChatGuid:
 
     def test_group_chat_deterministic(self):
         members = ("+12025551111", "+12025552222", "+12025553333")
-        guid1 = compute_chat_guid("+12025551111,+12025552222,+12025553333", members)
-        guid2 = compute_chat_guid("+12025551111,+12025552222,+12025553333", members)
+        guid1 = compute_chat_guid("chat123", members)
+        guid2 = compute_chat_guid("chat123", members)
         assert guid1 == guid2
-        assert guid1.startswith("any;-;chat")
+        assert guid1.startswith("any;+;chat")
 
     def test_group_chat_order_independent(self):
         """Members are sorted, so order shouldn't matter."""

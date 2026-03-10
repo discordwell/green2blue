@@ -12,6 +12,7 @@ from green2blue.exceptions import InsufficientSacrificeError
 from green2blue.ios.sms_db import OverwriteStats, SMSDatabase
 from green2blue.models import (
     ConversionResult,
+    compute_ck_chat_id,
     iOSAttachment,
     iOSChat,
     iOSHandle,
@@ -226,6 +227,54 @@ class TestOverwriteContentUpdate:
         assert row["date"] == new_date
         assert row["date_read"] == new_date
         assert row["date_delivered"] == new_date
+        conn.close()
+
+    def test_metadata_fields_updated(self, empty_sms_db: Path):
+        chat_id, msg_ids = _populate_sacrifice_db(empty_sms_db, "+15551110000", 1)
+
+        conn = sqlite3.connect(empty_sms_db)
+        conn.execute(
+            "UPDATE message SET account = 'stale-account', account_guid = 'STALE-GUID', "
+            "destination_caller_id = '+19995550000', ck_chat_id = 'STALE-CK' "
+            "WHERE ROWID = ?",
+            (msg_ids[0],),
+        )
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO message (guid, text, service, account, account_guid, "
+                "destination_caller_id, date) VALUES (?, 'real', 'SMS', ?, ?, ?, ?)",
+                (
+                    f"real-meta-{i}",
+                    "P:+15052289549",
+                    "AD9A6DB5-8CDA-48CD-9819-25C5F91E775D",
+                    "+15052289549",
+                    1000 + i,
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+        android_msg = _make_message("+15552220000", "Metadata test", 800000000000000000)
+        result = _make_result(
+            [android_msg],
+            [_make_handle("+15552220000")],
+            [_make_chat("+15552220000")],
+        )
+
+        with SMSDatabase(empty_sms_db) as db:
+            db.overwrite(result, [chat_id])
+
+        conn = sqlite3.connect(empty_sms_db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT account, account_guid, destination_caller_id, ck_chat_id "
+            "FROM message WHERE ROWID = ?",
+            (msg_ids[0],),
+        ).fetchone()
+        assert row["account"] == "P:+15052289549"
+        assert row["account_guid"] == "AD9A6DB5-8CDA-48CD-9819-25C5F91E775D"
+        assert row["destination_caller_id"] == "+15052289549"
+        assert row["ck_chat_id"] == compute_ck_chat_id("SMS", "+15552220000")
         conn.close()
 
 

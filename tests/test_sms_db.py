@@ -9,6 +9,9 @@ import pytest
 from green2blue.ios.sms_db import SMSDatabase
 from green2blue.models import (
     ConversionResult,
+    compute_chat_guid,
+    compute_ck_chat_id,
+    compute_group_chat_identifier,
     generate_ck_record_id,
     iOSAttachment,
     iOSChat,
@@ -131,11 +134,14 @@ class TestChatInsertion:
             assert row["style"] == 45
 
     def test_insert_group_chat(self, empty_sms_db):
+        members = ("+12025551111", "+12025552222", "+12025553333")
+        chat_identifier = compute_group_chat_identifier(members)
         group_chat = iOSChat(
-            guid="any;-;chatabc123",
+            guid=compute_chat_guid(chat_identifier, members),
             style=43,
-            chat_identifier="+12025551111,+12025552222,+12025553333",
+            chat_identifier=chat_identifier,
             service_name="SMS",
+            participants=members,
         )
         msg = iOSMessage(
             guid="green2blue:group-test",
@@ -146,8 +152,8 @@ class TestChatInsertion:
             date_delivered=0,
             is_from_me=False,
             service="SMS",
-            chat_identifier="+12025551111,+12025552222,+12025553333",
-            group_members=("+12025551111", "+12025552222", "+12025553333"),
+            chat_identifier=chat_identifier,
+            group_members=members,
         )
         result = _make_result(
             handles=[
@@ -163,8 +169,13 @@ class TestChatInsertion:
             assert stats.chats_inserted == 1
 
             cursor = db.conn.cursor()
-            cursor.execute("SELECT style FROM chat")
-            assert cursor.fetchone()["style"] == 43
+            cursor.execute("SELECT guid, style, chat_identifier FROM chat")
+            row = cursor.fetchone()
+            assert row["guid"].startswith("any;+;chat")
+            assert row["style"] == 43
+            assert row["chat_identifier"].startswith("chat")
+            cursor.execute("SELECT COUNT(*) as cnt FROM chat_handle_join")
+            assert cursor.fetchone()["cnt"] == 3
 
 
 class TestMessageInsertion:
@@ -281,6 +292,58 @@ class TestDuplicateSkipping:
                     chat_identifier="+12025551234",
                 )
             ]
+            stats2 = db.inject(result2)
+            assert stats2.messages_skipped == 1
+            assert stats2.messages_inserted == 0
+            assert db.get_message_count() == 1
+
+    def test_skip_exact_group_duplicate(self, empty_sms_db):
+        members = ("+12025551111", "+12025552222", "+12025553333")
+        chat_identifier = compute_group_chat_identifier(members)
+        group_chat = iOSChat(
+            guid=compute_chat_guid(chat_identifier, members),
+            style=43,
+            chat_identifier=chat_identifier,
+            service_name="SMS",
+            participants=members,
+        )
+        msg = iOSMessage(
+            guid="green2blue:group-dupe-1",
+            text="group hello",
+            handle_id="+12025551111",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier=chat_identifier,
+            group_members=members,
+        )
+        result1 = _make_result(
+            handles=[_make_handle(phone) for phone in members],
+            chats=[group_chat],
+            messages=[msg],
+        )
+        duplicate = iOSMessage(
+            guid="green2blue:group-dupe-2",
+            text="group hello",
+            handle_id="+12025551111",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier=chat_identifier,
+            group_members=members,
+        )
+        result2 = _make_result(
+            handles=[_make_handle(phone) for phone in members],
+            chats=[group_chat],
+            messages=[duplicate],
+        )
+
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result1)
             stats2 = db.inject(result2)
             assert stats2.messages_skipped == 1
             assert stats2.messages_inserted == 0
@@ -552,20 +615,17 @@ class TestCkChatId:
             assert row["ck_chat_id"] == "SMS;-;+12025551234"
 
     def test_group_chat_id(self, empty_sms_db):
-        """ck_chat_id for group should be SMS;-;chat{hash}."""
-        from green2blue.models import compute_chat_guid
-
+        """ck_chat_id for SMS groups should match the deterministic SHA1 form."""
         members = ("+12025551111", "+12025552222", "+12025553333")
-        chat_guid = compute_chat_guid(
-            "+12025551111,+12025552222,+12025553333", members
-        )
-        expected_ck = chat_guid.replace("any;-;", "SMS;-;", 1)
+        chat_identifier = compute_group_chat_identifier(members)
+        expected_ck = compute_ck_chat_id("SMS", chat_identifier, members)
 
         group_chat = iOSChat(
-            guid=chat_guid,
+            guid=compute_chat_guid(chat_identifier, members),
             style=43,
-            chat_identifier="+12025551111,+12025552222,+12025553333",
+            chat_identifier=chat_identifier,
             service_name="SMS",
+            participants=members,
         )
         msg = iOSMessage(
             guid="green2blue:group-ck-test",
@@ -576,7 +636,7 @@ class TestCkChatId:
             date_delivered=0,
             is_from_me=False,
             service="SMS",
-            chat_identifier="+12025551111,+12025552222,+12025553333",
+            chat_identifier=chat_identifier,
             group_members=members,
         )
         result = _make_result(
@@ -594,7 +654,8 @@ class TestCkChatId:
             cursor.execute("SELECT ck_chat_id FROM message")
             row = cursor.fetchone()
             assert row["ck_chat_id"] == expected_ck
-            assert row["ck_chat_id"].startswith("SMS;-;chat")
+            assert len(row["ck_chat_id"]) == 40
+            assert row["ck_chat_id"].isalnum()
 
 
 class TestAccountDetection:
@@ -648,6 +709,35 @@ class TestAccountDetection:
             )
             row = cursor.fetchone()
             assert row["account_guid"] == test_guid
+
+    def test_detect_chat_account_login_from_existing(self, empty_sms_db):
+        """New chats should inherit the most common existing account_login."""
+        conn = sqlite3.connect(empty_sms_db)
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO chat (guid, style, state, chat_identifier, service_name, account_login) "
+                f"VALUES ('existing-{i}', 45, 3, '+1555000{i}', 'SMS', 'P:+15052289549')"
+            )
+        conn.execute(
+            "INSERT INTO chat (guid, style, state, chat_identifier, service_name, account_login) "
+            "VALUES ('existing-other', 45, 3, '+15559999999', 'SMS', 'E:')"
+        )
+        conn.commit()
+        conn.close()
+
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[_make_message()],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "SELECT account_login FROM chat WHERE guid = 'any;-;+12025551234'"
+            )
+            row = cursor.fetchone()
+            assert row["account_login"] == "P:+15052289549"
 
     def test_empty_db_uses_null(self, empty_sms_db):
         """No existing messages → account and account_guid should be NULL."""

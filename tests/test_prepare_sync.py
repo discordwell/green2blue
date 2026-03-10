@@ -138,6 +138,78 @@ class TestPrepareSyncMessages:
         assert row["ck_record_id"] == "real-ck-record-id-native"
         assert row["ck_record_change_tag"] == "5"
 
+    def test_resets_explicit_message_rowids(self, empty_sms_db: Path) -> None:
+        """Explicit rowid targeting should work for overwrite/clone rows without prefixes."""
+        conn = sqlite3.connect(empty_sms_db)
+        conn.execute(
+            "INSERT INTO handle (ROWID, id, country, service) "
+            "VALUES (1, '+12025551234', 'us', 'SMS')"
+        )
+        conn.execute(
+            "INSERT INTO chat (ROWID, guid, style, chat_identifier, service_name, "
+            "ck_sync_state, cloudkit_record_id, server_change_token) "
+            "VALUES (1, 'any;-;+12025551234', 45, '+12025551234', "
+            "'SMS', 1, 'real-chat-ck-id', 'change-token')"
+        )
+        conn.execute(
+            "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1)"
+        )
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, text, handle_id, service, date, "
+            "ck_sync_state, ck_record_id, ck_record_change_tag) "
+            "VALUES (1, 'native-overwrite-001', 'target', 1, 'SMS', 1000000, "
+            "1, 'target-ck-id', '1')"
+        )
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, text, handle_id, service, date, "
+            "ck_sync_state, ck_record_id, ck_record_change_tag) "
+            "VALUES (2, 'native-keep-001', 'keep', 1, 'SMS', 1000001, "
+            "1, 'keep-ck-id', '2')"
+        )
+        conn.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date) "
+            "VALUES (1, 1, 1000000)"
+        )
+        conn.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date) "
+            "VALUES (1, 2, 1000001)"
+        )
+        conn.commit()
+        conn.close()
+
+        result = prepare_sync(empty_sms_db, message_rowids=[1])
+
+        assert result.messages_updated == 1
+        assert result.messages_already_clean == 0
+        assert result.chats_preserved == 1
+        assert result.chats_token_cleared == 1
+
+        conn = sqlite3.connect(empty_sms_db)
+        conn.row_factory = sqlite3.Row
+        target = conn.execute(
+            "SELECT ck_sync_state, ck_record_id, ck_record_change_tag "
+            "FROM message WHERE ROWID = 1"
+        ).fetchone()
+        untouched = conn.execute(
+            "SELECT ck_sync_state, ck_record_id, ck_record_change_tag "
+            "FROM message WHERE ROWID = 2"
+        ).fetchone()
+        chat = conn.execute(
+            "SELECT ck_sync_state, cloudkit_record_id, server_change_token "
+            "FROM chat WHERE ROWID = 1"
+        ).fetchone()
+        conn.close()
+
+        assert target["ck_sync_state"] == 0
+        assert target["ck_record_id"] == ""
+        assert target["ck_record_change_tag"] == ""
+        assert untouched["ck_sync_state"] == 1
+        assert untouched["ck_record_id"] == "keep-ck-id"
+        assert untouched["ck_record_change_tag"] == "2"
+        assert chat["ck_sync_state"] == 1
+        assert chat["cloudkit_record_id"] == "real-chat-ck-id"
+        assert chat["server_change_token"] == ""
+
 
 class TestPrepareSyncChats:
     """Tests for chat CK state handling."""
@@ -299,6 +371,44 @@ class TestPrepareSyncAttachments:
 
         assert row["ck_sync_state"] == 0
         assert row["ck_record_id"] is None
+
+    def test_resets_explicit_attachment_rowids(self, empty_sms_db: Path) -> None:
+        """Explicit attachment rowids should be reset even without green2blue GUIDs."""
+        conn = sqlite3.connect(empty_sms_db)
+        conn.execute(
+            "INSERT INTO attachment (ROWID, guid, filename, uti, mime_type, transfer_name, "
+            "total_bytes, ck_sync_state, ck_record_id) "
+            "VALUES (1, 'native-att-001', '~/Library/SMS/Attachments/aa/one.jpg', "
+            "'public.jpeg', 'image/jpeg', 'one.jpg', 1, 1, 'target-att-ck-id')"
+        )
+        conn.execute(
+            "INSERT INTO attachment (ROWID, guid, filename, uti, mime_type, transfer_name, "
+            "total_bytes, ck_sync_state, ck_record_id) "
+            "VALUES (2, 'native-att-002', '~/Library/SMS/Attachments/ab/two.jpg', "
+            "'public.jpeg', 'image/jpeg', 'two.jpg', 1, 1, 'keep-att-ck-id')"
+        )
+        conn.commit()
+        conn.close()
+
+        result = prepare_sync(empty_sms_db, attachment_rowids=[1])
+
+        assert result.attachments_updated == 1
+        assert result.attachments_already_clean == 0
+
+        conn = sqlite3.connect(empty_sms_db)
+        conn.row_factory = sqlite3.Row
+        target = conn.execute(
+            "SELECT ck_sync_state, ck_record_id FROM attachment WHERE ROWID = 1"
+        ).fetchone()
+        untouched = conn.execute(
+            "SELECT ck_sync_state, ck_record_id FROM attachment WHERE ROWID = 2"
+        ).fetchone()
+        conn.close()
+
+        assert target["ck_sync_state"] == 0
+        assert target["ck_record_id"] is None
+        assert untouched["ck_sync_state"] == 1
+        assert untouched["ck_record_id"] == "keep-att-ck-id"
 
 
 class TestPrepareSyncEdgeCases:

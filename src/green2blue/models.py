@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
+from uuid import NAMESPACE_URL, uuid5
 
 # --- Android models (parsed from SMS Import/Export NDJSON) ---
 
@@ -115,6 +116,7 @@ class iOSChat:
     style: int  # 45=1:1, 43=group
     chat_identifier: str  # E.164 for 1:1, comma-separated for group
     service_name: str  # "SMS" or "iMessage"
+    participants: tuple[str, ...] = ()  # Chat members for group chats
     display_name: str = ""  # User-visible group name, empty for 1:1
     account_id: str = ""  # SMS account UUID (detected from existing chats)
     account_login: str = "E:"  # SMS account login (constant on real iOS)
@@ -171,9 +173,9 @@ def compute_chat_guid(
     """Compute the iOS chat GUID for a conversation.
 
     1:1 chats: ``any;-;+12025551234``
-    Group chats: ``any;-;chat{sha256(sorted_members)[:16]}``
+    Group chats: ``any;+;chat<decimal>``
 
-    Real iOS 26.2+ uses the ``any;-;`` prefix for all SMS chats.
+    Real iOS 26.2.1 uses ``any;-;`` for 1:1 chats and ``any;+;`` for groups.
 
     Args:
         chat_identifier: Phone number (1:1) or comma-separated phones (group).
@@ -183,11 +185,35 @@ def compute_chat_guid(
         Chat GUID string.
     """
     if group_members:
-        sorted_members = sorted(group_members)
-        hash_input = ",".join(sorted_members)
-        chat_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
-        return f"any;-;chat{chat_hash}"
+        if not chat_identifier.startswith("chat"):
+            chat_identifier = compute_group_chat_identifier(group_members)
+        return f"any;+;{chat_identifier}"
     return f"any;-;{chat_identifier}"
+
+
+def compute_group_chat_identifier(group_members: tuple[str, ...]) -> str:
+    """Compute a deterministic opaque chat identifier for a group conversation."""
+    sorted_members = sorted(group_members)
+    hash_input = ",".join(sorted_members)
+    digest = hashlib.sha256(hash_input.encode()).digest()
+    # Real iOS uses opaque decimal chat identifiers for groups.
+    chat_num = int.from_bytes(digest[:8], "big") % (10 ** 18)
+    return f"chat{chat_num}"
+
+
+def compute_ck_chat_id(
+    service: str,
+    chat_identifier: str,
+    group_members: tuple[str, ...] = (),
+) -> str:
+    """Compute a best-effort modern ck_chat_id for a conversation."""
+    if not group_members:
+        return f"{service};-;{chat_identifier}"
+
+    chat_guid = compute_chat_guid(chat_identifier, group_members)
+    if service in {"SMS", "RCS"}:
+        return hashlib.sha1(chat_guid.encode()).hexdigest().upper()
+    return str(uuid5(NAMESPACE_URL, chat_guid)).upper()
 
 
 def message_content_hash(msg: iOSMessage) -> str:
@@ -196,7 +222,11 @@ def message_content_hash(msg: iOSMessage) -> str:
     Used by both the converter (pre-injection dedup) and the database
     injector (post-injection dedup against existing messages).
     """
-    content = f"{msg.handle_id}|{msg.date}|{msg.text or ''}"
+    group_key = ",".join(sorted(msg.group_members))
+    content = (
+        f"{msg.service}|{msg.handle_id}|{msg.chat_identifier}|"
+        f"{group_key}|{msg.date}|{msg.text or ''}"
+    )
     return hashlib.sha256(content.encode()).hexdigest()
 
 
