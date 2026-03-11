@@ -1,4 +1,45 @@
+# Proven Runbook
+
+## 2026-03-11 proven wet-test path (secondary iPhone 12, iOS 26.3.1)
+- This path is now confirmed end-to-end on-device.
+- Preconditions:
+  - Phone is at the normal home screen, paired, and unlocked.
+  - Do not sign into iCloud or enable Messages in iCloud before the restore test.
+  - Local backup encryption must be ON. Unencrypted restores can succeed but Messages content will not appear.
+  - Keep the phone connected and do not cancel a restore because the UI looks quiet.
+- Proven sequence:
+  1. Start from a clean device state and complete minimal local setup to the home screen.
+  2. Enable local backup encryption and keep using the same backup password for the whole run.
+  3. Create a fresh encrypted baseline backup from the phone.
+  4. Copy that backup to a new restore-working directory. Never modify the baseline in place.
+  5. Run `green2blue inject ... --password <backup_password>` against the copied backup.
+  6. Verify the modified backup before restore:
+     - encrypted `Manifest.db` digest for `sms.db` must match SHA1 of the encrypted on-disk file bytes
+     - injected chats must have `chat_service` rows
+     - `green2blue diagnose --injected-only` should show the expected messages
+  7. Restore with `idevicebackup2 restore --system --settings --remove --password <backup_password> <restore_root>`.
+  8. If the phone asks for the device passcode during backup/restore authorization, enter the iPhone passcode, not the backup password.
+  9. After reboot/setup, open Messages and search for the test marker string (for this session: `CLAUDEUS`).
+- Known-good artifact from the successful run:
+  - restore root: `.live_restore_roots/20260311_043505/`
+  - injected export: `.live_test_exports/20260311_041359/claudeus_encrypted_round2.zip`
+  - commit with the fix set: `f03a4018f`
+
+## 2026-03-11 root causes fixed
+- Encrypted backup manifest digests must use the SHA1 of the encrypted file bytes, not plaintext bytes. Plaintext digesting caused restore failure `MBErrorDomain/205`.
+- Chats also need auxiliary indexing in `chat_service`. Without that, Messages can show unread-badge counts while hiding the actual threads from the conversation list.
+- `green2blue` device handling now surfaces real backup/restore readiness errors better, but `idevicebackup2` remains the proven live restore tool for this device/iOS combination.
+
 # Session Summaries
+
+## 2026-03-11T04:45Z - Encrypted restore path proven on-device
+- Confirmed the full encrypted backup workflow on the secondary iPhone 12 running iOS 26.3.1
+- Root cause of `MBErrorDomain/205` was wrong digest basis in encrypted `Manifest.db`: SHA1 had to be computed over ciphertext, not plaintext
+- Root cause of "badge but no visible threads" was missing `chat_service` rows for injected chats
+- Added `chat_service` backfill in `sms_db.py` and verification coverage so this fails offline instead of on-device
+- `idevicebackup2` clean control restore succeeded first; modified encrypted restore then succeeded with visible `CLAUDEUS` messages
+- Device doctor / backup-state handling improved, but live restore proof came from `idevicebackup2`
+- 503 tests pass, plus wet-test success on the repaired restore image
 
 ## 2026-03-03T19:00Z - CLONE injection mode (Hack Patrol approach)
 - Added `InjectionMode.CLONE` — third mode alongside INSERT and OVERWRITE

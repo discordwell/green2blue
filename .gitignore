@@ -8,3 +8,9 @@ build/
 .ruff_cache/
 .eggs/
 .pristine_backups/
+.live_device_backups/
+.live_device_runs/
+.live_restore_roots/
+.live_test_exports/
+.tmp_idevicebackup2_control_*/
+.tmp_pmd3_control_*/
