@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from green2blue.ios.device import (
     DeviceDependencyError,
     DeviceError,
+    DevicePairingError,
     DeviceInfo,
     DeviceNotFoundError,
     check_pymobiledevice3,
+    doctor_device,
     extract_sms_db,
 )
 
@@ -167,7 +169,7 @@ class TestCreateBackup:
         # Mock _get_lockdown to return our mock lockdown
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown", return_value=mock_lockdown),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
         ):
             result = create_backup(backup_dir=tmp_path, udid="test-udid")
 
@@ -196,12 +198,33 @@ class TestCreateBackup:
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown", return_value=mock_lockdown),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
         ):
             create_backup(backup_dir=tmp_path, udid="test-udid", progress_cb=progress_fn)
 
         call_kwargs = mock_service.backup.call_args
         assert call_kwargs.kwargs["progress_callback"] is progress_fn
+
+    def test_wraps_password_protected_backup_errors(self, tmp_path):
+        from green2blue.ios.device import create_backup
+
+        mocks = _make_pmd3_mocks()
+        mock_lockdown = MagicMock()
+        mock_lockdown.udid = "test-udid"
+        mock_lockdown.display_name = "Test iPhone"
+
+        mock_service = MagicMock()
+        mock_service.backup.side_effect = Exception("PasswordProtected")
+        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
+            mock_service
+        )
+
+        with (
+            patch.dict(sys.modules, mocks),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            pytest.raises(DevicePairingError, match="Backup failed"),
+        ):
+            create_backup(backup_dir=tmp_path, udid="test-udid")
 
 
 # --- restore_backup tests ---
@@ -223,7 +246,7 @@ class TestRestoreBackup:
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown", return_value=mock_lockdown),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
         ):
             restore_backup(backup_dir=tmp_path)
 
@@ -248,12 +271,33 @@ class TestRestoreBackup:
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown", return_value=mock_lockdown),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
         ):
             restore_backup(backup_dir=tmp_path)
 
         call_kwargs = mock_service.restore.call_args.kwargs
         assert call_kwargs["backup_directory"] == str(tmp_path)
+
+    def test_restore_passes_password(self, tmp_path):
+        from green2blue.ios.device import restore_backup
+
+        mocks = _make_pmd3_mocks()
+        mock_lockdown = MagicMock()
+        mock_lockdown.display_name = "Test iPhone"
+
+        mock_service = MagicMock()
+        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
+            mock_service
+        )
+
+        with (
+            patch.dict(sys.modules, mocks),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+        ):
+            restore_backup(backup_dir=tmp_path, password="secret")
+
+        call_kwargs = mock_service.restore.call_args.kwargs
+        assert call_kwargs["password"] == "secret"
 
 
 # --- push_synthetic_backup tests ---
@@ -275,7 +319,7 @@ class TestPushSyntheticBackup:
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown", return_value=mock_lockdown),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
         ):
             push_synthetic_backup(backup_dir=tmp_path)
 
@@ -284,6 +328,99 @@ class TestPushSyntheticBackup:
         assert call_kwargs["system"] is True
         assert call_kwargs["remove"] is False
         assert call_kwargs["reboot"] is True
+
+
+class TestDoctorDevice:
+    def test_reports_ready_device(self):
+        mocks = _make_pmd3_mocks()
+        mock_mux_device = MagicMock()
+        mock_mux_device.serial = "abc123"
+
+        mock_lockdown = MagicMock()
+        mock_lockdown.display_name = "Test iPhone"
+        mock_lockdown.product_version = "18.0"
+
+        async def get_value(*, key=None, domain=None):
+            values = {
+                "ProductType": "iPhone13,2",
+                "DevicePublicKey": b"pubkey",
+            }
+            return values[key]
+
+        mock_lockdown.get_value = AsyncMock(side_effect=get_value)
+        mocks["pymobiledevice3.usbmux"].list_devices.return_value = [mock_mux_device]
+        mocks["pymobiledevice3.lockdown"].create_using_usbmux = AsyncMock(return_value=mock_lockdown)
+
+        with patch.dict(sys.modules, mocks):
+            report = doctor_device("abc123")
+
+        assert report.ready_for_backup_restore is True
+        assert report.state == "ready"
+        assert report.product_type == "iPhone13,2"
+        assert any(check.name == "MobileBackup2 service" and check.ok for check in report.checks)
+
+    def test_reports_password_protected_device(self):
+        mocks = _make_pmd3_mocks()
+        mock_mux_device = MagicMock()
+        mock_mux_device.serial = "abc123"
+
+        mock_lockdown = MagicMock()
+        mock_lockdown.display_name = "Test iPhone"
+        mock_lockdown.product_version = "18.0"
+
+        async def get_value(*, key=None, domain=None):
+            values = {
+                "ProductType": "iPhone13,2",
+                "DevicePublicKey": b"pubkey",
+            }
+            return values[key]
+
+        mock_lockdown.get_value = AsyncMock(side_effect=get_value)
+        mocks["pymobiledevice3.usbmux"].list_devices.return_value = [mock_mux_device]
+        mocks["pymobiledevice3.lockdown"].create_using_usbmux = AsyncMock(return_value=mock_lockdown)
+        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.side_effect = Exception(
+            "PasswordProtected"
+        )
+
+        with patch.dict(sys.modules, mocks):
+            report = doctor_device("abc123")
+
+        assert report.ready_for_backup_restore is False
+        assert report.state == "password_protected"
+        assert "Unlock the iPhone" in report.hint
+
+    def test_reports_requires_tunnel_when_backup_service_is_invalid(self):
+        mocks = _make_pmd3_mocks()
+        mock_mux_device = MagicMock()
+        mock_mux_device.serial = "abc123"
+
+        mock_lockdown = MagicMock()
+        mock_lockdown.display_name = "Test iPhone"
+        mock_lockdown.product_version = "18.0"
+
+        async def get_value(*, key=None, domain=None):
+            values = {
+                "ProductType": "iPhone13,2",
+                "DevicePublicKey": b"pubkey",
+            }
+            return values[key]
+
+        mock_lockdown.get_value = AsyncMock(side_effect=get_value)
+        mock_service = MagicMock()
+        mock_service.connect.side_effect = Exception("InvalidService")
+
+        mocks["pymobiledevice3.usbmux"].list_devices.return_value = [mock_mux_device]
+        mocks["pymobiledevice3.lockdown"].create_using_usbmux = AsyncMock(return_value=mock_lockdown)
+        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
+            mock_service
+        )
+
+        with patch.dict(sys.modules, mocks):
+            report = doctor_device("abc123")
+
+        assert report.ready_for_backup_restore is False
+        assert report.state == "requires_tunnel"
+        assert "tunnel" in report.hint.lower()
 
 
 # --- extract_sms_db tests ---

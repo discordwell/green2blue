@@ -3,15 +3,27 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import plistlib
 import sqlite3
 import zipfile
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from green2blue.cli import _cmd_device_restore, _confirm_backup, _show_backup_list, main
+from green2blue.cli import (
+    _capture_mobiledevice_logs,
+    _cmd_device_doctor,
+    _cmd_device_restore,
+    _confirm_backup,
+    _device_run_session,
+    _format_progress_heartbeat,
+    _show_backup_list,
+    main,
+)
 from green2blue.ios.backup import BackupInfo, get_sms_db_hash
-from green2blue.ios.device import DeviceInfo
+from green2blue.ios.device import DeviceCheckResult, DeviceHealthReport, DeviceInfo
 
 
 def _create_backup(root: Path, udid: str, device_name: str = "Test iPhone") -> Path:
@@ -85,6 +97,37 @@ def _create_synthetic_backup(root: Path, udid: str) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
     (backup_dir / "Manifest.mbdb").write_bytes(b"synthetic-backup")
     return backup_dir
+
+
+def _ready_report(udid: str = "TEST-UDID") -> DeviceHealthReport:
+    return DeviceHealthReport(
+        udid=udid,
+        name="Test iPhone",
+        ios_version="18.0",
+        product_type="iPhone13,2",
+        state="ready",
+        ready_for_backup_restore=True,
+        hint="ready",
+        checks=(DeviceCheckResult("USBMux detection", True, "ok"),),
+    )
+
+
+def _blocked_report(udid: str = "TEST-UDID") -> DeviceHealthReport:
+    return DeviceHealthReport(
+        udid=udid,
+        name="Test iPhone",
+        ios_version="18.0",
+        product_type="iPhone13,2",
+        state="password_protected",
+        ready_for_backup_restore=False,
+        hint="Unlock device",
+        checks=(DeviceCheckResult("MobileBackup2 service", False, "PasswordProtected"),),
+    )
+
+
+@contextmanager
+def _fake_device_run_session(*_args, **_kwargs):
+    yield MagicMock()
 
 
 class TestConfirmBackup:
@@ -220,8 +263,10 @@ class TestDeviceRestoreRouting:
 
         with (
             patch("green2blue.ios.device.list_devices", return_value=[device]),
+            patch("green2blue.ios.device.doctor_device", return_value=_ready_report("SYNTH-UDID")),
             patch("green2blue.ios.device.push_synthetic_backup") as push_mock,
             patch("green2blue.ios.device.restore_backup") as restore_mock,
+            patch("green2blue.cli._device_run_session", _fake_device_run_session),
             patch("green2blue.cli._print_post_restore_instructions"),
         ):
             ret = _cmd_device_restore(args)
@@ -251,8 +296,10 @@ class TestDeviceRestoreRouting:
 
         with (
             patch("green2blue.ios.device.list_devices", return_value=[device]),
+            patch("green2blue.ios.device.doctor_device", return_value=_ready_report("FULL-UDID")),
             patch("green2blue.ios.device.push_synthetic_backup") as push_mock,
             patch("green2blue.ios.device.restore_backup") as restore_mock,
+            patch("green2blue.cli._device_run_session", _fake_device_run_session),
             patch("green2blue.cli._print_post_restore_instructions"),
         ):
             ret = _cmd_device_restore(args)
@@ -263,3 +310,85 @@ class TestDeviceRestoreRouting:
         assert restore_mock.call_args.kwargs["backup_dir"] == root
         assert restore_mock.call_args.kwargs["udid"] == "FULL-UDID"
         assert restore_mock.call_args.kwargs["password"] == "secret"
+
+    def test_device_restore_refuses_when_doctor_blocks(self, tmp_dir):
+        root = tmp_dir / "full_backups"
+        root.mkdir()
+        _create_backup(root, "FULL-UDID")
+        args = argparse.Namespace(
+            backup_path=root,
+            udid="FULL-UDID",
+            yes=True,
+            password="secret",
+        )
+        device = DeviceInfo(
+            udid="FULL-UDID",
+            name="Test iPhone",
+            ios_version="18.0",
+            is_paired=True,
+        )
+
+        with (
+            patch("green2blue.ios.device.list_devices", return_value=[device]),
+            patch("green2blue.ios.device.doctor_device", return_value=_blocked_report("FULL-UDID")),
+            patch("green2blue.ios.device.push_synthetic_backup") as push_mock,
+            patch("green2blue.ios.device.restore_backup") as restore_mock,
+            patch("green2blue.cli._device_run_session", _fake_device_run_session),
+            patch("green2blue.cli._print_post_restore_instructions"),
+        ):
+            ret = _cmd_device_restore(args)
+
+        assert ret == 1
+        push_mock.assert_not_called()
+        restore_mock.assert_not_called()
+
+
+class TestDeviceDoctorCommand:
+    def test_device_doctor_returns_nonzero_when_not_ready(self):
+        args = argparse.Namespace(udid="TEST-UDID")
+
+        with patch("green2blue.ios.device.doctor_device", return_value=_blocked_report()):
+            ret = _cmd_device_doctor(args)
+
+        assert ret == 1
+
+
+class TestDeviceRunArtifacts:
+    def test_device_run_session_writes_metadata_and_logs(self, tmp_dir):
+        run_root = tmp_dir / "runs"
+
+        def fake_capture(log_path, _started_at):
+            log_path.write_text("host logs")
+
+        with (
+            patch("green2blue.cli._default_device_run_root", return_value=run_root),
+            patch("green2blue.cli._capture_mobiledevice_logs", side_effect=fake_capture),
+        ):
+            with _device_run_session("restore", {"device_udid": "abc123"}) as artifacts:
+                logging.getLogger("green2blue.tests").warning("session works")
+
+        assert artifacts.run_dir.exists()
+        assert artifacts.metadata_path.exists()
+        assert artifacts.mobiledevice_log_path.read_text() == "host logs"
+        assert "session works" in artifacts.log_path.read_text()
+
+    def test_capture_mobiledevice_logs_writes_stdout(self, tmp_dir):
+        output_path = tmp_dir / "mobiledevice.log"
+        completed = MagicMock(returncode=0, stdout="usb log", stderr="")
+
+        with patch("green2blue.cli.subprocess.run", return_value=completed) as run_mock:
+            _capture_mobiledevice_logs(output_path, started_at=datetime(2026, 3, 10, 12, 0, 0))
+
+        assert "usb log" == output_path.read_text()
+        assert run_mock.called
+
+
+class TestProgressFormatting:
+    def test_format_progress_heartbeat_waiting(self):
+        message = _format_progress_heartbeat("Restore", None, None, 30.0)
+        assert "waiting for progress callbacks" in message
+
+    def test_format_progress_heartbeat_stalled(self):
+        message = _format_progress_heartbeat("Restore", 44.9, 18.0, 30.0)
+        assert "44.9%" in message
+        assert "18s ago" in message

@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import subprocess
 import sys
+import threading
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,6 +20,198 @@ from green2blue.exceptions import Green2BlueError
 
 if TYPE_CHECKING:
     from green2blue.ios.backup import BackupInfo
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _DeviceRunArtifacts:
+    run_dir: Path
+    log_path: Path
+    metadata_path: Path
+    mobiledevice_log_path: Path
+
+
+def _default_device_run_root() -> Path:
+    """Directory for timestamped live device operation bundles."""
+    return Path.cwd() / ".live_device_runs"
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _capture_mobiledevice_logs(output_path: Path, started_at: datetime) -> None:
+    """Persist host-side MobileDevice/usbmux logs for the live run."""
+    start_text = started_at.strftime("%Y-%m-%d %H:%M:%S")
+    predicate = (
+        'process == "usbmuxd" || process CONTAINS "AMPDevice" || '
+        'subsystem CONTAINS "MobileDevice"'
+    )
+
+    try:
+        result = subprocess.run(
+            [
+                "log",
+                "show",
+                "--style",
+                "compact",
+                "--start",
+                start_text,
+                "--predicate",
+                predicate,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        output_path.write_text("The macOS 'log' command is not available on this host.\n")
+        return
+
+    content = result.stdout
+    if result.stderr:
+        content = f"{content}\n[stderr]\n{result.stderr}"
+    if result.returncode != 0 and not content.strip():
+        content = f"log show exited with status {result.returncode}\n"
+    output_path.write_text(content)
+
+
+@contextmanager
+def _device_run_session(command: str, metadata: dict[str, object]):
+    """Capture logs and metadata for a live device operation."""
+    started_at = datetime.now().astimezone()
+    run_root = _default_device_run_root()
+    run_root.mkdir(parents=True, exist_ok=True)
+    run_dir = run_root / f"{started_at.strftime('%Y%m%d_%H%M%S')}_{command}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    artifacts = _DeviceRunArtifacts(
+        run_dir=run_dir,
+        log_path=run_dir / "green2blue.log",
+        metadata_path=run_dir / "metadata.json",
+        mobiledevice_log_path=run_dir / "mobiledevice.log",
+    )
+
+    file_handler = logging.FileHandler(artifacts.log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    root_logger = logging.getLogger()
+    root_logger.addHandler(file_handler)
+
+    status = "completed"
+    error_text = ""
+
+    logger.debug("Starting device run bundle at %s", run_dir)
+
+    try:
+        yield artifacts
+    except Exception as exc:
+        status = "failed"
+        error_text = f"{type(exc).__name__}: {exc}"
+        logger.exception("Device run failed")
+        raise
+    finally:
+        root_logger.removeHandler(file_handler)
+        file_handler.close()
+
+        final_metadata = dict(metadata)
+        final_metadata.update({
+            "command": command,
+            "cwd": str(Path.cwd()),
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.now().astimezone().isoformat(),
+            "status": status,
+        })
+        if error_text:
+            final_metadata["error"] = error_text
+
+        _write_json(artifacts.metadata_path, final_metadata)
+        _capture_mobiledevice_logs(artifacts.mobiledevice_log_path, started_at)
+        print(f"\nRun artifacts: {run_dir}")
+
+
+def _format_progress_update(label: str, pct: float) -> str:
+    return f"  {label} progress: {pct:.1f}%"
+
+
+def _format_progress_heartbeat(
+    label: str,
+    pct: float | None,
+    last_update_age: float | None,
+    total_age: float,
+) -> str:
+    if pct is None or last_update_age is None:
+        return f"  {label} heartbeat: waiting for progress callbacks ({total_age:.0f}s elapsed)"
+    return f"  {label} heartbeat: {pct:.1f}% (last update {last_update_age:.0f}s ago)"
+
+
+class _ProgressReporter:
+    """Print live progress and heartbeat updates for long-running device steps."""
+
+    def __init__(self, label: str, heartbeat_seconds: float = 15.0):
+        self.label = label
+        self.heartbeat_seconds = heartbeat_seconds
+        self._start_time = time.monotonic()
+        self._last_update = None
+        self._last_progress = None
+        self._last_printed = None
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def callback(self, pct: float) -> None:
+        with self._lock:
+            self._last_update = time.monotonic()
+            self._last_progress = pct
+            should_print = self._last_printed is None or abs(pct - self._last_printed) >= 0.1
+            if should_print:
+                self._last_printed = pct
+
+        logger.debug("%s progress callback: %.1f%%", self.label, pct)
+        if should_print:
+            print(_format_progress_update(self.label, pct), flush=True)
+
+    def finish(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=0.1)
+
+    def _heartbeat_loop(self) -> None:
+        while not self._stop_event.wait(self.heartbeat_seconds):
+            with self._lock:
+                now = time.monotonic()
+                last_progress = self._last_progress
+                last_update_age = None if self._last_update is None else now - self._last_update
+                total_age = now - self._start_time
+
+            message = _format_progress_heartbeat(
+                self.label,
+                last_progress,
+                last_update_age,
+                total_age,
+            )
+            logger.debug(message.strip())
+            print(message, flush=True)
+
+
+def _print_device_health_report(report) -> None:
+    """Render a device doctor report for a human operator."""
+    ready = "yes" if report.ready_for_backup_restore else "no"
+    print(f"Device doctor: {report.name} ({report.udid})")
+    print(f"  iOS: {report.ios_version}  Product: {report.product_type}")
+    print(f"  State: {report.state}")
+    print(f"  Ready for backup/restore: {ready}")
+    for check in report.checks:
+        status = "OK" if check.ok else "FAIL"
+        print(f"  [{status}] {check.name}: {check.detail}")
+    if report.hint:
+        print(f"  Hint: {report.hint}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -275,6 +474,21 @@ def _build_parser() -> argparse.ArgumentParser:
     dev_list_parser.add_argument("-v", "--verbose", action="store_true")
     dev_list_parser.add_argument("-q", "--quiet", action="store_true")
     dev_list_parser.set_defaults(func=_cmd_device_list)
+
+    # device doctor
+    dev_doctor_parser = device_subs.add_parser(
+        "doctor",
+        help="Check whether a connected device is actually ready for backup/restore",
+    )
+    dev_doctor_parser.add_argument(
+        "--udid",
+        type=str,
+        default=None,
+        help="Target device UDID (auto-select if only one device)",
+    )
+    dev_doctor_parser.add_argument("-v", "--verbose", action="store_true")
+    dev_doctor_parser.add_argument("-q", "--quiet", action="store_true")
+    dev_doctor_parser.set_defaults(func=_cmd_device_doctor)
 
     # device backup
     dev_backup_parser = device_subs.add_parser(
@@ -900,24 +1114,48 @@ def _cmd_device_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_device_doctor(args: argparse.Namespace) -> int:
+    """Probe whether a device is ready for backup/restore."""
+    from green2blue.ios.device import doctor_device
+
+    report = doctor_device(args.udid)
+    _print_device_health_report(report)
+    return 0 if report.ready_for_backup_restore else 1
+
+
 def _cmd_device_backup(args: argparse.Namespace) -> int:
     """Create a backup from a connected device."""
     import tempfile
 
-    from green2blue.ios.device import create_backup
+    from green2blue.ios.device import create_backup, doctor_device
 
     output_dir = args.output or Path(tempfile.mkdtemp(prefix="g2b_backup_"))
     print(f"Creating backup in: {output_dir}")
 
-    def progress(pct: float) -> None:
-        print(f"\r  Backup progress: {pct:.1f}%", end="", flush=True)
+    print("\nRunning device doctor...")
+    report = doctor_device(args.udid)
+    if not report.ready_for_backup_restore:
+        _print_device_health_report(report)
+        return 1
+    print(f"  Device doctor: OK ({report.name}, iOS {report.ios_version}, state={report.state})")
 
-    backup_path = create_backup(
-        backup_dir=output_dir,
-        udid=args.udid,
-        password=args.password,
-        progress_cb=progress,
-    )
+    with _device_run_session("device_backup", {
+        "requested_udid": args.udid or "auto",
+        "device_udid": report.udid,
+        "device_name": report.name,
+        "output_dir": str(output_dir),
+    }):
+        progress = _ProgressReporter("Backup")
+        progress.start()
+        try:
+            backup_path = create_backup(
+                backup_dir=output_dir,
+                udid=report.udid,
+                password=args.password,
+                progress_cb=progress.callback,
+            )
+        finally:
+            progress.finish()
 
     print(f"\n\nBackup created: {backup_path}")
     return 0
@@ -929,6 +1167,7 @@ def _cmd_device_inject(args: argparse.Namespace) -> int:
 
     from green2blue.ios.device import (
         create_backup,
+        doctor_device,
         list_devices,
         restore_backup,
     )
@@ -962,6 +1201,13 @@ def _cmd_device_inject(args: argparse.Namespace) -> int:
         print(f"Device {target.name} is not paired. Unlock and trust first.", file=sys.stderr)
         return 1
 
+    print("\nRunning device doctor...")
+    report = doctor_device(target.udid)
+    if not report.ready_for_backup_restore:
+        _print_device_health_report(report)
+        return 1
+    print(f"  Device doctor: OK ({report.name}, iOS {report.ios_version}, state={report.state})")
+
     # Confirm
     if not args.yes and sys.stdin.isatty():
         print(f"\nTarget: {target.name} (iOS {target.ios_version})")
@@ -980,62 +1226,77 @@ def _cmd_device_inject(args: argparse.Namespace) -> int:
             print("Aborted.")
             return 1
 
-    # Step 2: Create backup
-    backup_root = Path(tempfile.mkdtemp(prefix="g2b_device_"))
-    print("\nCreating backup...")
+    run_metadata = {
+        "device_udid": target.udid,
+        "device_name": target.name,
+        "export_zip": str(args.export_zip),
+        "service": args.service,
+        "ck_strategy": args.ck_strategy,
+    }
 
-    def backup_progress(pct: float) -> None:
-        print(f"\r  Backup progress: {pct:.1f}%", end="", flush=True)
+    with _device_run_session("device_inject", run_metadata):
+        # Step 2: Create backup
+        backup_root = Path(tempfile.mkdtemp(prefix="g2b_device_"))
+        print("\nCreating backup...")
 
-    backup_path = create_backup(
-        backup_dir=backup_root,
-        udid=target.udid,
-        password=args.password,
-        progress_cb=backup_progress,
-    )
-    print(f"\n  Backup saved to: {backup_path}")
+        backup_progress = _ProgressReporter("Backup")
+        backup_progress.start()
+        try:
+            backup_path = create_backup(
+                backup_dir=backup_root,
+                udid=target.udid,
+                password=args.password,
+                progress_cb=backup_progress.callback,
+            )
+        finally:
+            backup_progress.finish()
+        print(f"\n  Backup saved to: {backup_path}")
 
-    # Step 3: Run injection pipeline
-    ck_strategy = CKStrategy(args.ck_strategy)
-    print("\nInjecting messages...")
-    result = run_pipeline(
-        export_path=args.export_zip,
-        backup_path_or_udid=str(backup_path),
-        country=args.country,
-        skip_duplicates=True,
-        include_attachments=True,
-        dry_run=False,
-        password=args.password,
-        ck_strategy=ck_strategy,
-        service=args.service,
-    )
+        run_metadata["backup_root"] = str(backup_root)
 
-    # Print injection summary
-    stats = result.injection_stats
-    if stats:
-        print("\n--- Injection Summary ---")
-        print(f"Messages injected: {stats.messages_inserted}")
-        print(f"Handles created:   {stats.handles_inserted}")
-        print(f"Chats created:     {stats.chats_inserted}")
-        print(f"Attachments:       {stats.attachments_inserted}")
+        # Step 3: Run injection pipeline
+        ck_strategy = CKStrategy(args.ck_strategy)
+        print("\nInjecting messages...")
+        result = run_pipeline(
+            export_path=args.export_zip,
+            backup_path_or_udid=str(backup_path),
+            country=args.country,
+            skip_duplicates=True,
+            include_attachments=True,
+            dry_run=False,
+            password=args.password,
+            ck_strategy=ck_strategy,
+            service=args.service,
+        )
 
-    if result.verification:
-        v = result.verification
-        status = "PASSED" if v.passed else "FAILED"
-        print(f"Verification:      {status} ({v.checks_passed}/{v.checks_run})")
+        # Print injection summary
+        stats = result.injection_stats
+        if stats:
+            print("\n--- Injection Summary ---")
+            print(f"Messages injected: {stats.messages_inserted}")
+            print(f"Handles created:   {stats.handles_inserted}")
+            print(f"Chats created:     {stats.chats_inserted}")
+            print(f"Attachments:       {stats.attachments_inserted}")
 
-    # Step 4: Restore to device
-    print("\nRestoring modified backup to device...")
+        if result.verification:
+            v = result.verification
+            status = "PASSED" if v.passed else "FAILED"
+            print(f"Verification:      {status} ({v.checks_passed}/{v.checks_run})")
 
-    def restore_progress(pct: float) -> None:
-        print(f"\r  Restore progress: {pct:.1f}%", end="", flush=True)
+        # Step 4: Restore to device
+        print("\nRestoring modified backup to device...")
 
-    restore_backup(
-        backup_dir=backup_root,
-        udid=target.udid,
-        password=args.password,
-        progress_cb=restore_progress,
-    )
+        restore_progress = _ProgressReporter("Restore")
+        restore_progress.start()
+        try:
+            restore_backup(
+                backup_dir=backup_root,
+                udid=target.udid,
+                password=args.password,
+                progress_cb=restore_progress.callback,
+            )
+        finally:
+            restore_progress.finish()
 
     _print_post_restore_instructions()
 
@@ -1053,7 +1314,12 @@ def _cmd_device_inject(args: argparse.Namespace) -> int:
 
 def _cmd_device_restore(args: argparse.Namespace) -> int:
     """Restore an already-modified backup to a device."""
-    from green2blue.ios.device import list_devices, push_synthetic_backup, restore_backup
+    from green2blue.ios.device import (
+        doctor_device,
+        list_devices,
+        push_synthetic_backup,
+        restore_backup,
+    )
 
     # Validate backup path
     backup_path = args.backup_path
@@ -1085,6 +1351,13 @@ def _cmd_device_restore(args: argparse.Namespace) -> int:
 
     backup_root, _, restore_mode = _resolve_restore_target(backup_path, target.udid)
 
+    print("\nRunning device doctor...")
+    report = doctor_device(target.udid)
+    if not report.ready_for_backup_restore:
+        _print_device_health_report(report)
+        return 1
+    print(f"  Device doctor: OK ({report.name}, iOS {report.ios_version}, state={report.state})")
+
     # Confirm
     if not args.yes and sys.stdin.isatty():
         print(f"\nTarget: {target.name} (iOS {target.ios_version})")
@@ -1099,22 +1372,31 @@ def _cmd_device_restore(args: argparse.Namespace) -> int:
             print("Aborted.")
             return 1
 
-    def progress(pct: float) -> None:
-        print(f"\r  Restore progress: {pct:.1f}%", end="", flush=True)
-
-    if restore_mode == "synthetic":
-        push_synthetic_backup(
-            backup_dir=backup_root,
-            udid=target.udid,
-            progress_cb=progress,
-        )
-    else:
-        restore_backup(
-            backup_dir=backup_root,
-            udid=target.udid,
-            password=args.password,
-            progress_cb=progress,
-        )
+    with _device_run_session("device_restore", {
+        "device_udid": target.udid,
+        "device_name": target.name,
+        "backup_path": str(backup_path),
+        "backup_root": str(backup_root),
+        "restore_mode": restore_mode,
+    }):
+        progress = _ProgressReporter("Restore")
+        progress.start()
+        try:
+            if restore_mode == "synthetic":
+                push_synthetic_backup(
+                    backup_dir=backup_root,
+                    udid=target.udid,
+                    progress_cb=progress.callback,
+                )
+            else:
+                restore_backup(
+                    backup_dir=backup_root,
+                    udid=target.udid,
+                    password=args.password,
+                    progress_cb=progress.callback,
+                )
+        finally:
+            progress.finish()
 
     _print_post_restore_instructions()
 
