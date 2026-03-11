@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+            artifact: green2blue-macos-arm64
+          - os: macos-13
+            arch: x86_64
+            artifact: green2blue-macos-x86_64
+          - os: windows-latest
+            arch: x86_64
+            artifact: green2blue-windows-x86_64.exe
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[encrypted]"
+          pip install pyinstaller
+
+      - name: Build standalone binary
+        run: pyinstaller green2blue.spec
+
+      - name: Rename binary (Unix)
+        if: runner.os != 'Windows'
+        run: mv dist/green2blue dist/${{ matrix.artifact }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: mv dist/green2blue.exe dist/${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/green2blue-macos-arm64/green2blue-macos-arm64
+            dist/green2blue-macos-x86_64/green2blue-macos-x86_64
+            dist/green2blue-windows-x86_64.exe/green2blue-windows-x86_64.exe
+          body: |
+            ## Installation
+
+            ### Download the binary for your platform:
+            - **macOS (Apple Silicon)**: `green2blue-macos-arm64`
+            - **macOS (Intel)**: `green2blue-macos-x86_64`
+            - **Windows**: `green2blue-windows-x86_64.exe`
+
+            ### macOS
+            ```bash
+            chmod +x green2blue-macos-arm64
+            ./green2blue-macos-arm64
+            ```
+            If macOS says "this can't be opened": right-click the file, click Open, then click Open again. Or run:
+            ```bash
+            xattr -d com.apple.quarantine green2blue-macos-arm64
+            ```
+
+            ### Windows
+            Double-click `green2blue-windows-x86_64.exe` or run from Command Prompt.
+            If Windows Defender blocks it: click "More info" then "Run anyway".

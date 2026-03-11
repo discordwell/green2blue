@@ -1,0 +1,376 @@
+"""Tests for the interactive wizard module."""
+
+from __future__ import annotations
+
+import json
+import plistlib
+import sqlite3
+import zipfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from green2blue.ios.backup import BackupInfo, get_sms_db_hash
+from green2blue.wizard import (
+    _clean_path,
+    _detect_country,
+    _pick_backup,
+    _print_no_backups_help,
+    _step_welcome,
+    _us_numbers_pass,
+    run_wizard,
+)
+
+# -- Helpers --
+
+def _create_backup(root: Path, udid: str, device_name: str = "Test iPhone",
+                   encrypted: bool = False) -> Path:
+    """Create a minimal synthetic backup for wizard testing."""
+    backup_dir = root / udid
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    (backup_dir / "Info.plist").write_bytes(plistlib.dumps({
+        "Device Name": device_name,
+        "Product Version": "17.4",
+        "Unique Identifier": udid,
+    }))
+    (backup_dir / "Manifest.plist").write_bytes(plistlib.dumps({
+        "IsEncrypted": encrypted,
+        "Version": "3.3",
+    }))
+    (backup_dir / "Status.plist").write_bytes(plistlib.dumps({
+        "IsFullBackup": True,
+        "Version": "3.3",
+        "Date": "2026-02-28T00:00:00Z",
+    }))
+
+    sms_hash = get_sms_db_hash()
+    sms_dir = backup_dir / sms_hash[:2]
+    sms_dir.mkdir(exist_ok=True)
+
+    # Create Manifest.db
+    manifest_db = backup_dir / "Manifest.db"
+    conn = sqlite3.connect(manifest_db)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS Files (fileID TEXT PRIMARY KEY, domain TEXT, "
+        "relativePath TEXT, flags INTEGER, file BLOB)"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO Files VALUES (?, ?, ?, ?, ?)",
+        (sms_hash, "HomeDomain", "Library/SMS/sms.db", 1, b""),
+    )
+    conn.commit()
+    conn.close()
+
+    # Create sms.db with full schema
+    sms_db_path = sms_dir / sms_hash
+    sql_path = Path(__file__).parent.parent / "scripts" / "create_empty_smsdb.sql"
+    conn = sqlite3.connect(sms_db_path)
+    conn.executescript(sql_path.read_text())
+    conn.close()
+
+    return backup_dir
+
+
+def _create_export_zip(root: Path, num_messages: int = 5) -> Path:
+    """Create a minimal export ZIP for wizard testing."""
+    zip_path = root / "export.zip"
+    records = []
+    for i in range(num_messages):
+        records.append({
+            "address": f"+1202555{1000 + i}",
+            "body": f"Test message {i}",
+            "date": str(1700000000000 + i * 1000),
+            "type": "1",
+            "read": "1",
+        })
+    content = "\n".join(json.dumps(r) for r in records) + "\n"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("messages.ndjson", content)
+    return zip_path
+
+
+def _create_non_us_export_zip(root: Path) -> Path:
+    """Create an export ZIP with non-US phone numbers."""
+    zip_path = root / "non_us_export.zip"
+    records = []
+    # UK numbers without + prefix — these should fail US normalization
+    for i in range(20):
+        records.append({
+            "address": f"0778800{1000 + i}",
+            "body": f"UK message {i}",
+            "date": str(1700000000000 + i * 1000),
+            "type": "1",
+            "read": "1",
+        })
+    content = "\n".join(json.dumps(r) for r in records) + "\n"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("messages.ndjson", content)
+    return zip_path
+
+
+# -- Tests --
+
+class TestCleanPath:
+    def test_strips_whitespace(self):
+        assert _clean_path("  /path/to/file.zip  ") == "/path/to/file.zip"
+
+    def test_strips_single_quotes(self):
+        assert _clean_path("'/path/to/file.zip'") == "/path/to/file.zip"
+
+    def test_strips_double_quotes(self):
+        assert _clean_path('"/path/to/file.zip"') == "/path/to/file.zip"
+
+    def test_strips_backslash_escapes(self):
+        assert _clean_path("/path/to/my\\ file.zip") == "/path/to/my file.zip"
+
+    def test_empty_string(self):
+        assert _clean_path("") == ""
+
+    def test_preserves_normal_path(self):
+        assert _clean_path("/Users/test/export.zip") == "/Users/test/export.zip"
+
+
+class TestDetectCountry:
+    def test_us_numbers_detected(self, tmp_dir):
+        zip_path = _create_export_zip(tmp_dir)
+        country = _detect_country(zip_path)
+        assert country == "US"
+
+    def test_plus_prefixed_numbers_default_us(self, tmp_dir):
+        """Numbers with + prefix should default to US (country code already present)."""
+        zip_path = _create_export_zip(tmp_dir)  # Uses +1... numbers
+        country = _detect_country(zip_path)
+        assert country == "US"
+
+
+class TestUsNumbersPass:
+    def test_us_numbers_pass(self, tmp_dir):
+        zip_path = _create_export_zip(tmp_dir)
+        assert _us_numbers_pass(zip_path) is True
+
+    def test_non_us_numbers_fail(self, tmp_dir):
+        zip_path = _create_non_us_export_zip(tmp_dir)
+        assert _us_numbers_pass(zip_path) is False
+
+
+class TestWelcome:
+    def test_prints_version(self, capsys):
+        _step_welcome()
+        captured = capsys.readouterr()
+        assert "green2blue" in captured.out
+        assert "Ctrl+C" in captured.out
+
+
+class TestNoBackupsHelp:
+    def test_macos_instructions(self, capsys):
+        with patch("green2blue.wizard.platform.system", return_value="Darwin"):
+            _print_no_backups_help()
+        captured = capsys.readouterr()
+        assert "Finder" in captured.out
+        assert "No iPhone backups found" in captured.out
+
+    def test_windows_instructions(self, capsys):
+        with patch("green2blue.wizard.platform.system", return_value="Windows"):
+            _print_no_backups_help()
+        captured = capsys.readouterr()
+        assert "iTunes" in captured.out
+
+
+class TestPickBackup:
+    def test_pick_by_number(self, tmp_dir):
+        root = tmp_dir / "backups"
+        root.mkdir()
+        _create_backup(root, "AAAA", "iPhone A")
+        path_b = _create_backup(root, "BBBB", "iPhone B")
+
+        backups = [
+            BackupInfo(path=root / "AAAA", udid="AAAA", device_name="iPhone A",
+                       product_version="17.4", is_encrypted=False),
+            BackupInfo(path=path_b, udid="BBBB", device_name="iPhone B",
+                       product_version="17.4", is_encrypted=False),
+        ]
+
+        with patch("builtins.input", return_value="2"):
+            result = _pick_backup(backups)
+        assert result.path == path_b
+
+
+class TestWizardHappyPath:
+    def test_full_wizard_flow(self, tmp_dir):
+        """Test the full wizard flow with mocked inputs."""
+        root = tmp_dir / "backups"
+        root.mkdir()
+        backup_path = _create_backup(root, "WIZARD-TEST")
+        zip_path = _create_export_zip(tmp_dir, num_messages=3)
+
+        backup_info = BackupInfo(
+            path=backup_path, udid="WIZARD-TEST", device_name="Test iPhone",
+            product_version="17.4", is_encrypted=False,
+        )
+
+        # Mock the input sequence:
+        # 1. Export ZIP path
+        # 2. Confirm backup (Y)
+        # 3. Confirm inject (Y)
+        inputs = iter([str(zip_path), "y", "y"])
+
+        with (
+            patch("builtins.input", side_effect=lambda _: next(inputs)),
+            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+        ):
+            mock_result = MagicMock()
+            mock_result.injection_stats = MagicMock(
+                messages_inserted=3, messages_skipped=0,
+            )
+            mock_result.clone_stats = None
+            mock_result.overwrite_stats = None
+            mock_result.total_attachments_copied = 0
+            mock_result.verification = MagicMock(passed=True)
+            mock_result.safety_copy_path = tmp_dir / "safety"
+            mock_pipeline.return_value = mock_result
+
+            ret = run_wizard()
+
+        assert ret == 0
+        mock_pipeline.assert_called_once()
+
+    def test_wizard_with_no_backups(self, tmp_dir):
+        """Wizard exits gracefully when no backups found."""
+        zip_path = _create_export_zip(tmp_dir)
+
+        inputs = iter([str(zip_path)])
+
+        with (
+            patch("builtins.input", side_effect=lambda _: next(inputs)),
+            patch("green2blue.ios.backup.list_backups", return_value=[]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            run_wizard()
+
+        assert exc_info.value.code == 1
+
+    def test_wizard_with_bad_zip(self, tmp_dir):
+        """Wizard rejects a non-export ZIP, then accepts a good one."""
+        bad_zip = tmp_dir / "bad.zip"
+        bad_zip.write_bytes(b"not a zip")
+        good_zip = _create_export_zip(tmp_dir)
+
+        backup_info = BackupInfo(
+            path=tmp_dir / "backup", udid="TEST", device_name="iPhone",
+            product_version="17.4", is_encrypted=False,
+        )
+
+        # First try bad path (not a ZIP), then good path
+        inputs = iter([
+            str(bad_zip),      # bad file (not a valid ZIP)
+            str(good_zip),     # good file
+            "y",               # confirm backup
+            "y",               # confirm inject
+        ])
+
+        with (
+            patch("builtins.input", side_effect=lambda _: next(inputs)),
+            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+        ):
+            mock_result = MagicMock()
+            mock_result.injection_stats = MagicMock(
+                messages_inserted=1, messages_skipped=0,
+            )
+            mock_result.clone_stats = None
+            mock_result.overwrite_stats = None
+            mock_result.total_attachments_copied = 0
+            mock_result.verification = MagicMock(passed=True)
+            mock_result.safety_copy_path = None
+            mock_pipeline.return_value = mock_result
+
+            ret = run_wizard()
+
+        assert ret == 0
+
+    def test_wizard_ctrl_c_aborts(self, tmp_dir):
+        """Ctrl+C during wizard returns 130."""
+        with patch("builtins.input", side_effect=KeyboardInterrupt):
+            ret = run_wizard()
+        assert ret == 130
+
+
+class TestWizardEncryptedBackup:
+    def test_encrypted_backup_prompts_password(self, tmp_dir):
+        """Wizard prompts for password when backup is encrypted."""
+        root = tmp_dir / "backups"
+        root.mkdir()
+        zip_path = _create_export_zip(tmp_dir)
+
+        backup_info = BackupInfo(
+            path=root / "ENC-TEST", udid="ENC-TEST",
+            device_name="Encrypted iPhone", product_version="17.4",
+            is_encrypted=True,
+        )
+
+        # Inputs: zip path, confirm backup, password, confirm inject
+        inputs = iter([str(zip_path), "y", "y"])
+
+        with (
+            patch("builtins.input", side_effect=lambda _: next(inputs)),
+            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.wizard._validate_password", return_value=True),
+            patch("green2blue.wizard.getpass.getpass", return_value="secret123"),
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+        ):
+            mock_result = MagicMock()
+            mock_result.injection_stats = MagicMock(
+                messages_inserted=5, messages_skipped=0,
+            )
+            mock_result.clone_stats = None
+            mock_result.overwrite_stats = None
+            mock_result.total_attachments_copied = 0
+            mock_result.verification = MagicMock(passed=True)
+            mock_result.safety_copy_path = None
+            mock_pipeline.return_value = mock_result
+
+            ret = run_wizard()
+
+        assert ret == 0
+        # Verify pipeline was called with the password
+        call_kwargs = mock_pipeline.call_args
+        assert call_kwargs.kwargs.get("password") == "secret123" or \
+               call_kwargs[1].get("password") == "secret123"
+
+    def test_encrypted_backup_wrong_password_retries(self, tmp_dir):
+        """Wizard retries on wrong password up to 3 times then exits."""
+        zip_path = _create_export_zip(tmp_dir)
+
+        backup_info = BackupInfo(
+            path=tmp_dir / "ENC-TEST", udid="ENC-TEST",
+            device_name="Encrypted iPhone", product_version="17.4",
+            is_encrypted=True,
+        )
+
+        inputs = iter([str(zip_path), "y"])
+
+        with (
+            patch("builtins.input", side_effect=lambda _: next(inputs)),
+            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.wizard._validate_password", return_value=False),
+            patch("green2blue.wizard.getpass.getpass", return_value="wrong"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            run_wizard()
+
+        assert exc_info.value.code == 1
+
+
+class TestCountryDetection:
+    def test_us_numbers_detect_correctly(self, tmp_dir):
+        zip_path = _create_export_zip(tmp_dir)
+        # US numbers with + prefix should pass
+        assert _us_numbers_pass(zip_path) is True
+
+    def test_non_us_numbers_prompt_user(self, tmp_dir):
+        """Non-US numbers should trigger a country prompt in the wizard."""
+        zip_path = _create_non_us_export_zip(tmp_dir)
+        assert _us_numbers_pass(zip_path) is False

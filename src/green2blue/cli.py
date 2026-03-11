@@ -216,8 +216,22 @@ def _print_device_health_report(report) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for the CLI."""
+    effective_argv = argv if argv is not None else sys.argv[1:]
+
+    # Smart pre-parse checks (before argparse can error on unknown subcommands)
+    if not effective_argv and getattr(sys.stdin, "isatty", lambda: False)():
+        from green2blue.wizard import run_wizard
+
+        return run_wizard()
+
+    if len(effective_argv) == 1 and effective_argv[0].lower().endswith(".zip"):
+        zip_arg = effective_argv[0]
+        print(f"Did you mean: green2blue inject {zip_arg}", file=sys.stderr)
+        print(f"\nRun:  green2blue inject {zip_arg}", file=sys.stderr)
+        return 1
+
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(effective_argv)
 
     # Configure logging
     if hasattr(args, "verbose") and args.verbose:
@@ -262,69 +276,52 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Path to the SMS Import/Export ZIP file",
     )
-    inject_parser.add_argument(
+
+    # Common options (shown first in --help)
+    common = inject_parser.add_argument_group("Common options")
+    common.add_argument(
         "--backup",
         type=str,
         default=None,
         help="iPhone backup path or UDID (auto-detect if omitted)",
     )
-    inject_parser.add_argument(
-        "--backup-root",
-        type=Path,
-        default=None,
-        help="Override the default backup directory",
-    )
-    inject_parser.add_argument(
-        "--country",
-        type=str,
-        default="US",
-        help="Default country code for phone normalization (default: US)",
-    )
-    inject_parser.add_argument(
-        "--skip-duplicates",
-        action="store_true",
-        default=True,
-        help="Skip duplicate messages (default: on)",
-    )
-    inject_parser.add_argument(
-        "--no-skip-duplicates",
-        action="store_false",
-        dest="skip_duplicates",
-        help="Do not skip duplicate messages",
-    )
-    inject_parser.add_argument(
-        "--no-attachments",
-        action="store_true",
-        default=False,
-        help="Skip copying attachment files",
-    )
-    inject_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=False,
-        help="Parse and convert without modifying the backup",
-    )
-    inject_parser.add_argument(
+    common.add_argument(
         "--password",
         type=str,
         default=None,
         help="Backup encryption password",
     )
-    inject_parser.add_argument(
+    common.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Parse and convert without modifying the backup",
+    )
+    common.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt",
+    )
+    common.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    common.add_argument("-q", "--quiet", action="store_true", help="Minimal output")
+
+    # Advanced options (shown after common)
+    advanced = inject_parser.add_argument_group("Advanced options")
+    advanced.add_argument(
+        "--country",
+        type=str,
+        default="US",
+        help="Default country code for phone normalization (default: US)",
+    )
+    advanced.add_argument(
         "--ck-strategy",
         type=str,
         choices=["none", "fake-synced", "pending-upload", "icloud-reset"],
         default="none",
         help="CloudKit metadata strategy for iCloud Messages sync survival (default: none)",
     )
-    inject_parser.add_argument(
-        "--service",
-        type=str,
-        choices=["SMS", "iMessage"],
-        default="SMS",
-        help="Message service type: SMS (green bubbles) or iMessage (blue bubbles) (default: SMS)",
-    )
-    inject_parser.add_argument(
+    advanced.add_argument(
         "--mode",
         type=str,
         choices=["insert", "overwrite", "clone"],
@@ -332,7 +329,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Injection mode: insert new rows, overwrite sacrifice messages, "
              "or clone existing (Hack Patrol) (default: insert)",
     )
-    inject_parser.add_argument(
+    advanced.add_argument(
         "--sacrifice-chat",
         type=int,
         action="append",
@@ -340,20 +337,44 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="sacrifice_chats",
         help="Chat ROWID to sacrifice (repeatable, required for --mode overwrite)",
     )
-    inject_parser.add_argument(
+    advanced.add_argument(
+        "--service",
+        type=str,
+        choices=["SMS", "iMessage"],
+        default="SMS",
+        help="Message service type: SMS (green bubbles) or iMessage (blue bubbles) (default: SMS)",
+    )
+    advanced.add_argument(
         "--disable-icloud-sync",
         action="store_true",
         default=False,
         help="Set CloudKitSyncingEnabled=False in backup to prevent iCloud Messages wipe",
     )
-    inject_parser.add_argument(
-        "-y", "--yes",
+    advanced.add_argument(
+        "--backup-root",
+        type=Path,
+        default=None,
+        help="Override the default backup directory",
+    )
+    advanced.add_argument(
+        "--no-attachments",
         action="store_true",
         default=False,
-        help="Skip confirmation prompt",
+        help="Skip copying MMS attachment files",
     )
-    inject_parser.add_argument("-v", "--verbose", action="store_true")
-    inject_parser.add_argument("-q", "--quiet", action="store_true")
+    advanced.add_argument(
+        "--skip-duplicates",
+        action="store_true",
+        default=True,
+        help="Skip duplicate messages (default: on)",
+    )
+    advanced.add_argument(
+        "--no-skip-duplicates",
+        action="store_false",
+        dest="skip_duplicates",
+        help="Do not skip duplicate messages",
+    )
+
     inject_parser.set_defaults(func=_cmd_inject)
 
     # --- list-backups ---
@@ -607,7 +628,69 @@ def _build_parser() -> argparse.ArgumentParser:
     dev_restore_parser.add_argument("-q", "--quiet", action="store_true")
     dev_restore_parser.set_defaults(func=_cmd_device_restore)
 
+    # --- wizard ---
+    wizard_parser = subparsers.add_parser(
+        "wizard",
+        help="Interactive guided setup (same as running green2blue with no arguments)",
+    )
+    wizard_parser.set_defaults(func=_cmd_wizard)
+
+    # --- quickstart ---
+    quickstart_parser = subparsers.add_parser(
+        "quickstart",
+        help="Print a step-by-step guide for getting started",
+    )
+    quickstart_parser.set_defaults(func=_cmd_quickstart)
+
     return parser
+
+
+def _cmd_wizard(args: argparse.Namespace) -> int:
+    """Execute the wizard command."""
+    from green2blue.wizard import run_wizard
+
+    return run_wizard()
+
+
+def _cmd_quickstart(args: argparse.Namespace) -> int:
+    """Print a step-by-step quickstart guide."""
+    print("""
+green2blue — Quick Start Guide
+===============================
+
+1. EXPORT FROM ANDROID
+   Install "SMS Import/Export" from the Play Store on your Android phone.
+   Open it and export all messages. Choose NDJSON format and include
+   attachments. This creates a ZIP file.
+
+2. TRANSFER THE ZIP
+   Get the ZIP file from your Android to your computer — email it to
+   yourself, upload to Google Drive, or transfer via USB cable.
+
+3. CREATE AN iPHONE BACKUP
+   Connect your iPhone to your computer with a cable.
+   - macOS: Open Finder, select your iPhone, click "Back Up Now"
+   - Windows: Open iTunes, click the phone icon, click "Back Up Now"
+
+4. RUN GREEN2BLUE
+   Open Terminal (macOS) or Command Prompt (Windows) and run:
+
+       green2blue
+
+   Follow the prompts — drag your ZIP file in, confirm your backup,
+   and green2blue will inject the messages.
+
+5. RESTORE THE BACKUP
+   - macOS: In Finder, click "Restore Backup" and select your backup
+   - Windows: In iTunes, click "Restore Backup" and select your backup
+
+6. DONE!
+   After the restore completes, open Messages on your iPhone.
+   Your Android messages will be there.
+
+Need more help? Visit: https://github.com/discordwell/green2blue
+""")
+    return 0
 
 
 def _cmd_inject(args: argparse.Namespace) -> int:

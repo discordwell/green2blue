@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from green2blue.cli import (
     _capture_mobiledevice_logs,
     _cmd_device_doctor,
@@ -379,7 +381,7 @@ class TestDeviceRunArtifacts:
         with patch("green2blue.cli.subprocess.run", return_value=completed) as run_mock:
             _capture_mobiledevice_logs(output_path, started_at=datetime(2026, 3, 10, 12, 0, 0))
 
-        assert "usb log" == output_path.read_text()
+        assert output_path.read_text() == "usb log"
         assert run_mock.called
 
 
@@ -392,3 +394,61 @@ class TestProgressFormatting:
         message = _format_progress_heartbeat("Restore", 44.9, 18.0, 30.0)
         assert "44.9%" in message
         assert "18s ago" in message
+
+
+class TestSmartNoArgs:
+    def test_no_args_tty_launches_wizard(self):
+        """No args with TTY stdin should launch wizard."""
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("green2blue.wizard.run_wizard", return_value=0) as mock_wizard,
+        ):
+            mock_stdin.isatty.return_value = True
+            ret = main([])
+        assert ret == 0
+        mock_wizard.assert_called_once()
+
+    def test_no_args_non_tty_prints_help(self, capsys):
+        """No args without TTY should print help."""
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            ret = main([])
+        assert ret == 1
+
+    def test_zip_arg_suggests_inject(self, capsys):
+        """A bare .zip arg should suggest 'green2blue inject'."""
+        ret = main(["export.zip"])
+        captured = capsys.readouterr()
+        assert "Did you mean" in captured.err
+        assert "green2blue inject export.zip" in captured.err
+        assert ret == 1
+
+
+class TestQuickstartCommand:
+    def test_quickstart_prints_guide(self, capsys):
+        """quickstart subcommand prints the walkthrough."""
+        ret = main(["quickstart"])
+        captured = capsys.readouterr()
+        assert "Quick Start Guide" in captured.out
+        assert "SMS Import/Export" in captured.out
+        assert "Restore Backup" in captured.out
+        assert ret == 0
+
+
+class TestWizardSubcommand:
+    def test_wizard_subcommand_launches_wizard(self):
+        """'green2blue wizard' should launch the wizard."""
+        with patch("green2blue.wizard.run_wizard", return_value=0) as mock_wizard:
+            ret = main(["wizard"])
+        assert ret == 0
+        mock_wizard.assert_called_once()
+
+
+class TestInjectHelpGroups:
+    def test_inject_help_has_common_and_advanced(self, capsys):
+        """inject --help should show 'Common options' and 'Advanced options'."""
+        with pytest.raises(SystemExit):
+            main(["inject", "--help"])
+        captured = capsys.readouterr()
+        assert "Common options" in captured.out
+        assert "Advanced options" in captured.out

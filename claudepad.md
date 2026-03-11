@@ -32,6 +32,15 @@
 
 # Session Summaries
 
+## 2026-03-11T12:00Z - Non-technical user experience (wizard + installers + README)
+- Added interactive wizard (`wizard.py`) — guided flow: welcome, ZIP drag-and-drop, inspect, country auto-detection, backup selection, encryption handling, confirm, inject, platform-aware next steps
+- Updated `cli.py`: no-args launches wizard on TTY, bare .zip arg suggests `inject`, two-tier help groups (Common/Advanced), `wizard` and `quickstart` subcommands
+- Created `green2blue.spec` (PyInstaller) for standalone binaries (macOS arm64/x86_64, Windows x64)
+- Created `.github/workflows/release.yml` for tag-triggered binary builds + GitHub Releases
+- Created `scripts/install.command` (macOS) and `scripts/install.bat` (Windows) one-click installers
+- Overhauled README: hero, easy way (binary download), step-by-step, source install, safety, troubleshooting, CLI reference (moved to docs/CLI.md)
+- 536 tests (57 new across test_wizard.py and test_cli.py), lint clean
+
 ## 2026-03-11T04:45Z - Encrypted restore path proven on-device
 - Confirmed the full encrypted backup workflow on the secondary iPhone 12 running iOS 26.3.1
 - Root cause of `MBErrorDomain/205` was wrong digest basis in encrypted `Manifest.db`: SHA1 had to be computed over ciphertext, not plaintext

@@ -41,7 +41,8 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 ### Top-level
 - **pipeline.py** — Orchestrates full flow: find backup → safety copy → parse → convert → inject → copy attachments → update manifest → verify.
 - **verify.py** — Post-injection checks: SQLite integrity, foreign key consistency, join table consistency, attachment files exist, Manifest.db entry present.
-- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`, `diagnose`, `prepare-sync`, `device` (with sub-subcommands: `list`, `backup`, `inject`, `restore`). Interactive backup confirmation prompt on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin). `--service SMS|iMessage` flag on `inject` and `device inject` controls bubble color.
+- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`, `diagnose`, `prepare-sync`, `device`, `wizard`, `quickstart`. Smart no-args behavior: launches wizard on TTY, suggests `inject` for bare .zip args. Inject args split into "Common options" and "Advanced options" groups. Interactive backup confirmation on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
+- **wizard.py** — Interactive guided flow for non-technical users. Steps: welcome → ZIP drag-and-drop → inspect → country detection → backup selection → encryption handling → confirm → inject → next steps. Auto-detects country from phone number pre-scan.
 - **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`). Also `InjectionMode` enum (insert, overwrite), `CKStrategy` enum (none, fake-synced, pending-upload, icloud-reset), and `generate_ck_record_id()` helper.
 - **exceptions.py** — Hierarchy with user-friendly `hint` attributes.
 
@@ -308,3 +309,13 @@ pymobiledevice3 is imported inside functions, not at module level. This keeps th
 7. **Safety copy before modification** — Full backup copy (`.restore_checkpoint_` suffix) is the ultimate escape hatch.
 8. **Temp file approach for encryption** — Decrypt to temp files, modify, re-encrypt. Reuses all existing SQLite-based logic unchanged.
 9. **Verify before re-encrypt** — Run integrity checks on decrypted data where SQLite queries are meaningful.
+10. **Interactive wizard for non-technical users** — No-args entry point guides through the full workflow with drag-and-drop ZIP input, automatic country detection, and platform-aware next-step instructions.
+
+## Distribution
+
+### Standalone Binaries
+PyInstaller spec (`green2blue.spec`) produces single-file executables for macOS (arm64/x86_64) and Windows (x86_64). Bundled with `cryptography` for encrypted backup support. GitHub Actions `release.yml` builds on tag push and attaches binaries to GitHub Releases.
+
+### Platform Installers
+- `scripts/install.command` (macOS) — Double-clickable Finder script. Installs Python via Homebrew if needed, creates venv, installs green2blue, creates Desktop launcher, launches wizard.
+- `scripts/install.bat` (Windows) — Double-clickable batch script. Checks for Python, creates venv, installs, launches wizard.
