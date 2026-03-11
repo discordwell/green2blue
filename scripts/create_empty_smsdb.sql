@@ -52,6 +52,20 @@ CREATE TABLE IF NOT EXISTS chat (
     is_deleting_incoming_messages INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS chat_service (
+    service TEXT NOT NULL,
+    chat INTEGER NOT NULL,
+    UNIQUE(service, chat)
+);
+
+CREATE TABLE IF NOT EXISTS chat_lookup (
+    identifier TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    chat INTEGER NOT NULL,
+    priority INTEGER DEFAULT 0,
+    UNIQUE(identifier, domain, chat)
+);
+
 CREATE TABLE IF NOT EXISTS message (
     ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
     guid TEXT UNIQUE NOT NULL,

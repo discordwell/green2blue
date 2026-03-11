@@ -699,8 +699,11 @@ class TestEncryptedPipeline:
 
     def test_encrypted_injection_verifiable_via_decrypt(self, tmp_dir):
         """After injection, decrypt sms.db and verify messages exist."""
+        import hashlib
+
         from green2blue.ios.crypto import EncryptedBackup
         from green2blue.ios.manifest import ManifestDB, compute_file_id
+        from green2blue.ios.plist_utils import extract_mbfile_digest
 
         backup_dir = _create_encrypted_backup(tmp_dir)
         zip_path = _create_export_zip(tmp_dir)
@@ -719,12 +722,16 @@ class TestEncryptedPipeline:
         temp_manifest = eb.decrypt_manifest_db()
         with ManifestDB(temp_manifest) as manifest:
             sms_file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+            sms_entry = manifest.get_entry(sms_file_id)
             enc_key, prot_class = manifest.get_file_encryption_info(sms_file_id)
 
         # Decrypt sms.db
         sms_hash = get_sms_db_hash()
         sms_encrypted = (backup_dir / sms_hash[:2] / sms_hash).read_bytes()
         sms_decrypted = eb.decrypt_db_file(sms_encrypted, enc_key, prot_class)
+
+        # Encrypted backups store the digest of the on-disk ciphertext.
+        assert extract_mbfile_digest(sms_entry["file"]) == hashlib.sha1(sms_encrypted).digest()
 
         # Write decrypted to temp and query
         temp_sms = tmp_dir / "verify_sms.db"
@@ -743,7 +750,11 @@ class TestEncryptedPipeline:
 
     def test_encrypted_mms_with_attachment(self, tmp_dir):
         """MMS attachments should be encrypted when copied."""
+        import hashlib
+
         from green2blue.ios.crypto import EncryptedBackup
+        from green2blue.ios.manifest import compute_file_id
+        from green2blue.ios.plist_utils import extract_mbfile_digest
 
         backup_dir = _create_encrypted_backup(tmp_dir)
         zip_path = _create_export_zip(
@@ -785,6 +796,11 @@ class TestEncryptedPipeline:
                 for obj in objects
             )
             assert has_enc_key
+
+            relative_path = rows[0][0]
+            file_id = compute_file_id("MediaDomain", relative_path)
+            encrypted_attachment = (backup_dir / file_id[:2] / file_id).read_bytes()
+            assert extract_mbfile_digest(blob) == hashlib.sha1(encrypted_attachment).digest()
 
         temp_manifest.unlink(missing_ok=True)
 
@@ -877,6 +893,10 @@ def _populate_backup_with_sacrifice(backup_dir: Path, chat_identifier: str, coun
         (chat_guid, chat_identifier, str(uuid.uuid4())),
     )
     chat_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO chat_service (service, chat) VALUES ('SMS', ?)",
+        (chat_rowid,),
+    )
 
     conn.execute(
         "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",

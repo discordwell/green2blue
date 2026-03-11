@@ -68,7 +68,10 @@ def verify_backup(
     # 4. Attachment files exist
     _check_attachments(sms_db_path, backup_path, manifest_db_path, result)
 
-    # 5. Manifest.db consistency
+    # 5. Messages UI chat index consistency
+    _check_chat_indexes(sms_db_path, result)
+
+    # 6. Manifest.db consistency
     if manifest_db_path:
         _check_manifest(manifest_db_path, sms_db_path, result)
 
@@ -236,6 +239,46 @@ def _check_attachments(
         result.add_error(f"Attachment check error: {e}")
 
 
+def _check_chat_indexes(db_path: Path, result: VerificationResult) -> None:
+    """Check that chats are indexed in auxiliary tables used by Messages UI."""
+    result.checks_run += 1
+    try:
+        conn = sqlite3.connect(db_path)
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+
+        if "chat_service" not in tables:
+            conn.close()
+            result.checks_passed += 1
+            return
+
+        missing_chat_service = conn.execute("""
+            SELECT COUNT(*) FROM chat c
+            WHERE c.service_name IS NOT NULL
+              AND c.service_name != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_service cs
+                  WHERE cs.chat = c.ROWID
+                    AND cs.service = c.service_name
+              )
+        """).fetchone()[0]
+        conn.close()
+
+        if missing_chat_service == 0:
+            result.checks_passed += 1
+            logger.debug("Chat index consistency: PASSED")
+        else:
+            result.add_error(
+                f"{missing_chat_service} chats are missing chat_service index rows"
+            )
+    except sqlite3.Error as e:
+        result.add_error(f"Chat index check error: {e}")
+
+
 def _check_manifest(
     manifest_db_path: Path,
     sms_db_path: Path,
@@ -271,5 +314,4 @@ def _check_manifest(
                         )
     except Exception as e:
         result.add_error(f"Manifest check error: {e}")
-
 

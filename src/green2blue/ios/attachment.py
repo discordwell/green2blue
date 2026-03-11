@@ -65,14 +65,14 @@ def copy_attachment_to_backup(
     if encrypted_backup is not None:
         # Encrypted path: encrypt the file data before writing
         plaintext = source_path.read_bytes()
-        digest = hashlib.sha1(plaintext).digest()
         encrypted_data, enc_key_blob = encrypted_backup.encrypt_new_file(
             plaintext, protection_class,
         )
+        digest = hashlib.sha1(encrypted_data).digest()
         dest_path.write_bytes(encrypted_data)
         logger.debug("Encrypted attachment: %s -> %s", source_path.name, dest_path)
 
-        # Register in Manifest.db with encryption key (plaintext size per iOS convention)
+        # iOS keeps the plaintext size but stores the ciphertext digest in Manifest.db.
         manifest.add_attachment_entry(
             ios_relative_path, file_size, domain,
             encryption_key=enc_key_blob, protection_class=protection_class,

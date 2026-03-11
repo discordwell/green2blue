@@ -387,14 +387,12 @@ def _disable_icloud_sync(
     plist_data["CloudKitSyncingEnabled"] = False
     plain_data = plistlib.dumps(plist_data, fmt=plistlib.FMT_BINARY)
 
-    # Compute digest and size from the canonical serialization
-    new_digest = hashlib.sha1(plain_data).digest()
-    new_size = len(plain_data)
-
     # Re-encrypt if needed and write back
     write_data = plain_data
     if encrypted_backup is not None:
         write_data = encrypted_backup.encrypt_db_file(plain_data, enc_key, prot_class)
+    new_digest = hashlib.sha1(write_data).digest()
+    new_size = len(plain_data)
 
     file_on_disk.write_bytes(write_data)
 
@@ -554,7 +552,7 @@ def _run_encrypted_pipeline(
                 with SMSDatabase(temp_sms_path) as db:
                     db.update_attachment_sizes(attachment_sizes)
 
-            # Update Manifest.db with final sms.db size and digest
+            # Update Manifest.db with the plaintext sms.db size for decrypted verification.
             # (after all sms.db modifications are complete)
             with ManifestDB(temp_manifest_path) as manifest:
                 sms_db_size = temp_sms_path.stat().st_size
@@ -594,7 +592,14 @@ def _run_encrypted_pipeline(
             )
             sms_db_on_disk.write_bytes(re_encrypted_sms)
 
-            # Step 13: Re-encrypt Manifest.db and write to backup
+            # Step 13: Before writing Manifest.db back, swap the sms.db digest to the
+            # ciphertext hash iOS expects for encrypted backups.
+            with ManifestDB(temp_manifest_path) as manifest:
+                sms_db_size = temp_sms_path.stat().st_size
+                sms_db_digest = hashlib.sha1(re_encrypted_sms).digest()
+                manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
+
+            # Step 14: Re-encrypt Manifest.db and write to backup
             logger.info("Re-encrypting Manifest.db...")
             encrypted_backup.re_encrypt_manifest_db(temp_manifest_path)
 

@@ -133,6 +133,11 @@ class TestChatInsertion:
             assert row["guid"] == "any;-;+12025551234"
             assert row["style"] == 45
 
+            cursor.execute("SELECT service, chat FROM chat_service")
+            chat_service = cursor.fetchone()
+            assert chat_service["service"] == "SMS"
+            assert chat_service["chat"] == 1
+
     def test_insert_group_chat(self, empty_sms_db):
         members = ("+12025551111", "+12025552222", "+12025553333")
         chat_identifier = compute_group_chat_identifier(members)
@@ -176,6 +181,49 @@ class TestChatInsertion:
             assert row["chat_identifier"].startswith("chat")
             cursor.execute("SELECT COUNT(*) as cnt FROM chat_handle_join")
             assert cursor.fetchone()["cnt"] == 3
+            cursor.execute("SELECT service FROM chat_service")
+            assert cursor.fetchone()["service"] == "SMS"
+            cursor.execute("SELECT domain FROM chat_lookup")
+            assert cursor.fetchone()["domain"] == "SMSGroupID"
+
+    def test_existing_chat_backfills_chat_service(self, empty_sms_db):
+        with SMSDatabase(empty_sms_db) as db:
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "INSERT INTO handle (id, country, service) VALUES (?, 'us', 'SMS')",
+                ("+12025551234",),
+            )
+            handle_id = cursor.lastrowid
+            cursor.execute(
+                """INSERT INTO chat (
+                    guid, style, state, account_id, chat_identifier,
+                    service_name, display_name, account_login, group_id,
+                    server_change_token, ck_sync_state, cloudkit_record_id
+                ) VALUES (?, 45, 3, '', ?, 'SMS', '', 'E:', ?, '', 0, '')""",
+                ("any;-;+12025551234", "+12025551234", "TEST-GROUP-ID"),
+            )
+            chat_id = cursor.lastrowid
+            cursor.execute(
+                "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
+                (chat_id, handle_id),
+            )
+            db.conn.commit()
+
+            result = _make_result(
+                handles=[_make_handle()],
+                chats=[_make_chat()],
+                messages=[_make_message()],
+            )
+            stats = db.inject(result)
+            assert stats.chats_existing == 1
+
+            cursor.execute(
+                "SELECT service, chat FROM chat_service WHERE chat = ?",
+                (chat_id,),
+            )
+            row = cursor.fetchone()
+            assert row["service"] == "SMS"
+            assert row["chat"] == chat_id
 
 
 class TestMessageInsertion:

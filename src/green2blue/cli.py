@@ -976,16 +976,15 @@ def _cmd_prepare_sync(args: argparse.Namespace) -> int:
 
             result = prepare_sync(temp_path)
 
-            # Update Manifest.db with new size and digest
-            sms_db_digest = hashlib.sha1(temp_path.read_bytes()).digest()
             sms_db_size = temp_path.stat().st_size
+            re_encrypted = eb.encrypt_db_file(
+                temp_path.read_bytes(), sms_enc_key, sms_prot_class,
+            )
+            sms_db_digest = hashlib.sha1(re_encrypted).digest()
             with ManifestDB(temp_manifest) as manifest:
                 manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
 
             # Re-encrypt sms.db and write back
-            re_encrypted = eb.encrypt_db_file(
-                temp_path.read_bytes(), sms_enc_key, sms_prot_class,
-            )
             sms_db_path.write_bytes(re_encrypted)
 
             # Re-encrypt Manifest.db and write back

@@ -199,11 +199,41 @@ class TestJoinTableConsistency:
         msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute("INSERT INTO chat_handle_join VALUES (?, ?)", (chat_id, handle_id))
         conn.execute("INSERT INTO chat_message_join VALUES (?, ?, 0)", (chat_id, msg_id))
+        conn.execute("INSERT INTO chat_service VALUES ('SMS', ?)", (chat_id,))
         conn.commit()
         conn.close()
 
         result = verify_backup(sample_backup_dir, sms_db)
         assert result.passed
+
+    def test_missing_chat_service_detected(self, sample_backup_dir):
+        sms_hash = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+        sms_db = sample_backup_dir / sms_hash[:2] / sms_hash
+
+        conn = sqlite3.connect(sms_db)
+        conn.execute("INSERT INTO handle (id, country, service) VALUES ('+1234', 'us', 'SMS')")
+        handle_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO chat (guid, style, chat_identifier, service_name) "
+            "VALUES ('any;-;+1234', 45, '+1234', 'SMS')"
+        )
+        chat_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO message (guid, text, handle_id, service, account, account_guid,
+               date, is_from_me, is_finished, is_read, is_empty)
+               VALUES ('test-missing-chat-service', 'hi', ?, 'SMS', 'p:0', 'p:0',
+               0, 0, 1, 1, 0)""",
+            (handle_id,),
+        )
+        msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO chat_handle_join VALUES (?, ?)", (chat_id, handle_id))
+        conn.execute("INSERT INTO chat_message_join VALUES (?, ?, 0)", (chat_id, msg_id))
+        conn.commit()
+        conn.close()
+
+        result = verify_backup(sample_backup_dir, sms_db)
+        assert not result.passed
+        assert any("chat_service" in e for e in result.errors)
 
     def test_handle_id_zero_detected_as_orphan(self, sample_backup_dir):
         """Messages with handle_id=0 should be caught by foreign key check."""

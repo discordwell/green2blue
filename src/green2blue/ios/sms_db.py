@@ -72,6 +72,12 @@ class SMSDatabase:
     def _inspect_schema(self) -> None:
         """Detect optional columns that vary by iOS version."""
         cursor = self.conn.cursor()
+        self._tables: set[str] = {
+            r[0]
+            for r in cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
         self._msg_schema: set[str] = {
             r[1] for r in cursor.execute("PRAGMA table_info(message)").fetchall()
         }
@@ -233,7 +239,8 @@ class SMSDatabase:
         chat_rowids: dict[str, int] = {}
         for chat in result.chats:
             if chat.guid in existing_chats:
-                chat_rowids[chat.guid] = existing_chats[chat.guid]
+                rowid = existing_chats[chat.guid]
+                chat_rowids[chat.guid] = rowid
                 stats.chats_existing += 1
             else:
                 updates = {}
@@ -246,6 +253,8 @@ class SMSDatabase:
                 rowid = self._insert_chat(cursor, chat)
                 chat_rowids[chat.guid] = rowid
                 stats.chats_inserted += 1
+
+            self._ensure_chat_auxiliary_rows(cursor, rowid, chat)
 
         # Link handles to chats
         for chat in result.chats:
@@ -465,6 +474,37 @@ class SMSDatabase:
             ),
         )
         return cursor.lastrowid
+
+    def _ensure_chat_auxiliary_rows(
+        self,
+        cursor: sqlite3.Cursor,
+        chat_id: int,
+        chat: iOSChat,
+    ) -> None:
+        """Backfill auxiliary chat index tables used by Messages UI."""
+        if "chat_service" in self._tables:
+            cursor.execute(
+                "INSERT OR IGNORE INTO chat_service (service, chat) VALUES (?, ?)",
+                (chat.service_name, chat_id),
+            )
+
+        if (
+            chat.style == 43
+            and "chat_lookup" in self._tables
+        ):
+            group_id_row = cursor.execute(
+                "SELECT group_id FROM chat WHERE ROWID = ?",
+                (chat_id,),
+            ).fetchone()
+            group_id = group_id_row["group_id"] if group_id_row else ""
+            if group_id:
+                domain = "iMessageGroupID" if chat.service_name == "iMessage" else "SMSGroupID"
+                cursor.execute(
+                    """INSERT OR IGNORE INTO chat_lookup
+                       (identifier, domain, chat, priority)
+                       VALUES (?, ?, ?, 0)""",
+                    (group_id, domain, chat_id),
+                )
 
     def _insert_message(
         self,
@@ -1157,6 +1197,13 @@ class SMSDatabase:
                             "(chat_id, handle_id) VALUES (?, ?)",
                             (chat_rowid, handle_rowid),
                         )
+                    clone_chat = iOSChat(
+                        guid=chat_guid,
+                        style=45,
+                        chat_identifier=phone,
+                        service_name="SMS",
+                    )
+                    self._ensure_chat_auxiliary_rows(cursor, chat_rowid, clone_chat)
                     chat_cache[phone] = chat_rowid
 
                 # Clone message with overrides
