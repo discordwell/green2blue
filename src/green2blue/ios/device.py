@@ -93,10 +93,23 @@ def _classify_device_exception(exc: Exception) -> tuple[str, str]:
     message = f"{type(exc).__name__}: {exc}"
     lowered = message.lower()
 
+    if "mberrordomain/208" in lowered or "device locked" in lowered:
+        return (
+            "device_locked",
+            "Unlock the iPhone, leave it on the home screen, and enter the device "
+            "passcode on the phone if it asks to authorize local backup or restore.",
+        )
     if "passwordprotected" in lowered or "password protected" in lowered:
         return (
             "password_protected",
             "Unlock the iPhone with its passcode, leave it on the home screen, and retry.",
+        )
+    if "connectionterminatederror" in lowered or "ssl handshake is taking longer than 10 seconds" in lowered:
+        return (
+            "backup_authorization_pending",
+            "The backup session ended before MobileBackup2 fully came up. On a freshly "
+            "restored device this usually means the iPhone is waiting for an on-device "
+            "passcode prompt authorizing local backup. Unlock it, watch the phone, and retry.",
         )
     if "invalidservice" in lowered:
         return (
@@ -138,6 +151,8 @@ def _wrap_device_exception(action: str, exc: Exception) -> DeviceError:
     """Translate third-party device exceptions into green2blue errors."""
     state, hint = _classify_device_exception(exc)
     if state in {
+        "device_locked",
+        "backup_authorization_pending",
         "password_protected",
         "invalid_host_id",
         "pairing_blocked",
@@ -422,11 +437,20 @@ def create_backup(
             logger.info("Starting backup of %s to %s...", lockdown.display_name, device_backup_dir)
 
             service = Mobilebackup2Service(lockdown)
-            await _maybe_await(service.backup(
-                full=True,
-                backup_directory=str(backup_dir),
-                progress_callback=progress_cb,
-            ))
+            connect = getattr(service, "connect", None)
+            close = getattr(service, "close", None)
+
+            if callable(connect):
+                await _maybe_await(connect())
+            try:
+                await _maybe_await(service.backup(
+                    full=True,
+                    backup_directory=str(backup_dir),
+                    progress_callback=progress_cb,
+                ))
+            finally:
+                if callable(close):
+                    await _maybe_await(close())
 
             logger.info("Backup complete: %s", device_backup_dir)
             return device_backup_dir
@@ -464,18 +488,26 @@ def restore_backup(
             logger.info("Starting restore to %s...", lockdown.display_name)
 
             service = Mobilebackup2Service(lockdown)
+            connect = getattr(service, "connect", None)
+            close = getattr(service, "close", None)
 
             # Critical flags: system + settings + remove + reboot
             # remove=True sets RemoveItemsNotRestored which triggers iOS data migration
-            await _maybe_await(service.restore(
-                backup_directory=str(backup_dir),
-                system=True,
-                settings=True,
-                remove=True,
-                reboot=True,
-                password=password or "",
-                progress_callback=progress_cb,
-            ))
+            if callable(connect):
+                await _maybe_await(connect())
+            try:
+                await _maybe_await(service.restore(
+                    backup_directory=str(backup_dir),
+                    system=True,
+                    settings=True,
+                    remove=True,
+                    reboot=True,
+                    password=password or "",
+                    progress_callback=progress_cb,
+                ))
+            finally:
+                if callable(close):
+                    await _maybe_await(close())
 
             logger.info("Restore complete. Device will reboot.")
         except Green2BlueError:
@@ -509,15 +541,23 @@ def push_synthetic_backup(
             logger.info("Pushing synthetic backup to %s (experimental)...", lockdown.display_name)
 
             service = Mobilebackup2Service(lockdown)
+            connect = getattr(service, "connect", None)
+            close = getattr(service, "close", None)
 
             # Partial restore: system=True, remove=False (overlay, no delete)
-            await _maybe_await(service.restore(
-                backup_directory=str(backup_dir),
-                system=True,
-                remove=False,
-                reboot=True,
-                progress_callback=progress_cb,
-            ))
+            if callable(connect):
+                await _maybe_await(connect())
+            try:
+                await _maybe_await(service.restore(
+                    backup_directory=str(backup_dir),
+                    system=True,
+                    remove=False,
+                    reboot=True,
+                    progress_callback=progress_cb,
+                ))
+            finally:
+                if callable(close):
+                    await _maybe_await(close())
 
             logger.info("Synthetic restore complete. Device will reboot.")
         except Green2BlueError:

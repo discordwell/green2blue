@@ -174,7 +174,9 @@ class TestCreateBackup:
             result = create_backup(backup_dir=tmp_path, udid="test-udid")
 
         mock_mb2_cls.assert_called_once_with(mock_lockdown)
+        mock_service.connect.assert_called_once()
         mock_service.backup.assert_called_once()
+        mock_service.close.assert_called_once()
 
         call_kwargs = mock_service.backup.call_args
         assert call_kwargs.kwargs["full"] is True
@@ -226,6 +228,54 @@ class TestCreateBackup:
         ):
             create_backup(backup_dir=tmp_path, udid="test-udid")
 
+    def test_wraps_device_locked_backup_errors(self, tmp_path):
+        from green2blue.ios.device import create_backup
+
+        mocks = _make_pmd3_mocks()
+        mock_lockdown = MagicMock()
+        mock_lockdown.udid = "test-udid"
+        mock_lockdown.display_name = "Test iPhone"
+
+        mock_service = MagicMock()
+        mock_service.backup.side_effect = Exception("Device locked (MBErrorDomain/208)")
+        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
+            mock_service
+        )
+
+        with (
+            patch.dict(sys.modules, mocks),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            pytest.raises(DevicePairingError) as exc_info,
+        ):
+            create_backup(backup_dir=tmp_path, udid="test-udid")
+
+        assert "passcode" in exc_info.value.hint.lower()
+
+    def test_wraps_connection_terminated_as_backup_authorization(self, tmp_path):
+        from green2blue.ios.device import create_backup
+
+        mocks = _make_pmd3_mocks()
+        mock_lockdown = MagicMock()
+        mock_lockdown.udid = "test-udid"
+        mock_lockdown.display_name = "Test iPhone"
+
+        mock_service = MagicMock()
+        mock_service.backup.side_effect = Exception(
+            "SSL handshake is taking longer than 10 seconds: aborting the connection"
+        )
+        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
+            mock_service
+        )
+
+        with (
+            patch.dict(sys.modules, mocks),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            pytest.raises(DevicePairingError) as exc_info,
+        ):
+            create_backup(backup_dir=tmp_path, udid="test-udid")
+
+        assert "authorizing local backup" in exc_info.value.hint.lower()
+
 
 # --- restore_backup tests ---
 
@@ -250,7 +300,9 @@ class TestRestoreBackup:
         ):
             restore_backup(backup_dir=tmp_path)
 
+        mock_service.connect.assert_called_once()
         mock_service.restore.assert_called_once()
+        mock_service.close.assert_called_once()
         call_kwargs = mock_service.restore.call_args.kwargs
         assert call_kwargs["system"] is True
         assert call_kwargs["settings"] is True
@@ -323,7 +375,9 @@ class TestPushSyntheticBackup:
         ):
             push_synthetic_backup(backup_dir=tmp_path)
 
+        mock_service.connect.assert_called_once()
         mock_service.restore.assert_called_once()
+        mock_service.close.assert_called_once()
         call_kwargs = mock_service.restore.call_args.kwargs
         assert call_kwargs["system"] is True
         assert call_kwargs["remove"] is False
