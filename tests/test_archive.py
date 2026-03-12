@@ -10,13 +10,17 @@ from green2blue.archive import (
     ArchiveMergeResult,
     AndroidArchiveExportResult,
     IOSRenderedTargetVerificationResult,
+    IOSWorkflowPreparationResult,
+    IOSWorkflowStatus,
     ArchiveVerificationResult,
     CanonicalArchive,
     build_archive_report,
     export_merged_android_zip,
     import_android_export,
     import_ios_backup,
+    load_ios_workflow_status,
     merge_archive,
+    prepare_ios_workflow,
     stage_ios_export,
     verify_ios_render_target,
     verify_archive,
@@ -497,6 +501,14 @@ class TestArchiveWarnings:
 
 
 class TestArchiveVerify:
+    def test_verify_archive_passes_for_clean_android_archive(self, sample_export_zip, tmp_dir):
+        archive_path = tmp_dir / "verify_android_clean.g2b.sqlite"
+
+        import_android_export(sample_export_zip, archive_path)
+        result = verify_archive(archive_path)
+
+        assert result.passed is True
+
     def test_verify_archive_passes_for_clean_archive(self, sample_backup_dir, tmp_dir):
         _populate_ios_backup(sample_backup_dir)
         archive_path = tmp_dir / "verify_clean.g2b.sqlite"
@@ -637,6 +649,58 @@ class TestArchiveRenderVerify:
 
         assert verify_result.passed is False
         assert any("messages do not match" in error for error in verify_result.errors)
+
+
+class TestArchiveWorkflow:
+    def test_prepare_ios_workflow_writes_durable_state_and_reuses_artifacts(
+        self,
+        sample_export_zip,
+        sample_backup_dir,
+        tmp_dir,
+    ):
+        workflow_dir = tmp_dir / "workflow"
+
+        first = prepare_ios_workflow(
+            sample_export_zip,
+            sample_backup_dir,
+            workflow_dir,
+        )
+        second = prepare_ios_workflow(
+            sample_export_zip,
+            sample_backup_dir,
+            workflow_dir,
+        )
+
+        assert isinstance(first, IOSWorkflowPreparationResult)
+        assert first.state_path.exists()
+        assert first.archive_path.exists()
+        assert first.stage is not None
+        assert first.stage.output_zip.exists()
+        assert second.android_import.reused_existing is True
+        assert second.ios_import.reused_existing is True
+        assert second.stage is not None
+        assert second.stage.reused_existing is True
+
+    def test_load_ios_workflow_status_reads_persisted_state(
+        self,
+        sample_export_zip,
+        sample_backup_dir,
+        tmp_dir,
+    ):
+        workflow_dir = tmp_dir / "workflow"
+        prepare_ios_workflow(
+            sample_export_zip,
+            sample_backup_dir,
+            workflow_dir,
+        )
+
+        status = load_ios_workflow_status(workflow_dir)
+
+        assert isinstance(status, IOSWorkflowStatus)
+        assert status.status == "completed"
+        assert status.current_step is None
+        assert "android_import" in status.steps
+        assert "stage" in status.steps
 
 
 class TestArchiveExport:

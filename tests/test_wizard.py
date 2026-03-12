@@ -277,38 +277,36 @@ class TestWizardHappyPath:
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
             patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
-            patch("green2blue.archive.import_android_export") as mock_import_android,
-            patch("green2blue.archive.import_ios_backup") as mock_import_ios,
-            patch("green2blue.archive.merge_archive") as mock_merge,
-            patch("green2blue.archive.build_archive_report") as mock_report,
-            patch("green2blue.archive.verify_archive") as mock_verify,
-            patch("green2blue.archive.stage_ios_export") as mock_stage,
+            patch("green2blue.archive.prepare_ios_workflow") as mock_prepare_workflow,
             patch("green2blue.archive.verify_ios_render_target") as mock_render_verify,
             patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
         ):
-            mock_import_android.return_value = MagicMock(messages_imported=4)
-            mock_import_ios.return_value = MagicMock(messages_imported=2)
-            mock_merge.return_value = MagicMock(
-                merge_run_id=7,
-                merged_conversations=3,
-                merged_messages=5,
-                duplicate_messages=1,
-            )
-            mock_report.return_value = MagicMock(warnings=("reply warning",))
-            mock_verify.return_value = MagicMock(
-                passed=True,
-                checks_passed=6,
-                checks_run=6,
-                warnings=(),
-                errors=(),
-            )
-            mock_stage.return_value = MagicMock(
-                records_written=3,
-                stage_dir=tmp_dir / "stage",
-                output_zip=tmp_dir / "stage" / "merged_export.zip",
-                reused_existing=False,
-                verification_passed=True,
-                verification_errors=(),
+            mock_prepare_workflow.return_value = MagicMock(
+                archive_path=tmp_dir / "workflow" / "merged.g2b.sqlite",
+                android_import=MagicMock(messages_imported=4),
+                ios_import=MagicMock(messages_imported=2),
+                merge=MagicMock(
+                    merge_run_id=7,
+                    merged_conversations=3,
+                    merged_messages=5,
+                    duplicate_messages=1,
+                ),
+                report=MagicMock(warnings=("reply warning",)),
+                archive_verification=MagicMock(
+                    passed=True,
+                    checks_passed=6,
+                    checks_run=6,
+                    warnings=(),
+                    errors=(),
+                ),
+                stage=MagicMock(
+                    records_written=3,
+                    stage_dir=tmp_dir / "stage",
+                    output_zip=tmp_dir / "stage" / "merged_export.zip",
+                    reused_existing=False,
+                    verification_passed=True,
+                    verification_errors=(),
+                ),
             )
 
             mock_result = MagicMock()
@@ -332,12 +330,7 @@ class TestWizardHappyPath:
             ret = run_wizard()
 
         assert ret == 0
-        mock_import_android.assert_called_once()
-        mock_import_ios.assert_called_once()
-        mock_merge.assert_called_once()
-        mock_report.assert_called_once()
-        mock_verify.assert_called_once()
-        mock_stage.assert_called_once()
+        mock_prepare_workflow.assert_called_once()
         mock_render_verify.assert_called_once()
         mock_pipeline.assert_called_once()
 

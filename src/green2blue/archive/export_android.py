@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,41 +42,50 @@ def export_merged_android_zip(
         assert conn is not None
         participants = _load_merged_participants(conn, resolved_merge_run_id)
         attachments = _load_message_parts(conn, resolved_merge_run_id)
-        messages = _load_merged_winners(conn, resolved_merge_run_id, mode=mode)
 
         output_zip.parent.mkdir(parents=True, exist_ok=True)
+        records_written = 0
         attachment_files_written = 0
         attachments_missing_data = 0
 
-        with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            ndjson_lines: list[str] = []
-            thread_map: dict[int, int] = {}
-
-            for index, message in enumerate(messages, start=1):
-                merged_conversation_id = int(message["merged_conversation_id"])
-                thread_id = thread_map.setdefault(merged_conversation_id, len(thread_map) + 1)
-                participant_rows = participants.get(merged_conversation_id, ())
-                part_rows = attachments.get(int(message["id"]), ())
-                record, new_files, missing = _build_android_record(
-                    message,
-                    participant_rows,
-                    part_rows,
-                    thread_id=thread_id,
-                    ordinal=index,
-                )
-                ndjson_lines.append(json.dumps(record, ensure_ascii=False, sort_keys=True))
-                for rel_path, payload in new_files:
-                    zf.writestr(rel_path, payload)
-                attachment_files_written += len(new_files)
-                attachments_missing_data += missing
-
-            zf.writestr("messages.ndjson", "\n".join(ndjson_lines) + ("\n" if ndjson_lines else ""))
+        with tempfile.NamedTemporaryFile(suffix=".ndjson", delete=False) as tmp_ndjson:
+            tmp_ndjson_path = Path(tmp_ndjson.name)
+            try:
+                with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    thread_map: dict[int, int] = {}
+                    for index, message in enumerate(
+                        _iter_merged_winners(conn, resolved_merge_run_id, mode=mode),
+                        start=1,
+                    ):
+                        merged_conversation_id = int(message["merged_conversation_id"])
+                        thread_id = thread_map.setdefault(merged_conversation_id, len(thread_map) + 1)
+                        participant_rows = participants.get(merged_conversation_id, ())
+                        part_rows = attachments.get(int(message["id"]), ())
+                        record, new_files, missing = _build_android_record(
+                            message,
+                            participant_rows,
+                            part_rows,
+                            thread_id=thread_id,
+                            ordinal=index,
+                        )
+                        tmp_ndjson.write(
+                            (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+                        )
+                        for rel_path, payload in new_files:
+                            zf.writestr(rel_path, payload)
+                        records_written += 1
+                        attachments_missing_data += missing
+                        attachment_files_written += len(new_files)
+                    tmp_ndjson.flush()
+                    zf.write(tmp_ndjson_path, arcname="messages.ndjson")
+            finally:
+                tmp_ndjson_path.unlink(missing_ok=True)
 
     return AndroidArchiveExportResult(
         archive_path=archive_path,
         output_zip=output_zip,
         merge_run_id=resolved_merge_run_id,
-        records_written=len(messages),
+        records_written=records_written,
         attachment_files_written=attachment_files_written,
         attachments_missing_data=attachments_missing_data,
     )
@@ -106,6 +116,15 @@ def _load_merged_winners(
     *,
     mode: str,
 ) -> list[sqlite3.Row]:
+    return list(_iter_merged_winners(conn, merge_run_id, mode=mode))
+
+
+def _iter_merged_winners(
+    conn: sqlite3.Connection,
+    merge_run_id: int,
+    *,
+    mode: str,
+) -> sqlite3.Cursor:
     query = """
         SELECT
             mm.merged_conversation_id,
@@ -120,7 +139,7 @@ def _load_merged_winners(
     if mode == "ios-inject":
         query += " AND m.source_type != 'ios.message'"
     query += " ORDER BY mm.merged_conversation_id, mm.sort_order, m.sent_at_ms, m.id"
-    return conn.execute(query, params).fetchall()
+    return conn.execute(query, params)
 
 
 def _load_merged_participants(

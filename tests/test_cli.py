@@ -629,6 +629,50 @@ class TestArchiveCommands:
         assert ret == 0
         assert archive_path.exists()
 
+    def test_archive_prepare_ios_creates_workflow_dir(self, tmp_dir):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        export_zip = _create_export_zip(tmp_dir)
+        workflow_dir = tmp_dir / "workflow"
+
+        ret = main([
+            "archive", "prepare-ios",
+            str(export_zip),
+            str(backup_dir),
+            str(workflow_dir),
+        ])
+
+        assert ret == 0
+        assert (workflow_dir / "workflow_state.json").exists()
+        assert (workflow_dir / "merged.g2b.sqlite").exists()
+        assert (workflow_dir / "stage" / "merged_export.zip").exists()
+
+    def test_archive_workflow_status_prints_state(self, tmp_dir, capsys):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        export_zip = _create_export_zip(tmp_dir)
+        workflow_dir = tmp_dir / "workflow"
+
+        main([
+            "archive", "prepare-ios",
+            str(export_zip),
+            str(backup_dir),
+            str(workflow_dir),
+        ])
+
+        ret = main([
+            "archive", "workflow-status",
+            str(workflow_dir),
+        ])
+
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "Status:" in captured.out
+        assert "android_import" in captured.out
+        assert "stage" in captured.out
+
     def test_archive_report_prints_warning_for_multi_source(
         self, sample_export_zip, tmp_dir, capsys,
     ):

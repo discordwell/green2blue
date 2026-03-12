@@ -557,6 +557,51 @@ def _build_parser() -> argparse.ArgumentParser:
     archive_stage_ios.add_argument("-q", "--quiet", action="store_true")
     archive_stage_ios.set_defaults(func=_cmd_archive_stage_ios)
 
+    archive_prepare_ios = archive_subs.add_parser(
+        "prepare-ios",
+        help="Build a durable merged archive + stage workflow directory for large-history iPhone injection",
+    )
+    archive_prepare_ios.add_argument("export_zip", type=Path, help="Android export ZIP")
+    archive_prepare_ios.add_argument("backup", type=str, help="iPhone backup path or UDID")
+    archive_prepare_ios.add_argument("workflow_dir", type=Path, help="Directory for durable workflow state")
+    archive_prepare_ios.add_argument(
+        "--backup-root",
+        type=Path,
+        default=None,
+        help="Override the default backup directory when resolving a UDID",
+    )
+    archive_prepare_ios.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Backup encryption password for encrypted iPhone backups",
+    )
+    archive_prepare_ios.add_argument(
+        "--country",
+        type=str,
+        default="US",
+        help="Default country code used when merge normalization is needed (default: US)",
+    )
+    archive_prepare_ios.add_argument(
+        "--no-resume",
+        action="store_false",
+        dest="resume",
+        default=True,
+        help="Force fresh archive imports and stage rebuild instead of reusing existing workflow artifacts",
+    )
+    archive_prepare_ios.add_argument("-v", "--verbose", action="store_true")
+    archive_prepare_ios.add_argument("-q", "--quiet", action="store_true")
+    archive_prepare_ios.set_defaults(func=_cmd_archive_prepare_ios)
+
+    archive_workflow_status = archive_subs.add_parser(
+        "workflow-status",
+        help="Inspect a durable iOS workflow directory created by archive prepare-ios",
+    )
+    archive_workflow_status.add_argument("workflow_dir", type=Path, help="Workflow directory path")
+    archive_workflow_status.add_argument("-v", "--verbose", action="store_true")
+    archive_workflow_status.add_argument("-q", "--quiet", action="store_true")
+    archive_workflow_status.set_defaults(func=_cmd_archive_workflow_status)
+
     archive_inject_ios = archive_subs.add_parser(
         "inject-ios",
         help="Export the merged archive view and inject it into an iPhone backup using the proven pipeline",
@@ -1425,6 +1470,101 @@ def _cmd_archive_stage_ios(args: argparse.Namespace) -> int:
     for error in result.verification_errors:
         print(f"    ERROR: {error}")
     return 0 if result.verification_passed else 1
+
+
+def _cmd_archive_prepare_ios(args: argparse.Namespace) -> int:
+    """Build a durable merged archive + stage workflow directory."""
+    from green2blue.archive import prepare_ios_workflow
+
+    result = prepare_ios_workflow(
+        args.export_zip,
+        args.backup,
+        args.workflow_dir,
+        backup_root=args.backup_root,
+        password=args.password,
+        country=args.country,
+        resume=args.resume,
+    )
+
+    print(f"Workflow dir:            {result.workflow_dir}")
+    print(f"  State file:           {result.state_path}")
+    print(f"  Archive path:         {result.archive_path}")
+    print(f"  Stage dir:            {result.stage_dir}")
+    print(f"  Backup:               {result.backup_info.device_name} ({result.backup_info.udid})")
+    print(f"  Android import:       {'reused' if result.android_import.reused_existing else 'new'}")
+    print(f"  iPhone import:        {'reused' if result.ios_import.reused_existing else 'new'}")
+    print(f"  Merge run ID:         {result.merge.merge_run_id}")
+    print(f"  Merged messages:      {result.merge.merged_messages}")
+    print(f"  Duplicate messages:   {result.merge.duplicate_messages}")
+    verify_status = "PASSED" if result.archive_verification.passed else "FAILED"
+    print(
+        f"  Archive verify:       {verify_status} "
+        f"({result.archive_verification.checks_passed}/{result.archive_verification.checks_run})"
+    )
+    for warning in result.archive_verification.warnings:
+        print(f"    WARNING: {warning}")
+    for error in result.archive_verification.errors:
+        print(f"    ERROR: {error}")
+
+    if result.stage is None:
+        return 2
+
+    stage_verify_status = "PASSED" if result.stage.verification_passed else "FAILED"
+    print(f"  Stage output ZIP:     {result.stage.output_zip}")
+    print(f"  Stage reused:         {'yes' if result.stage.reused_existing else 'no'}")
+    print(f"  Stage verify:         {stage_verify_status}")
+    for error in result.stage.verification_errors:
+        print(f"    ERROR: {error}")
+    return 0 if result.stage.verification_passed else 1
+
+
+def _cmd_archive_workflow_status(args: argparse.Namespace) -> int:
+    """Inspect the persisted state of a durable workflow directory."""
+    from green2blue.archive import load_ios_workflow_status
+
+    status = load_ios_workflow_status(args.workflow_dir)
+    print(f"Workflow dir:            {status.workflow_dir}")
+    print(f"  State file:           {status.state_path}")
+    print(f"  Status:               {status.status}")
+    print(f"  Current step:         {status.current_step or '(idle)'}")
+    if status.created_at:
+        print(f"  Created at:           {status.created_at}")
+    if status.updated_at:
+        print(f"  Updated at:           {status.updated_at}")
+
+    if status.inputs:
+        print("  Inputs:")
+        for key in ("export_zip", "backup_path", "backup_udid", "country", "resume"):
+            if key in status.inputs:
+                print(f"    {key}: {status.inputs[key]}")
+
+    if status.artifacts:
+        print("  Artifacts:")
+        for key in ("archive_path", "stage_dir"):
+            if key in status.artifacts:
+                print(f"    {key}: {status.artifacts[key]}")
+
+    if status.steps:
+        print("  Steps:")
+        for key in ("android_import", "ios_import", "merge", "report", "archive_verify", "stage"):
+            if key in status.steps:
+                step_payload = status.steps[key]
+                summary = "done"
+                if isinstance(step_payload, dict):
+                    if "reused_existing" in step_payload:
+                        summary = "reused" if step_payload["reused_existing"] else "new"
+                    elif "passed" in step_payload:
+                        summary = "passed" if step_payload["passed"] else "failed"
+                    elif "verification_passed" in step_payload:
+                        summary = "passed" if step_payload["verification_passed"] else "failed"
+                print(f"    {key}: {summary}")
+
+    if status.last_error:
+        print("  Last error:")
+        print(f"    {status.last_error.get('type')}: {status.last_error.get('message')}")
+        return 2
+
+    return 0
 
 
 def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:

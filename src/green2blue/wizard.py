@@ -504,12 +504,7 @@ def _step_confirm_and_merge(
 ) -> None:
     """Build a merged archive, show a report, then inject the merged result."""
     from green2blue.archive import (
-        build_archive_report,
-        import_android_export,
-        import_ios_backup,
-        merge_archive,
-        stage_ios_export,
-        verify_archive,
+        prepare_ios_workflow,
         verify_ios_render_target,
     )
     from green2blue.models import CKStrategy, InjectionMode
@@ -528,26 +523,29 @@ def _step_confirm_and_merge(
 
     _confirm_yes_no("  Build merged archive? [Y/n]: ")
 
-    archive_path = _default_archive_path(backup_info)
-    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    workflow_dir = _default_workflow_dir(backup_info)
+    workflow_dir.parent.mkdir(parents=True, exist_ok=True)
 
     print()
     print("  Building merged archive...")
-    print(f"    Archive path: {archive_path}")
+    print(f"    Workflow dir: {workflow_dir}")
     print()
 
-    android_result = import_android_export(export_path, archive_path)
-    ios_result = import_ios_backup(
+    workflow_result = prepare_ios_workflow(
+        export_path,
         backup_info.path,
-        archive_path,
+        workflow_dir,
         password=password,
+        country=country,
+        resume=True,
     )
-    merge_result = merge_archive(archive_path, country=country)
-    report = build_archive_report(archive_path)
+    archive_path = workflow_result.archive_path
+    merge_result = workflow_result.merge
+    report = workflow_result.report
 
     print("  Merge report:\n")
-    print(f"    Android messages imported: {android_result.messages_imported}")
-    print(f"    iPhone messages imported:  {ios_result.messages_imported}")
+    print(f"    Android messages imported: {workflow_result.android_import.messages_imported}")
+    print(f"    iPhone messages imported:  {workflow_result.ios_import.messages_imported}")
     print(f"    Merged conversations:      {merge_result.merged_conversations}")
     print(f"    Merged messages:           {merge_result.merged_messages}")
     print(f"    Duplicate messages:        {merge_result.duplicate_messages}")
@@ -557,7 +555,7 @@ def _step_confirm_and_merge(
             print(f"      - {warning}")
     print()
 
-    verify_result = verify_archive(archive_path)
+    verify_result = workflow_result.archive_verification
     verify_status = "PASSED" if verify_result.passed else "FAILED"
     print(f"  Archive verification: {verify_status} "
           f"({verify_result.checks_passed}/{verify_result.checks_run})")
@@ -575,15 +573,8 @@ def _step_confirm_and_merge(
 
     _confirm_yes_no("  Proceed with merged injection? [Y/n]: ")
 
-    stage_dir = _default_stage_dir(backup_info)
-    stage_dir.parent.mkdir(parents=True, exist_ok=True)
-    stage_result = stage_ios_export(
-        archive_path,
-        stage_dir,
-        merge_run_id=merge_result.merge_run_id,
-        country=country,
-        resume=True,
-    )
+    stage_result = workflow_result.stage
+    assert stage_result is not None
     if stage_result.records_written == 0:
         print("  The merged archive contains no new non-iPhone messages to inject.")
         print("  The archive and stage bundle were still created successfully.")
@@ -684,6 +675,10 @@ def _default_archive_path(backup_info: BackupInfo) -> Path:
 
 def _default_stage_dir(backup_info: BackupInfo) -> Path:
     return Path.cwd() / ".g2b_stages" / backup_info.udid
+
+
+def _default_workflow_dir(backup_info: BackupInfo) -> Path:
+    return Path.cwd() / ".g2b_workflows" / backup_info.udid
 
 
 # ---------------------------------------------------------------------------

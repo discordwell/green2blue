@@ -72,6 +72,8 @@ Canonical archive workflows for future merge and re-render support.
 | `archive verify <archive.sqlite>` | Run consistency checks against a canonical archive |
 | `archive export-android <archive.sqlite> <output.zip>` | Export the merged archive view as an Android-style ZIP |
 | `archive stage-ios <archive.sqlite> <output-dir>` | Build and persist a reusable iOS-injection stage bundle |
+| `archive prepare-ios <zip> <backup> <workflow-dir>` | Build a durable merged archive + stage workflow directory for large-history runs |
+| `archive workflow-status <workflow-dir>` | Inspect the persisted state of a durable iOS workflow directory |
 | `archive inject-ios <archive.sqlite>` | Export the merged view and inject it into an iPhone backup |
 
 #### `green2blue archive import-ios <backup> <archive.sqlite>`
@@ -163,6 +165,7 @@ green2blue archive merge merged.g2b.sqlite
 green2blue archive inspect merged.g2b.sqlite
 green2blue archive report merged.g2b.sqlite
 green2blue archive export-android merged.g2b.sqlite merged-export.zip
+green2blue archive prepare-ios android-export.zip <UDID> .g2b_workflows/<UDID>
 green2blue archive inject-ios merged.g2b.sqlite --backup <UDID>
 ```
 
@@ -195,6 +198,20 @@ The stage command is resumable by default and will reuse a matching stage
 directory when the archive path, merge run, country, and mode all match.
 It also re-verifies the existing staged ZIP against the archive render plan and
 rebuilds the stage automatically if the bundle drifted or was tampered with.
+
+`archive prepare-ios` adds one level above that: a durable workflow directory
+for long-running merged imports. It persists:
+- `merged.g2b.sqlite`
+- `stage/merged_export.zip`
+- `workflow_state.json`
+
+The workflow command is resumable by default. If the Android export, iPhone
+backup, and merged stage are unchanged, it reuses the completed archive import
+runs, reuses the latest merge run, and reuses the verified stage bundle instead
+of recomputing the whole pipeline.
+
+Use `archive workflow-status <workflow-dir>` to inspect the persisted state,
+current step, artifact paths, and any recorded error from a large-history run.
 
 `archive inject-ios` now performs two verification layers after a non-dry-run
 inject:

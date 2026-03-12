@@ -155,6 +155,7 @@ def _import_run_mismatches(conn: sqlite3.Connection) -> list[str]:
             FROM message_attachments ma
             JOIN messages m ON m.id = ma.message_id
             WHERE m.import_run_id = ?
+              AND ma.text_content IS NULL
             """,
             (import_run_id,),
         )

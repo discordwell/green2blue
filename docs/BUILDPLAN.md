@@ -87,4 +87,7 @@ Android-to-iPhone injector into a universal backup and merge tool.
 - Done: archive verification checks for import/merge consistency before render or inject.
 - Done: durable reusable iOS stage bundles for merged exports.
 - Done: rendered-target verification against the exact message/attachment rowids written into the modified iPhone backup.
-- Next: more resilient large-history workflow orchestration beyond current import/stage resume.
+- Done: durable large-history workflow directories with resumable archive import, merge reuse, stage reuse, and persisted workflow state.
+- Done: streamed merged-export/stage generation so large histories no longer buffer the whole NDJSON payload in memory.
+- Done: workflow-status inspection for long-running or interrupted large-history runs.
+- Next: deeper scale work beyond workflow persistence, especially heavier full-history attachment processing and long-running inject ergonomics.

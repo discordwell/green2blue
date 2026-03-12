@@ -13,8 +13,8 @@ from green2blue.archive.db import CanonicalArchive
 from green2blue.archive.export_android import export_merged_android_zip
 from green2blue.archive.export_android import (
     _build_android_record,
+    _iter_merged_winners,
     _load_merged_participants,
-    _load_merged_winners,
     _load_message_parts,
 )
 from green2blue.archive.report import build_archive_report
@@ -175,13 +175,14 @@ def _expected_stage_render(archive_path: Path, merge_run_id: int) -> dict[str, o
         assert conn is not None
         participants = _load_merged_participants(conn, merge_run_id)
         attachments = _load_message_parts(conn, merge_run_id)
-        messages = _load_merged_winners(conn, merge_run_id, mode="ios-inject")
-
         thread_map: dict[int, int] = {}
         record_signatures: Counter[str] = Counter()
         attachment_names: list[str] = []
 
-        for index, message in enumerate(messages, start=1):
+        for index, message in enumerate(
+            _iter_merged_winners(conn, merge_run_id, mode="ios-inject"),
+            start=1,
+        ):
             merged_conversation_id = int(message["merged_conversation_id"])
             thread_id = thread_map.setdefault(merged_conversation_id, len(thread_map) + 1)
             record, new_files, _missing = _build_android_record(
@@ -213,13 +214,13 @@ def _actual_stage_render(output_zip: Path) -> dict[str, object]:
                 "attachment_names": tuple(sorted(name for name in names if name.startswith("data/"))),
             }
 
-        raw = zf.read("messages.ndjson").decode("utf-8")
         record_signatures: Counter[str] = Counter()
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            record_signatures[_stable_json(json.loads(line))] += 1
+        with zf.open("messages.ndjson", "r") as ndjson_file:
+            for raw_line in ndjson_file:
+                line = raw_line.decode("utf-8").strip()
+                if not line:
+                    continue
+                record_signatures[_stable_json(json.loads(line))] += 1
 
         attachment_names = tuple(
             sorted(

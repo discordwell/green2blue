@@ -185,6 +185,8 @@ green2blue archive report <archive.sqlite>
 green2blue archive verify <archive.sqlite>
 green2blue archive export-android <archive.sqlite> <merged.zip>
 green2blue archive stage-ios <archive.sqlite> <stage-dir>
+green2blue archive prepare-ios <zip> <backup> <workflow-dir>
+green2blue archive workflow-status <workflow-dir>
 green2blue archive inject-ios <archive.sqlite> --backup <path-or-udid>
 green2blue corpus capture <zip> <sample.zip>
 green2blue list-backups        List available iPhone backups
@@ -207,6 +209,7 @@ green2blue archive report merged.g2b.sqlite
 green2blue archive verify merged.g2b.sqlite
 green2blue archive stage-ios merged.g2b.sqlite .g2b_stages/<UDID>
 green2blue archive export-android merged.g2b.sqlite merged-export.zip
+green2blue archive prepare-ios android-export.zip <UDID> .g2b_workflows/<UDID>
 green2blue archive inject-ios merged.g2b.sqlite --backup <UDID>
 ```
 
@@ -224,7 +227,10 @@ completed import run instead of creating a second empty dedupe-only run. Use
 
 The merge wizard uses a stable archive path at
 `.g2b_archives/<BACKUP_UDID>.g2b.sqlite`, so repeated wizard runs can reuse the
-same canonical archive instead of starting from scratch every time.
+same canonical archive instead of starting from scratch every time. It now also
+uses a durable workflow directory at `.g2b_workflows/<BACKUP_UDID>` so the
+archive import, merge, verification, and staged-export steps can resume cleanly
+across repeated large-history runs.
 
 `archive report` is also now a real migration report. It includes:
 - per-import-run summaries
@@ -241,6 +247,19 @@ throwaway temp ZIP. The merge wizard now uses the same staged-export pattern
 under `.g2b_stages/<BACKUP_UDID>`. Existing stage bundles are re-verified
 against the archive render plan before reuse, and rebuilt automatically if
 they drifted or were tampered with.
+
+`archive prepare-ios` is the durable large-history wrapper around the expensive
+merged workflow. It writes:
+- `merged.g2b.sqlite`
+- `stage/merged_export.zip`
+- `workflow_state.json`
+
+and resumes those steps by default when the inputs and verified artifacts still
+match.
+
+Use `green2blue archive workflow-status .g2b_workflows/<UDID>` to inspect the
+persisted workflow state, current step, and artifact paths after an interrupted
+or long-running run.
 
 `archive inject-ios` now verifies the modified iPhone backup after render too,
 not just the staged ZIP before render. After a non-dry-run inject it checks the
