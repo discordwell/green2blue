@@ -280,7 +280,8 @@ class TestWizardHappyPath:
             patch("green2blue.archive.import_ios_backup") as mock_import_ios,
             patch("green2blue.archive.merge_archive") as mock_merge,
             patch("green2blue.archive.build_archive_report") as mock_report,
-            patch("green2blue.archive.export_merged_android_zip") as mock_export,
+            patch("green2blue.archive.verify_archive") as mock_verify,
+            patch("green2blue.archive.stage_ios_export") as mock_stage,
             patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
         ):
             mock_import_android.return_value = MagicMock(messages_imported=4)
@@ -292,7 +293,21 @@ class TestWizardHappyPath:
                 duplicate_messages=1,
             )
             mock_report.return_value = MagicMock(warnings=("reply warning",))
-            mock_export.return_value = MagicMock(records_written=3)
+            mock_verify.return_value = MagicMock(
+                passed=True,
+                checks_passed=6,
+                checks_run=6,
+                warnings=(),
+                errors=(),
+            )
+            mock_stage.return_value = MagicMock(
+                records_written=3,
+                stage_dir=tmp_dir / "stage",
+                output_zip=tmp_dir / "stage" / "merged_export.zip",
+                reused_existing=False,
+                verification_passed=True,
+                verification_errors=(),
+            )
 
             mock_result = MagicMock()
             mock_result.injection_stats = MagicMock(
@@ -312,7 +327,8 @@ class TestWizardHappyPath:
         mock_import_ios.assert_called_once()
         mock_merge.assert_called_once()
         mock_report.assert_called_once()
-        mock_export.assert_called_once()
+        mock_verify.assert_called_once()
+        mock_stage.assert_called_once()
         mock_pipeline.assert_called_once()
 
     def test_wizard_live_device_restore_flow(self, tmp_dir):

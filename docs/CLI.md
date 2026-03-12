@@ -69,7 +69,9 @@ Canonical archive workflows for future merge and re-render support.
 | `archive inspect <archive.sqlite>` | Inspect a canonical archive |
 | `archive merge <archive.sqlite>` | Materialize a merged cross-source view inside the archive |
 | `archive report <archive.sqlite>` | Generate a migration-oriented archive report |
+| `archive verify <archive.sqlite>` | Run consistency checks against a canonical archive |
 | `archive export-android <archive.sqlite> <output.zip>` | Export the merged archive view as an Android-style ZIP |
+| `archive stage-ios <archive.sqlite> <output-dir>` | Build and persist a reusable iOS-injection stage bundle |
 | `archive inject-ios <archive.sqlite>` | Export the merged view and inject it into an iPhone backup |
 
 #### `green2blue archive import-ios <backup> <archive.sqlite>`
@@ -177,3 +179,17 @@ completed import run instead of creating a second empty/deduped run. Use
 - winner-source counts from the latest merge
 - unsupported/downgraded feature markers
 - metadata-only attachment counts
+
+`archive verify` checks:
+- import-run recorded counts vs actual archive rows
+- incomplete/running import runs
+- message attachment flags vs actual attachment parts
+- latest merge counters vs materialized merged rows
+- metadata-only attachment warnings
+
+`archive stage-ios` writes a durable stage bundle containing:
+- `merged_export.zip`
+- `stage_metadata.json`
+
+The stage command is resumable by default and will reuse a matching stage
+directory when the archive path, merge run, country, and mode all match.

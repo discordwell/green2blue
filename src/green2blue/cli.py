@@ -482,6 +482,15 @@ def _build_parser() -> argparse.ArgumentParser:
     archive_report.add_argument("-q", "--quiet", action="store_true")
     archive_report.set_defaults(func=_cmd_archive_report)
 
+    archive_verify = archive_subs.add_parser(
+        "verify",
+        help="Run consistency checks against a canonical archive",
+    )
+    archive_verify.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_verify.add_argument("-v", "--verbose", action="store_true")
+    archive_verify.add_argument("-q", "--quiet", action="store_true")
+    archive_verify.set_defaults(func=_cmd_archive_verify)
+
     archive_merge = archive_subs.add_parser(
         "merge",
         help="Materialize a merged cross-source view inside a canonical archive",
@@ -519,6 +528,35 @@ def _build_parser() -> argparse.ArgumentParser:
     archive_export_android.add_argument("-q", "--quiet", action="store_true")
     archive_export_android.set_defaults(func=_cmd_archive_export_android)
 
+    archive_stage_ios = archive_subs.add_parser(
+        "stage-ios",
+        help="Build and persist an iOS-injection-ready merged export in a reusable stage directory",
+    )
+    archive_stage_ios.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_stage_ios.add_argument("output_dir", type=Path, help="Directory for the staged export bundle")
+    archive_stage_ios.add_argument(
+        "--merge-run",
+        type=int,
+        default=None,
+        help="Specific merge run ID to stage (defaults to latest, auto-merge if none exists)",
+    )
+    archive_stage_ios.add_argument(
+        "--country",
+        type=str,
+        default="US",
+        help="Default country code used if a merge needs to be materialized (default: US)",
+    )
+    archive_stage_ios.add_argument(
+        "--no-resume",
+        action="store_false",
+        dest="resume",
+        default=True,
+        help="Force rebuilding the stage even if the existing stage metadata matches",
+    )
+    archive_stage_ios.add_argument("-v", "--verbose", action="store_true")
+    archive_stage_ios.add_argument("-q", "--quiet", action="store_true")
+    archive_stage_ios.set_defaults(func=_cmd_archive_stage_ios)
+
     archive_inject_ios = archive_subs.add_parser(
         "inject-ios",
         help="Export the merged archive view and inject it into an iPhone backup using the proven pipeline",
@@ -547,6 +585,19 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Backup encryption password",
+    )
+    archive_inject_ios.add_argument(
+        "--stage-dir",
+        type=Path,
+        default=None,
+        help="Persist and optionally reuse the merged export in this directory instead of a temp dir",
+    )
+    archive_inject_ios.add_argument(
+        "--no-stage-resume",
+        action="store_false",
+        dest="stage_resume",
+        default=True,
+        help="Rebuild the stage dir even if existing stage metadata matches",
     )
     archive_inject_ios.add_argument(
         "--dry-run",
@@ -1300,6 +1351,24 @@ def _cmd_archive_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_archive_verify(args: argparse.Namespace) -> int:
+    """Run consistency checks against a canonical archive."""
+    from green2blue.archive import verify_archive
+
+    result = verify_archive(args.archive_path)
+    status = "PASSED" if result.passed else "FAILED"
+    print(f"Archive verify: {status} ({result.checks_passed}/{result.checks_run} checks)")
+    print(f"  Archive:                   {result.archive_path}")
+    if result.latest_merge_id is not None:
+        print(f"  Latest merge run:          {result.latest_merge_id}")
+        print(f"  iOS inject candidates:     {result.ios_inject_candidate_messages}")
+    for error in result.errors:
+        print(f"  ERROR: {error}")
+    for warning in result.warnings:
+        print(f"  WARNING: {warning}")
+    return 0 if result.passed else 1
+
+
 def _cmd_archive_merge(args: argparse.Namespace) -> int:
     """Materialize a merged cross-source view inside a canonical archive."""
     from green2blue.archive import merge_archive
@@ -1332,9 +1401,35 @@ def _cmd_archive_export_android(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_archive_stage_ios(args: argparse.Namespace) -> int:
+    """Build and persist a reusable iOS-injection stage directory."""
+    from green2blue.archive import stage_ios_export
+
+    result = stage_ios_export(
+        args.archive_path,
+        args.output_dir,
+        merge_run_id=args.merge_run,
+        country=args.country,
+        resume=args.resume,
+    )
+    print(f"Stage dir:               {result.stage_dir}")
+    print(f"  Output ZIP:           {result.output_zip}")
+    print(f"  Metadata:             {result.metadata_path}")
+    print(f"  Merge run ID:         {result.merge_run_id}")
+    print(f"  Reused existing:      {'yes' if result.reused_existing else 'no'}")
+    print(f"  Records written:      {result.records_written}")
+    print(f"  Attachment files:     {result.attachment_files_written}")
+    print(f"  Attachments missing:  {result.attachments_missing_data}")
+    verify_status = "PASSED" if result.verification_passed else "FAILED"
+    print(f"  Stage verify:         {verify_status}")
+    for error in result.verification_errors:
+        print(f"    ERROR: {error}")
+    return 0 if result.verification_passed else 1
+
+
 def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
     """Export the merged archive view and inject it into an iPhone backup."""
-    from green2blue.archive import export_merged_android_zip
+    from green2blue.archive import export_merged_android_zip, stage_ios_export
     from green2blue.ios.backup import find_backup
     from green2blue.models import CKStrategy, InjectionMode
     from green2blue.pipeline import run_pipeline
@@ -1357,17 +1452,24 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
 
     ck_strategy = CKStrategy(args.ck_strategy)
 
-    with tempfile.TemporaryDirectory(prefix="g2b_archive_inject_") as tmpdir:
-        export_zip = Path(tmpdir) / "merged_export.zip"
-        export_result = export_merged_android_zip(
+    if args.stage_dir is not None:
+        stage_result = stage_ios_export(
             args.archive_path,
-            export_zip,
+            args.stage_dir,
             merge_run_id=args.merge_run,
             country=args.country,
-            mode="ios-inject",
+            resume=args.stage_resume,
         )
-        print(f"Exported merged archive to: {export_result.output_zip}")
-
+        export_zip = stage_result.output_zip
+        print(f"Using stage dir: {stage_result.stage_dir}")
+        print(f"  Output ZIP: {stage_result.output_zip}")
+        print(f"  Metadata:   {stage_result.metadata_path}")
+        verify_status = "PASSED" if stage_result.verification_passed else "FAILED"
+        print(f"  Stage verify: {verify_status}")
+        for error in stage_result.verification_errors:
+            print(f"    ERROR: {error}")
+        if not stage_result.verification_passed:
+            return 2
         result = run_pipeline(
             export_path=export_zip,
             backup_path_or_udid=str(backup_info.path),
@@ -1383,6 +1485,33 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
             sacrifice_chats=args.sacrifice_chats,
             disable_icloud_sync=args.disable_icloud_sync,
         )
+    else:
+        with tempfile.TemporaryDirectory(prefix="g2b_archive_inject_") as tmpdir:
+            export_zip = Path(tmpdir) / "merged_export.zip"
+            export_result = export_merged_android_zip(
+                args.archive_path,
+                export_zip,
+                merge_run_id=args.merge_run,
+                country=args.country,
+                mode="ios-inject",
+            )
+            print(f"Exported merged archive to: {export_result.output_zip}")
+
+            result = run_pipeline(
+                export_path=export_zip,
+                backup_path_or_udid=str(backup_info.path),
+                backup_root=args.backup_root,
+                country=args.country,
+                skip_duplicates=args.skip_duplicates,
+                include_attachments=not args.no_attachments,
+                dry_run=args.dry_run,
+                password=args.password,
+                ck_strategy=ck_strategy,
+                service=args.service,
+                injection_mode=injection_mode,
+                sacrifice_chats=args.sacrifice_chats,
+                disable_icloud_sync=args.disable_icloud_sync,
+            )
 
     cl_stats = result.clone_stats
     ow_stats = result.overwrite_stats

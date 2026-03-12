@@ -182,7 +182,9 @@ green2blue archive import-ios <backup> <archive.sqlite>
 green2blue archive inspect <archive.sqlite>
 green2blue archive merge <archive.sqlite>
 green2blue archive report <archive.sqlite>
+green2blue archive verify <archive.sqlite>
 green2blue archive export-android <archive.sqlite> <merged.zip>
+green2blue archive stage-ios <archive.sqlite> <stage-dir>
 green2blue archive inject-ios <archive.sqlite> --backup <path-or-udid>
 green2blue corpus capture <zip> <sample.zip>
 green2blue list-backups        List available iPhone backups
@@ -202,6 +204,8 @@ green2blue archive import-ios ~/Library/Application\\ Support/MobileSync/Backup/
 green2blue archive merge merged.g2b.sqlite
 green2blue archive inspect merged.g2b.sqlite
 green2blue archive report merged.g2b.sqlite
+green2blue archive verify merged.g2b.sqlite
+green2blue archive stage-ios merged.g2b.sqlite .g2b_stages/<UDID>
 green2blue archive export-android merged.g2b.sqlite merged-export.zip
 green2blue archive inject-ios merged.g2b.sqlite --backup <UDID>
 ```
@@ -227,6 +231,14 @@ same canonical archive instead of starting from scratch every time.
 - latest-merge winner-source counts
 - unsupported/downgraded feature markers
 - metadata-only attachment counts
+
+`archive verify` checks that import-run counters, attachment flags, and latest
+merge counters still match the actual archive contents before you render or
+inject from it.
+
+`archive stage-ios` gives you a durable, reusable export bundle instead of a
+throwaway temp ZIP. The merge wizard now uses the same staged-export pattern
+under `.g2b_stages/<BACKUP_UDID>`.
 
 ### Privacy-Safe Corpus Capture
 

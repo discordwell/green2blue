@@ -10,7 +10,6 @@ from datetime import datetime
 import getpass
 import platform
 import sys
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -506,10 +505,11 @@ def _step_confirm_and_merge(
     """Build a merged archive, show a report, then inject the merged result."""
     from green2blue.archive import (
         build_archive_report,
-        export_merged_android_zip,
         import_android_export,
         import_ios_backup,
         merge_archive,
+        stage_ios_export,
+        verify_archive,
     )
     from green2blue.models import CKStrategy, InjectionMode
     from green2blue.pipeline import run_pipeline
@@ -556,36 +556,65 @@ def _step_confirm_and_merge(
             print(f"      - {warning}")
     print()
 
+    verify_result = verify_archive(archive_path)
+    verify_status = "PASSED" if verify_result.passed else "FAILED"
+    print(f"  Archive verification: {verify_status} "
+          f"({verify_result.checks_passed}/{verify_result.checks_run})")
+    for warning in verify_result.warnings:
+        print(f"    WARNING: {warning}")
+    for error in verify_result.errors:
+        print(f"    ERROR: {error}")
+    print()
+
+    if not verify_result.passed:
+        print("  The merged archive was created, but injection is blocked until")
+        print("  archive verification passes.")
+        print()
+        return
+
     _confirm_yes_no("  Proceed with merged injection? [Y/n]: ")
 
-    with tempfile.TemporaryDirectory(prefix="g2b_wizard_merge_") as tmpdir:
-        merged_export_zip = Path(tmpdir) / "merged_export.zip"
-        export_result = export_merged_android_zip(
-            archive_path,
-            merged_export_zip,
-            merge_run_id=merge_result.merge_run_id,
-            country=country,
-            mode="ios-inject",
-        )
-        if export_result.records_written == 0:
-            print("  The merged archive contains no new non-iPhone messages to inject.")
-            print("  The archive was still created successfully.")
-            print()
-            return
+    stage_dir = _default_stage_dir(backup_info)
+    stage_dir.parent.mkdir(parents=True, exist_ok=True)
+    stage_result = stage_ios_export(
+        archive_path,
+        stage_dir,
+        merge_run_id=merge_result.merge_run_id,
+        country=country,
+        resume=True,
+    )
+    if stage_result.records_written == 0:
+        print("  The merged archive contains no new non-iPhone messages to inject.")
+        print("  The archive and stage bundle were still created successfully.")
+        print()
+        return
 
-        print("  Injecting merged messages...\n")
-        result = run_pipeline(
-            export_path=merged_export_zip,
-            backup_path_or_udid=str(backup_info.path),
-            country=country,
-            skip_duplicates=True,
-            include_attachments=True,
-            dry_run=False,
-            password=password,
-            ck_strategy=CKStrategy.NONE,
-            service="SMS",
-            injection_mode=InjectionMode.INSERT,
-        )
+    print("  Prepared merged stage:")
+    print(f"    Stage dir:   {stage_result.stage_dir}")
+    print(f"    Output ZIP:  {stage_result.output_zip}")
+    print(f"    Reused:      {'yes' if stage_result.reused_existing else 'no'}")
+    print(f"    Verify:      {'PASSED' if stage_result.verification_passed else 'FAILED'}")
+    for error in stage_result.verification_errors:
+        print(f"      ERROR: {error}")
+    print()
+    if not stage_result.verification_passed:
+        print("  The stage bundle was created, but injection is blocked until")
+        print("  stage verification passes.")
+        print()
+        return
+    print("  Injecting merged messages...\n")
+    result = run_pipeline(
+        export_path=stage_result.output_zip,
+        backup_path_or_udid=str(backup_info.path),
+        country=country,
+        skip_duplicates=True,
+        include_attachments=True,
+        dry_run=False,
+        password=password,
+        ck_strategy=CKStrategy.NONE,
+        service="SMS",
+        injection_mode=InjectionMode.INSERT,
+    )
 
     _step_results(result, has_attachments, backup_info, password)
 
@@ -622,6 +651,10 @@ def _ask_yes_no(prompt: str, *, default: bool) -> bool:
 
 def _default_archive_path(backup_info: BackupInfo) -> Path:
     return Path.cwd() / ".g2b_archives" / f"{backup_info.udid}.g2b.sqlite"
+
+
+def _default_stage_dir(backup_info: BackupInfo) -> Path:
+    return Path.cwd() / ".g2b_stages" / backup_info.udid
 
 
 # ---------------------------------------------------------------------------

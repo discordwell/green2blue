@@ -9,12 +9,15 @@ from pathlib import Path
 from green2blue.archive import (
     ArchiveMergeResult,
     AndroidArchiveExportResult,
+    ArchiveVerificationResult,
     CanonicalArchive,
     build_archive_report,
     export_merged_android_zip,
     import_android_export,
     import_ios_backup,
     merge_archive,
+    stage_ios_export,
+    verify_archive,
 )
 from green2blue.converter.timestamp import unix_ms_to_ios_ns
 from green2blue.ios.manifest import compute_file_id
@@ -489,6 +492,57 @@ class TestArchiveWarnings:
         assert any("replies or reactions" in warning for warning in report.warnings)
         assert any("edited messages" in warning for warning in report.warnings)
         assert any("rich app/message effects" in warning for warning in report.warnings)
+
+
+class TestArchiveVerify:
+    def test_verify_archive_passes_for_clean_archive(self, sample_backup_dir, tmp_dir):
+        _populate_ios_backup(sample_backup_dir)
+        archive_path = tmp_dir / "verify_clean.g2b.sqlite"
+
+        import_ios_backup(sample_backup_dir, archive_path)
+        result = verify_archive(archive_path)
+
+        assert isinstance(result, ArchiveVerificationResult)
+        assert result.passed is True
+        assert result.checks_run >= 1
+
+    def test_verify_archive_detects_tampered_import_counts(self, sample_export_zip, tmp_dir):
+        archive_path = tmp_dir / "verify_bad.g2b.sqlite"
+        import_android_export(sample_export_zip, archive_path)
+
+        conn = sqlite3.connect(archive_path)
+        conn.execute("UPDATE import_runs SET message_count = 999")
+        conn.commit()
+        conn.close()
+
+        result = verify_archive(archive_path)
+
+        assert result.passed is False
+        assert any("records 999 messages" in error for error in result.errors)
+
+
+class TestArchiveStage:
+    def test_stage_ios_export_writes_stage_bundle_and_reuses_it(
+        self,
+        sample_backup_dir,
+        tmp_dir,
+    ):
+        _populate_ios_backup(sample_backup_dir)
+        archive_path = tmp_dir / "stage.g2b.sqlite"
+        stage_dir = tmp_dir / "stage_dir"
+
+        import_ios_backup(sample_backup_dir, archive_path)
+
+        first = stage_ios_export(archive_path, stage_dir)
+        second = stage_ios_export(archive_path, stage_dir)
+
+        assert first.output_zip.exists()
+        assert first.metadata_path.exists()
+        assert first.reused_existing is False
+        assert first.verification_passed is True
+        assert second.reused_existing is True
+        assert second.verification_passed is True
+        assert second.records_written == first.records_written
 
 
 class TestArchiveExport:

@@ -465,6 +465,65 @@ class TestArchiveCLI:
         assert "Import runs:" in output
         assert "Unsupported / downgraded feature markers:" in output
 
+    def test_archive_verify_reports_failure_for_tampered_import(self, tmp_dir, capsys):
+        zip_path = _create_export_zip(tmp_dir)
+        archive_path = tmp_dir / "archive.g2b.sqlite"
+
+        main([
+            "archive",
+            "import-android",
+            str(zip_path),
+            str(archive_path),
+        ])
+        conn = sqlite3.connect(archive_path)
+        conn.execute("UPDATE import_runs SET message_count = 77")
+        conn.commit()
+        conn.close()
+
+        ret = main([
+            "archive",
+            "verify",
+            str(archive_path),
+        ])
+        output = capsys.readouterr().out
+        assert ret == 1
+        assert "Archive verify: FAILED" in output
+        assert "records 77 messages" in output
+
+    def test_archive_stage_ios_writes_and_reuses_stage(self, tmp_dir, capsys):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        _populate_backup_with_messages(backup_dir)
+        archive_path = tmp_dir / "stage.g2b.sqlite"
+        stage_dir = tmp_dir / "stage_dir"
+
+        main([
+            "archive", "import-ios",
+            str(backup_dir),
+            str(archive_path),
+        ])
+
+        first = main([
+            "archive", "stage-ios",
+            str(archive_path),
+            str(stage_dir),
+        ])
+        assert first == 0
+        first_output = capsys.readouterr().out
+        assert "Reused existing:      no" in first_output
+        assert "Stage verify:         PASSED" in first_output
+
+        second = main([
+            "archive", "stage-ios",
+            str(archive_path),
+            str(stage_dir),
+        ])
+        assert second == 0
+        second_output = capsys.readouterr().out
+        assert "Reused existing:      yes" in second_output
+        assert (stage_dir / "merged_export.zip").exists()
+
     def test_capture_mobiledevice_logs_writes_stdout(self, tmp_dir):
         output_path = tmp_dir / "mobiledevice.log"
         completed = MagicMock(returncode=0, stdout="usb log", stderr="")
