@@ -115,6 +115,30 @@ class TestCopyAttachmentToBackup:
         expected_digest = hashlib.sha1(file_content).digest()
         assert stored_digest == expected_digest
 
+    def test_copy_file_streams_unencrypted_attachment(self, tmp_dir, manifest, monkeypatch):
+        source = tmp_dir / "source" / "large.jpg"
+        source.parent.mkdir()
+        source.write_bytes(b"\xff\xd8\xff\xe0" + b"x" * 8192)
+
+        original_read_bytes = Path.read_bytes
+
+        def _guarded_read_bytes(path_self):
+            if path_self == source:
+                raise AssertionError("copy_attachment_to_backup should stream unencrypted files")
+            return original_read_bytes(path_self)
+
+        monkeypatch.setattr(Path, "read_bytes", _guarded_read_bytes)
+
+        backup_dir = tmp_dir / "backup"
+        backup_dir.mkdir()
+        ios_path = "Library/SMS/Attachments/ee/test-uuid/large.jpg"
+
+        size = copy_attachment_to_backup(
+            source, ios_path, backup_dir, manifest, domain="HomeDomain"
+        )
+
+        assert size == source.stat().st_size
+
 
 class TestResolveAttachmentPaths:
     def test_resolve_existing(self, tmp_dir):

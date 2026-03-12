@@ -602,6 +602,67 @@ def _build_parser() -> argparse.ArgumentParser:
     archive_workflow_status.add_argument("-q", "--quiet", action="store_true")
     archive_workflow_status.set_defaults(func=_cmd_archive_workflow_status)
 
+    archive_run_ios = archive_subs.add_parser(
+        "run-ios",
+        help="Run a prepared durable iOS workflow directory through the actual iPhone backup injection path",
+    )
+    archive_run_ios.add_argument("workflow_dir", type=Path, help="Workflow directory created by archive prepare-ios")
+    archive_run_ios.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Backup encryption password",
+    )
+    archive_run_ios.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Render and parse without modifying the backup",
+    )
+    archive_run_ios.add_argument(
+        "--country",
+        type=str,
+        default="US",
+        help="Default country code for render verification (default: US)",
+    )
+    archive_run_ios.add_argument(
+        "--ck-strategy",
+        type=str,
+        choices=["none", "fake-synced", "pending-upload", "icloud-reset"],
+        default="none",
+        help="CloudKit metadata strategy for iCloud Messages sync survival (default: none)",
+    )
+    archive_run_ios.add_argument(
+        "--mode",
+        type=str,
+        choices=["insert", "overwrite", "clone"],
+        default="insert",
+        help="Injection mode: insert new rows, overwrite sacrifice messages, or clone existing",
+    )
+    archive_run_ios.add_argument(
+        "--sacrifice-chat",
+        type=int,
+        action="append",
+        dest="sacrifice_chats",
+        default=[],
+        help="Chat ROWID to sacrifice for overwrite mode (repeatable)",
+    )
+    archive_run_ios.add_argument(
+        "--no-attachments",
+        action="store_true",
+        default=False,
+        help="Skip attachment file copy",
+    )
+    archive_run_ios.add_argument(
+        "--disable-icloud-sync",
+        action="store_true",
+        default=False,
+        help="Set CloudKitSyncingEnabled=False in the backup's madrid.plist",
+    )
+    archive_run_ios.add_argument("-v", "--verbose", action="store_true")
+    archive_run_ios.add_argument("-q", "--quiet", action="store_true")
+    archive_run_ios.set_defaults(func=_cmd_archive_run_ios)
+
     archive_inject_ios = archive_subs.add_parser(
         "inject-ios",
         help="Export the merged archive view and inject it into an iPhone backup using the proven pipeline",
@@ -1546,7 +1607,16 @@ def _cmd_archive_workflow_status(args: argparse.Namespace) -> int:
 
     if status.steps:
         print("  Steps:")
-        for key in ("android_import", "ios_import", "merge", "report", "archive_verify", "stage"):
+        for key in (
+            "android_import",
+            "ios_import",
+            "merge",
+            "report",
+            "archive_verify",
+            "stage",
+            "inject",
+            "render_verify",
+        ):
             if key in status.steps:
                 step_payload = status.steps[key]
                 summary = "done"
@@ -1557,6 +1627,8 @@ def _cmd_archive_workflow_status(args: argparse.Namespace) -> int:
                         summary = "passed" if step_payload["passed"] else "failed"
                     elif "verification_passed" in step_payload:
                         summary = "passed" if step_payload["verification_passed"] else "failed"
+                    elif "finished_at" in step_payload:
+                        summary = "done"
                 print(f"    {key}: {summary}")
 
     if status.last_error:
@@ -1565,6 +1637,37 @@ def _cmd_archive_workflow_status(args: argparse.Namespace) -> int:
         return 2
 
     return 0
+
+
+def _cmd_archive_run_ios(args: argparse.Namespace) -> int:
+    """Run a prepared durable workflow through the target iPhone inject path."""
+    from green2blue.archive import run_ios_workflow_injection
+    from green2blue.models import CKStrategy, InjectionMode
+
+    injection_mode = InjectionMode(args.mode)
+    if injection_mode == InjectionMode.OVERWRITE and not args.sacrifice_chats:
+        print("Error: --mode overwrite requires at least one --sacrifice-chat", file=sys.stderr)
+        return 1
+
+    result = run_ios_workflow_injection(
+        args.workflow_dir,
+        password=args.password,
+        country=args.country,
+        include_attachments=not args.no_attachments,
+        dry_run=args.dry_run,
+        ck_strategy=CKStrategy(args.ck_strategy),
+        injection_mode=injection_mode,
+        sacrifice_chats=args.sacrifice_chats,
+        disable_icloud_sync=args.disable_icloud_sync,
+    )
+
+    print(f"Workflow dir:      {result.workflow_dir}")
+    print(f"  Backup:         {result.backup_info.device_name} ({result.backup_info.udid})")
+    print(f"  Output ZIP:     {result.output_zip}")
+    _print_pipeline_summary(result.pipeline_result, result.render_verification)
+    if result.render_verification is not None and not result.render_verification.passed:
+        return 3
+    return 0 if not result.pipeline_result.verification or result.pipeline_result.verification.passed else 2
 
 
 def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
@@ -1680,6 +1783,14 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
                     service=args.service,
                 )
 
+    _print_pipeline_summary(result, render_verify_result)
+
+    if render_verify_result is not None and not render_verify_result.passed:
+        return 3
+    return 0 if not result.verification or result.verification.passed else 2
+
+
+def _print_pipeline_summary(result, render_verify_result=None) -> None:
     cl_stats = result.clone_stats
     ow_stats = result.overwrite_stats
     stats = result.injection_stats
@@ -1727,10 +1838,6 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
         print(f"\nWarnings ({len(result.conversion_warnings)}):")
         for w in result.conversion_warnings[:10]:
             print(f"  - {w}")
-
-    if render_verify_result is not None and not render_verify_result.passed:
-        return 3
-    return 0 if not result.verification or result.verification.passed else 2
 
 
 def _cmd_corpus_capture(args: argparse.Namespace) -> int:

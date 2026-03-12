@@ -74,6 +74,7 @@ Canonical archive workflows for future merge and re-render support.
 | `archive stage-ios <archive.sqlite> <output-dir>` | Build and persist a reusable iOS-injection stage bundle |
 | `archive prepare-ios <zip> <backup> <workflow-dir>` | Build a durable merged archive + stage workflow directory for large-history runs |
 | `archive workflow-status <workflow-dir>` | Inspect the persisted state of a durable iOS workflow directory |
+| `archive run-ios <workflow-dir>` | Run a prepared durable iOS workflow through the actual iPhone backup injection path |
 | `archive inject-ios <archive.sqlite>` | Export the merged view and inject it into an iPhone backup |
 
 #### `green2blue archive import-ios <backup> <archive.sqlite>`
@@ -166,7 +167,7 @@ green2blue archive inspect merged.g2b.sqlite
 green2blue archive report merged.g2b.sqlite
 green2blue archive export-android merged.g2b.sqlite merged-export.zip
 green2blue archive prepare-ios android-export.zip <UDID> .g2b_workflows/<UDID>
-green2blue archive inject-ios merged.g2b.sqlite --backup <UDID>
+green2blue archive run-ios .g2b_workflows/<UDID>
 ```
 
 You can also pass a backup UDID to `archive import-ios` instead of a full path
@@ -212,6 +213,11 @@ of recomputing the whole pipeline.
 
 Use `archive workflow-status <workflow-dir>` to inspect the persisted state,
 current step, artifact paths, and any recorded error from a large-history run.
+
+`archive run-ios <workflow-dir>` is the durable execution step for that
+workflow. It reuses the prepared stage bundle, writes inject progress back into
+`workflow_state.json`, and records rendered-target verification after the
+backup mutation completes.
 
 `archive inject-ios` now performs two verification layers after a non-dry-run
 inject:

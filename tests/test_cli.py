@@ -673,6 +673,31 @@ class TestArchiveCommands:
         assert "android_import" in captured.out
         assert "stage" in captured.out
 
+    def test_archive_run_ios_executes_prepared_workflow(self, tmp_dir, capsys):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        export_zip = _create_export_zip(tmp_dir)
+        workflow_dir = tmp_dir / "workflow"
+
+        ret = main([
+            "archive", "prepare-ios",
+            str(export_zip),
+            str(backup_dir),
+            str(workflow_dir),
+        ])
+        assert ret == 0
+
+        ret = main([
+            "archive", "run-ios",
+            str(workflow_dir),
+        ])
+
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "Workflow dir:" in captured.out
+        assert "Rendered target:   PASSED" in captured.out
+
     def test_archive_report_prints_warning_for_multi_source(
         self, sample_export_zip, tmp_dir, capsys,
     ):

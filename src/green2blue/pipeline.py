@@ -17,6 +17,7 @@ import hashlib
 import logging
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -42,6 +43,25 @@ from green2blue.verify import VerificationResult, verify_backup
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class PipelineProgressEvent:
+    """Progress event emitted during a pipeline run."""
+
+    phase: str
+    message: str
+    backup_path: Path | None = None
+    safety_copy_path: Path | None = None
+    messages_parsed: int | None = None
+    messages_converted: int | None = None
+    attachments_total: int | None = None
+    attachments_processed: int | None = None
+    attachments_copied: int | None = None
+    verification_passed: bool | None = None
+
+
+PipelineProgressCallback = Callable[[PipelineProgressEvent], None]
+
+
 @dataclass
 class PipelineResult:
     """Full result of the injection pipeline."""
@@ -53,9 +73,43 @@ class PipelineResult:
     safety_copy_path: Path | None = None
     backup_path: Path | None = None
     total_messages_parsed: int = 0
+    total_attachments_expected: int = 0
     total_attachments_copied: int = 0
     conversion_warnings: list[str] = field(default_factory=list)
     skipped_count: int = 0
+
+
+def _emit_progress(
+    callback: PipelineProgressCallback | None,
+    *,
+    phase: str,
+    message: str,
+    backup_path: Path | None = None,
+    safety_copy_path: Path | None = None,
+    messages_parsed: int | None = None,
+    messages_converted: int | None = None,
+    attachments_total: int | None = None,
+    attachments_processed: int | None = None,
+    attachments_copied: int | None = None,
+    verification_passed: bool | None = None,
+) -> None:
+    if callback is None:
+        return
+
+    callback(
+        PipelineProgressEvent(
+            phase=phase,
+            message=message,
+            backup_path=backup_path,
+            safety_copy_path=safety_copy_path,
+            messages_parsed=messages_parsed,
+            messages_converted=messages_converted,
+            attachments_total=attachments_total,
+            attachments_processed=attachments_processed,
+            attachments_copied=attachments_copied,
+            verification_passed=verification_passed,
+        ),
+    )
 
 
 def _run_prepare_sync_for_result(
@@ -106,6 +160,7 @@ def run_pipeline(
     injection_mode: InjectionMode = InjectionMode.INSERT,
     sacrifice_chats: list[int] | None = None,
     disable_icloud_sync: bool = False,
+    progress_callback: PipelineProgressCallback | None = None,
 ) -> PipelineResult:
     """Run the full injection pipeline.
 
@@ -141,6 +196,12 @@ def run_pipeline(
         backup_info.product_version,
         "encrypted" if backup_info.is_encrypted else "unencrypted",
     )
+    _emit_progress(
+        progress_callback,
+        phase="backup_found",
+        message="Resolved target iPhone backup.",
+        backup_path=backup_info.path,
+    )
 
     validate_backup(backup_info.path)
 
@@ -162,6 +223,7 @@ def run_pipeline(
             injection_mode=injection_mode,
             sacrifice_chats=sacrifice_chats,
             disable_icloud_sync=disable_icloud_sync,
+            progress_callback=progress_callback,
         )
 
     # Step 3: Parse export ZIP
@@ -170,6 +232,13 @@ def run_pipeline(
         android_messages = list(parse_ndjson(export.ndjson_path))
         result.total_messages_parsed = len(android_messages)
         logger.info("Parsed %d messages from export", len(android_messages))
+        _emit_progress(
+            progress_callback,
+            phase="export_parsed",
+            message="Parsed Android export.",
+            backup_path=backup_info.path,
+            messages_parsed=result.total_messages_parsed,
+        )
 
         # Step 4: Convert to iOS format
         logger.info("Converting messages...")
@@ -186,6 +255,20 @@ def run_pipeline(
             len(conversion.chats),
             conversion.skipped_count,
         )
+        result.total_attachments_expected = (
+            sum(len(msg.attachments) for msg in conversion.messages)
+            if include_attachments and export.has_attachments()
+            else 0
+        )
+        _emit_progress(
+            progress_callback,
+            phase="converted",
+            message="Converted Android messages into iOS rows.",
+            backup_path=backup_info.path,
+            messages_parsed=result.total_messages_parsed,
+            messages_converted=len(conversion.messages),
+            attachments_total=result.total_attachments_expected,
+        )
 
         if dry_run:
             logger.info("Dry run — skipping backup modifications")
@@ -197,6 +280,13 @@ def run_pipeline(
         logger.info("Creating safety copy...")
         result.safety_copy_path = create_safety_copy(backup_info.path)
         logger.info("Safety copy at: %s", result.safety_copy_path)
+        _emit_progress(
+            progress_callback,
+            phase="safety_copy_created",
+            message="Created rollback safety copy.",
+            backup_path=backup_info.path,
+            safety_copy_path=result.safety_copy_path,
+        )
 
         # Step 6: Inject into sms.db
         sms_db_file = get_sms_db_path(backup_info.path)
@@ -209,16 +299,40 @@ def run_pipeline(
                         conversion, sacrifice_chats or [],
                     )
                 logger.info("Overwrite complete: %s", result.overwrite_stats)
+                _emit_progress(
+                    progress_callback,
+                    phase="messages_written",
+                    message="Overwrote sacrifice rows in sms.db.",
+                    backup_path=backup_info.path,
+                    messages_parsed=result.total_messages_parsed,
+                    messages_converted=len(conversion.messages),
+                )
             elif injection_mode == InjectionMode.CLONE:
                 logger.info("Cloning messages into sms.db (Hack Patrol)...")
                 with SMSDatabase(sms_db_file) as db:
                     result.clone_stats = db.clone(conversion)
                 logger.info("Clone complete: %s", result.clone_stats)
+                _emit_progress(
+                    progress_callback,
+                    phase="messages_written",
+                    message="Cloned converted rows into sms.db.",
+                    backup_path=backup_info.path,
+                    messages_parsed=result.total_messages_parsed,
+                    messages_converted=len(conversion.messages),
+                )
             else:
                 logger.info("Injecting messages into sms.db...")
                 with SMSDatabase(sms_db_file) as db:
                     result.injection_stats = db.inject(conversion, skip_duplicates)
                 logger.info("Injection complete: %s", result.injection_stats)
+                _emit_progress(
+                    progress_callback,
+                    phase="messages_written",
+                    message="Inserted converted rows into sms.db.",
+                    backup_path=backup_info.path,
+                    messages_parsed=result.total_messages_parsed,
+                    messages_converted=len(conversion.messages),
+                )
 
             _run_prepare_sync_for_result(
                 sms_db_file,
@@ -235,14 +349,34 @@ def run_pipeline(
             with ManifestDB(manifest_path) as manifest:
                 if include_attachments and export.has_attachments():
                     domain = manifest.detect_attachment_domain()
+                    attachments_processed = 0
+                    _emit_progress(
+                        progress_callback,
+                        phase="attachments_started",
+                        message="Copying attachment files into the backup.",
+                        backup_path=backup_info.path,
+                        attachments_total=result.total_attachments_expected,
+                        attachments_processed=0,
+                        attachments_copied=0,
+                    )
                     for msg in conversion.messages:
                         for att in msg.attachments:
                             file_size = _copy_message_attachment(
                                 att, msg, export, backup_info.path, manifest, domain
                             )
+                            attachments_processed += 1
                             if file_size > 0:
                                 attachment_sizes[att.guid] = file_size
                                 result.total_attachments_copied += 1
+                            _emit_progress(
+                                progress_callback,
+                                phase="attachment_processed",
+                                message=f"Processed attachment {attachments_processed}/{result.total_attachments_expected}.",
+                                backup_path=backup_info.path,
+                                attachments_total=result.total_attachments_expected,
+                                attachments_processed=attachments_processed,
+                                attachments_copied=result.total_attachments_copied,
+                            )
 
             # Update attachment sizes in sms.db (must happen before digest)
             if attachment_sizes:
@@ -255,6 +389,15 @@ def run_pipeline(
                 sms_db_size = sms_db_file.stat().st_size
                 sms_db_digest = hashlib.sha1(sms_db_file.read_bytes()).digest()
                 manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
+            _emit_progress(
+                progress_callback,
+                phase="manifest_updated",
+                message="Updated Manifest.db metadata for sms.db and attachments.",
+                backup_path=backup_info.path,
+                attachments_total=result.total_attachments_expected,
+                attachments_processed=result.total_attachments_expected,
+                attachments_copied=result.total_attachments_copied,
+            )
 
             # Disable iCloud Messages sync if requested
             if disable_icloud_sync:
@@ -274,6 +417,26 @@ def run_pipeline(
                             result.verification.checks_run)
             else:
                 logger.warning("Verification FAILED: %s", result.verification.errors)
+            _emit_progress(
+                progress_callback,
+                phase="verification_complete",
+                message="Backup verification completed.",
+                backup_path=backup_info.path,
+                verification_passed=result.verification.passed,
+                attachments_total=result.total_attachments_expected,
+                attachments_processed=result.total_attachments_expected,
+                attachments_copied=result.total_attachments_copied,
+            )
+            _emit_progress(
+                progress_callback,
+                phase="pipeline_complete",
+                message="Completed backup injection pipeline.",
+                backup_path=backup_info.path,
+                verification_passed=result.verification.passed,
+                attachments_total=result.total_attachments_expected,
+                attachments_processed=result.total_attachments_expected,
+                attachments_copied=result.total_attachments_copied,
+            )
 
         except Exception:
             logger.error(
@@ -433,6 +596,7 @@ def _run_encrypted_pipeline(
     injection_mode: InjectionMode = InjectionMode.INSERT,
     sacrifice_chats: list[int] | None = None,
     disable_icloud_sync: bool = False,
+    progress_callback: PipelineProgressCallback | None = None,
 ) -> PipelineResult:
     """Run the injection pipeline for an encrypted backup.
 
@@ -449,6 +613,12 @@ def _run_encrypted_pipeline(
     logger.info("Unlocking encrypted backup...")
     encrypted_backup = EncryptedBackup(backup_info.path, password)
     encrypted_backup.unlock()
+    _emit_progress(
+        progress_callback,
+        phase="backup_found",
+        message="Resolved and unlocked encrypted iPhone backup.",
+        backup_path=backup_info.path,
+    )
 
     # Step 2: Decrypt Manifest.db to temp file
     logger.info("Decrypting Manifest.db...")
@@ -479,6 +649,13 @@ def _run_encrypted_pipeline(
             android_messages = list(parse_ndjson(export.ndjson_path))
             result.total_messages_parsed = len(android_messages)
             logger.info("Parsed %d messages from export", len(android_messages))
+            _emit_progress(
+                progress_callback,
+                phase="export_parsed",
+                message="Parsed Android export.",
+                backup_path=backup_info.path,
+                messages_parsed=result.total_messages_parsed,
+            )
 
             # Step 6: Convert to iOS format
             logger.info("Converting messages...")
@@ -495,6 +672,20 @@ def _run_encrypted_pipeline(
                 len(conversion.chats),
                 conversion.skipped_count,
             )
+            result.total_attachments_expected = (
+                sum(len(msg.attachments) for msg in conversion.messages)
+                if include_attachments and export.has_attachments()
+                else 0
+            )
+            _emit_progress(
+                progress_callback,
+                phase="converted",
+                message="Converted Android messages into iOS rows.",
+                backup_path=backup_info.path,
+                messages_parsed=result.total_messages_parsed,
+                messages_converted=len(conversion.messages),
+                attachments_total=result.total_attachments_expected,
+            )
 
             if dry_run:
                 logger.info("Dry run — skipping backup modifications")
@@ -506,6 +697,13 @@ def _run_encrypted_pipeline(
             logger.info("Creating safety copy...")
             result.safety_copy_path = create_safety_copy(backup_info.path)
             logger.info("Safety copy at: %s", result.safety_copy_path)
+            _emit_progress(
+                progress_callback,
+                phase="safety_copy_created",
+                message="Created rollback safety copy.",
+                backup_path=backup_info.path,
+                safety_copy_path=result.safety_copy_path,
+            )
 
             # Step 8: Inject/overwrite/clone into the temp decrypted sms.db
             if injection_mode == InjectionMode.OVERWRITE:
@@ -515,16 +713,40 @@ def _run_encrypted_pipeline(
                         conversion, sacrifice_chats or [],
                     )
                 logger.info("Overwrite complete: %s", result.overwrite_stats)
+                _emit_progress(
+                    progress_callback,
+                    phase="messages_written",
+                    message="Overwrote sacrifice rows in decrypted sms.db.",
+                    backup_path=backup_info.path,
+                    messages_parsed=result.total_messages_parsed,
+                    messages_converted=len(conversion.messages),
+                )
             elif injection_mode == InjectionMode.CLONE:
                 logger.info("Cloning messages into decrypted sms.db (Hack Patrol)...")
                 with SMSDatabase(temp_sms_path) as db:
                     result.clone_stats = db.clone(conversion)
                 logger.info("Clone complete: %s", result.clone_stats)
+                _emit_progress(
+                    progress_callback,
+                    phase="messages_written",
+                    message="Cloned converted rows into decrypted sms.db.",
+                    backup_path=backup_info.path,
+                    messages_parsed=result.total_messages_parsed,
+                    messages_converted=len(conversion.messages),
+                )
             else:
                 logger.info("Injecting messages into decrypted sms.db...")
                 with SMSDatabase(temp_sms_path) as db:
                     result.injection_stats = db.inject(conversion, skip_duplicates)
                 logger.info("Injection complete: %s", result.injection_stats)
+                _emit_progress(
+                    progress_callback,
+                    phase="messages_written",
+                    message="Inserted converted rows into decrypted sms.db.",
+                    backup_path=backup_info.path,
+                    messages_parsed=result.total_messages_parsed,
+                    messages_converted=len(conversion.messages),
+                )
 
             _run_prepare_sync_for_result(
                 temp_sms_path,
@@ -540,6 +762,16 @@ def _run_encrypted_pipeline(
             with ManifestDB(temp_manifest_path) as manifest:
                 if include_attachments and export.has_attachments():
                     domain = manifest.detect_attachment_domain()
+                    attachments_processed = 0
+                    _emit_progress(
+                        progress_callback,
+                        phase="attachments_started",
+                        message="Copying attachment files into the encrypted backup.",
+                        backup_path=backup_info.path,
+                        attachments_total=result.total_attachments_expected,
+                        attachments_processed=0,
+                        attachments_copied=0,
+                    )
                     for msg in conversion.messages:
                         for att in msg.attachments:
                             file_size = _copy_message_attachment(
@@ -547,9 +779,19 @@ def _run_encrypted_pipeline(
                                 encrypted_backup=encrypted_backup,
                                 protection_class=sms_prot_class,
                             )
+                            attachments_processed += 1
                             if file_size > 0:
                                 attachment_sizes[att.guid] = file_size
                                 result.total_attachments_copied += 1
+                            _emit_progress(
+                                progress_callback,
+                                phase="attachment_processed",
+                                message=f"Processed attachment {attachments_processed}/{result.total_attachments_expected}.",
+                                backup_path=backup_info.path,
+                                attachments_total=result.total_attachments_expected,
+                                attachments_processed=attachments_processed,
+                                attachments_copied=result.total_attachments_copied,
+                            )
 
             # Step 10: Update attachment sizes in temp sms.db
             # (must happen before digest computation)
@@ -563,6 +805,15 @@ def _run_encrypted_pipeline(
                 sms_db_size = temp_sms_path.stat().st_size
                 sms_db_digest = hashlib.sha1(temp_sms_path.read_bytes()).digest()
                 manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
+            _emit_progress(
+                progress_callback,
+                phase="manifest_updated",
+                message="Updated decrypted Manifest.db metadata for sms.db and attachments.",
+                backup_path=backup_info.path,
+                attachments_total=result.total_attachments_expected,
+                attachments_processed=result.total_attachments_expected,
+                attachments_copied=result.total_attachments_copied,
+            )
 
             # Disable iCloud Messages sync if requested
             if disable_icloud_sync:
@@ -588,6 +839,16 @@ def _run_encrypted_pipeline(
                 )
             else:
                 logger.warning("Verification FAILED: %s", result.verification.errors)
+            _emit_progress(
+                progress_callback,
+                phase="verification_complete",
+                message="Backup verification completed on decrypted backup data.",
+                backup_path=backup_info.path,
+                verification_passed=result.verification.passed,
+                attachments_total=result.total_attachments_expected,
+                attachments_processed=result.total_attachments_expected,
+                attachments_copied=result.total_attachments_copied,
+            )
 
             # Step 12: Re-encrypt sms.db and write to backup
             logger.info("Re-encrypting sms.db...")
@@ -596,6 +857,12 @@ def _run_encrypted_pipeline(
                 temp_sms_bytes, sms_enc_key, sms_prot_class,
             )
             sms_db_on_disk.write_bytes(re_encrypted_sms)
+            _emit_progress(
+                progress_callback,
+                phase="reencrypted_sms_db",
+                message="Re-encrypted sms.db back into the backup.",
+                backup_path=backup_info.path,
+            )
 
             # Step 13: Before writing Manifest.db back, swap the sms.db digest to the
             # ciphertext hash iOS expects for encrypted backups.
@@ -607,6 +874,16 @@ def _run_encrypted_pipeline(
             # Step 14: Re-encrypt Manifest.db and write to backup
             logger.info("Re-encrypting Manifest.db...")
             encrypted_backup.re_encrypt_manifest_db(temp_manifest_path)
+            _emit_progress(
+                progress_callback,
+                phase="pipeline_complete",
+                message="Completed encrypted backup injection pipeline.",
+                backup_path=backup_info.path,
+                verification_passed=result.verification.passed if result.verification else None,
+                attachments_total=result.total_attachments_expected,
+                attachments_processed=result.total_attachments_expected,
+                attachments_copied=result.total_attachments_copied,
+            )
 
     finally:
         # Clean up temp files

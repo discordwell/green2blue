@@ -18,10 +18,12 @@ from .report import ArchiveReport, build_archive_report
 from .stage import IOSStageResult, stage_ios_export
 from .verify import ArchiveVerificationResult, verify_archive
 from .workflow import (
+    IOSWorkflowInjectionResult,
     IOSWorkflowPreparationResult,
     IOSWorkflowStatus,
     load_ios_workflow_status,
     prepare_ios_workflow,
+    run_ios_workflow_injection,
 )
 
 __all__ = [
@@ -35,6 +37,7 @@ __all__ = [
     "IOSStageResult",
     "IOSArchiveImportResult",
     "IOSRenderedTargetVerificationResult",
+    "IOSWorkflowInjectionResult",
     "IOSWorkflowPreparationResult",
     "IOSWorkflowStatus",
     "build_archive_report",
@@ -44,6 +47,7 @@ __all__ = [
     "load_ios_workflow_status",
     "merge_archive",
     "prepare_ios_workflow",
+    "run_ios_workflow_injection",
     "stage_ios_export",
     "verify_ios_render_target",
     "verify_archive",

@@ -90,4 +90,6 @@ Android-to-iPhone injector into a universal backup and merge tool.
 - Done: durable large-history workflow directories with resumable archive import, merge reuse, stage reuse, and persisted workflow state.
 - Done: streamed merged-export/stage generation so large histories no longer buffer the whole NDJSON payload in memory.
 - Done: workflow-status inspection for long-running or interrupted large-history runs.
-- Next: deeper scale work beyond workflow persistence, especially heavier full-history attachment processing and long-running inject ergonomics.
+- Done: durable workflow-backed iPhone injection with persisted inject/render-verify state.
+- Done: streamed unencrypted attachment copies in the backup hot path to avoid whole-file buffering.
+- Next: deeper scale work beyond workflow persistence, especially heavier full-history encrypted attachment processing and longer-running inject ergonomics on live device restore paths.

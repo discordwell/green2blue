@@ -505,10 +505,8 @@ def _step_confirm_and_merge(
     """Build a merged archive, show a report, then inject the merged result."""
     from green2blue.archive import (
         prepare_ios_workflow,
-        verify_ios_render_target,
+        run_ios_workflow_injection,
     )
-    from green2blue.models import CKStrategy, InjectionMode
-    from green2blue.pipeline import run_pipeline
 
     total = sms_count + mms_count
     encrypted = " (encrypted)" if backup_info.is_encrypted else ""
@@ -595,28 +593,14 @@ def _step_confirm_and_merge(
         print()
         return
     print("  Injecting merged messages...\n")
-    result = run_pipeline(
-        export_path=stage_result.output_zip,
-        backup_path_or_udid=str(backup_info.path),
-        country=country,
-        skip_duplicates=True,
-        include_attachments=True,
-        dry_run=False,
+    inject_result = run_ios_workflow_injection(
+        workflow_dir,
         password=password,
-        ck_strategy=CKStrategy.NONE,
-        service="SMS",
-        injection_mode=InjectionMode.INSERT,
-    )
-    render_verify_result = verify_ios_render_target(
-        stage_result.output_zip,
-        backup_info.path,
-        result,
         country=country,
-        skip_duplicates=True,
-        password=password,
-        ck_strategy=CKStrategy.NONE,
-        service="SMS",
     )
+    result = inject_result.pipeline_result
+    render_verify_result = inject_result.render_verification
+    assert render_verify_result is not None
 
     status = "PASSED" if render_verify_result.passed else "FAILED"
     print(

@@ -187,6 +187,7 @@ green2blue archive export-android <archive.sqlite> <merged.zip>
 green2blue archive stage-ios <archive.sqlite> <stage-dir>
 green2blue archive prepare-ios <zip> <backup> <workflow-dir>
 green2blue archive workflow-status <workflow-dir>
+green2blue archive run-ios <workflow-dir>
 green2blue archive inject-ios <archive.sqlite> --backup <path-or-udid>
 green2blue corpus capture <zip> <sample.zip>
 green2blue list-backups        List available iPhone backups
@@ -210,7 +211,7 @@ green2blue archive verify merged.g2b.sqlite
 green2blue archive stage-ios merged.g2b.sqlite .g2b_stages/<UDID>
 green2blue archive export-android merged.g2b.sqlite merged-export.zip
 green2blue archive prepare-ios android-export.zip <UDID> .g2b_workflows/<UDID>
-green2blue archive inject-ios merged.g2b.sqlite --backup <UDID>
+green2blue archive run-ios .g2b_workflows/<UDID>
 ```
 
 That archive is the intended merge pivot for the future "universal backup"
@@ -260,6 +261,10 @@ match.
 Use `green2blue archive workflow-status .g2b_workflows/<UDID>` to inspect the
 persisted workflow state, current step, and artifact paths after an interrupted
 or long-running run.
+
+`archive run-ios` is the durable execution half of that workflow. It reuses the
+prepared stage bundle, runs the actual backup mutation path, and persists inject
+and rendered-target verification state back into `workflow_state.json`.
 
 `archive inject-ios` now verifies the modified iPhone backup after render too,
 not just the staged ZIP before render. After a non-dry-run inject it checks the

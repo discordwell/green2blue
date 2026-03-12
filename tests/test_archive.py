@@ -10,6 +10,7 @@ from green2blue.archive import (
     ArchiveMergeResult,
     AndroidArchiveExportResult,
     IOSRenderedTargetVerificationResult,
+    IOSWorkflowInjectionResult,
     IOSWorkflowPreparationResult,
     IOSWorkflowStatus,
     ArchiveVerificationResult,
@@ -21,6 +22,7 @@ from green2blue.archive import (
     load_ios_workflow_status,
     merge_archive,
     prepare_ios_workflow,
+    run_ios_workflow_injection,
     stage_ios_export,
     verify_ios_render_target,
     verify_archive,
@@ -701,6 +703,30 @@ class TestArchiveWorkflow:
         assert status.current_step is None
         assert "android_import" in status.steps
         assert "stage" in status.steps
+
+    def test_run_ios_workflow_injection_persists_inject_and_render_verify(
+        self,
+        sample_export_zip,
+        sample_backup_dir,
+        tmp_dir,
+    ):
+        workflow_dir = tmp_dir / "workflow"
+        prepare_ios_workflow(
+            sample_export_zip,
+            sample_backup_dir,
+            workflow_dir,
+        )
+
+        result = run_ios_workflow_injection(workflow_dir)
+        status = load_ios_workflow_status(workflow_dir)
+
+        assert isinstance(result, IOSWorkflowInjectionResult)
+        assert result.render_verification is not None
+        assert status.status == "completed"
+        assert "inject" in status.steps
+        assert "render_verify" in status.steps
+        assert status.steps["inject"]["total_messages_parsed"] >= 1
+        assert status.steps["render_verify"]["passed"] is True
 
 
 class TestArchiveExport:

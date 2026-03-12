@@ -278,8 +278,7 @@ class TestWizardHappyPath:
             patch("builtins.input", side_effect=lambda _: next(inputs)),
             patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
             patch("green2blue.archive.prepare_ios_workflow") as mock_prepare_workflow,
-            patch("green2blue.archive.verify_ios_render_target") as mock_render_verify,
-            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+            patch("green2blue.archive.run_ios_workflow_injection") as mock_run_workflow,
         ):
             mock_prepare_workflow.return_value = MagicMock(
                 archive_path=tmp_dir / "workflow" / "merged.g2b.sqlite",
@@ -318,21 +317,22 @@ class TestWizardHappyPath:
             mock_result.total_attachments_copied = 0
             mock_result.verification = MagicMock(passed=True)
             mock_result.safety_copy_path = tmp_dir / "safety"
-            mock_pipeline.return_value = mock_result
-            mock_render_verify.return_value = MagicMock(
-                passed=True,
-                checks_passed=6,
-                checks_run=6,
-                warnings=(),
-                errors=(),
+            mock_run_workflow.return_value = MagicMock(
+                pipeline_result=mock_result,
+                render_verification=MagicMock(
+                    passed=True,
+                    checks_passed=6,
+                    checks_run=6,
+                    warnings=(),
+                    errors=(),
+                ),
             )
 
             ret = run_wizard()
 
         assert ret == 0
         mock_prepare_workflow.assert_called_once()
-        mock_render_verify.assert_called_once()
-        mock_pipeline.assert_called_once()
+        mock_run_workflow.assert_called_once()
 
     def test_wizard_live_device_restore_flow(self, tmp_dir):
         """Wizard can doctor, create rollback backup, and restore live device."""

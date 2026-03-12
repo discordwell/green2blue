@@ -22,6 +22,8 @@ from green2blue.ios.manifest import ManifestDB, compute_file_id
 
 logger = logging.getLogger(__name__)
 
+_COPY_CHUNK_SIZE = 1024 * 1024
+
 
 def copy_attachment_to_backup(
     source_path: Path,
@@ -79,10 +81,17 @@ def copy_attachment_to_backup(
             digest=digest,
         )
     else:
-        # Unencrypted path: read once for both digest and copy
-        content = source_path.read_bytes()
-        digest = hashlib.sha1(content).digest()
-        dest_path.write_bytes(content)
+        # Unencrypted path: stream the file so large histories do not load every
+        # attachment fully into memory before writing into the backup.
+        digest_hasher = hashlib.sha1()
+        with source_path.open("rb") as src, dest_path.open("wb") as dst:
+            while True:
+                chunk = src.read(_COPY_CHUNK_SIZE)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                digest_hasher.update(chunk)
+        digest = digest_hasher.digest()
         logger.debug("Copied attachment: %s -> %s", source_path.name, dest_path)
 
         # Register in Manifest.db

@@ -1054,3 +1054,34 @@ class TestOverwritePipeline:
         modified_plist = plistlib.loads(modified_data)
         assert modified_plist["CloudKitSyncingEnabled"] is False
         assert modified_plist["OtherSetting"] == 42
+
+
+class TestPipelineProgress:
+    def test_run_pipeline_emits_progress_events(self, tmp_dir):
+        backup_dir = _create_full_backup(tmp_dir)
+        zip_path = _create_export_zip(
+            tmp_dir,
+            records=[SAMPLE_MMS],
+            attachment_data={"data/parts/image_001.jpg": b"\xff\xd8\xff\xe0" + b"x" * 32},
+        )
+        phases: list[str] = []
+        attachment_counts: list[tuple[int | None, int | None]] = []
+
+        def _capture(event):
+            phases.append(event.phase)
+            attachment_counts.append((event.attachments_processed, event.attachments_copied))
+
+        result = run_pipeline(
+            export_path=zip_path,
+            backup_path_or_udid=str(backup_dir),
+            progress_callback=_capture,
+        )
+
+        assert result.verification is not None
+        assert result.verification.passed
+        assert phases[0] == "backup_found"
+        assert "converted" in phases
+        assert "messages_written" in phases
+        assert "verification_complete" in phases
+        assert phases[-1] == "pipeline_complete"
+        assert any(processed is not None for processed, _copied in attachment_counts)
