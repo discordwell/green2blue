@@ -275,10 +275,20 @@
 - String length field encodes UTF-8 byte count; iI fields encode (run_count, UTF-16_code_units)
 - NSString.length = UTF-16 code units (BMP chars = 1, astral/emoji = 2 per surrogate pair)
 - Two variants in real data: NSAttributedString (compact, 177+ bytes) and NSMutableAttributedString (+48 bytes overhead)
-- Complex messages (URLs, dates, money, phone numbers) have extra attribute runs with DDScannerResult NSData blobs — iOS regenerates these via data detection after restore, so simple form is correct
+- Attachment-bearing messages need multipart attributedBody with explicit `__kIMFileTransferGUIDAttributeName` runs; otherwise Messages may show "Attachment: 1 photo" without rendering inline media
+- URL-bearing SMS do not become clickable from the simple single-run form after restore
+- Wet test result: clickable restored URLs require a mutable attributed-body variant carrying `__kIMLinkAttributeName` over the URL range, plus `message.has_dd_results = 1`
+- Wet test result: `__kIMDataDetectedAttributeName` is not required for clickable links; `LINK1` and `REALCLONE` worked without needing a synthetic DD blob, while `FLAG1` proved that `has_dd_results = 1` alone is insufficient
 - Cache indices shift between variants: non-mutable uses 0x94/0x96/0x99 for NSObject/'+'/i refs; mutable uses 0x95/0x98/0x9b
 - Schema detection: `attributedBody in self._msg_schema` ensures older iOS versions unaffected
 - The 868686 trailer = three nested end-of-object markers (NSDictionary, attribute run, NSAttributedString)
+
+## Wet-test probe rules (proven on the iPhone 12 test device)
+- For wet-test probes, make new test messages unread and timestamp them at "now" so they sort to the top of Messages
+- Do not bury new probes back in 2023-era threads; front-of-list placement makes pass/fail much easier to read on-device
+- Freshly generated external/synthetic images are valid test assets; they do not need to come from an existing iPhone backup to render, as long as the restored message/attachment metadata shape is correct
+- When testing restores with modified `sms.db`, erase the test phone first, do minimal local setup to the home screen, keep `Find My iPhone` off, then restore once from the prepared image
+- `idevicebackup2 restore` may occasionally fail the first MobileBackup2 protocol exchange with `Could not perform backup protocol version exchange, error code -1`; on this device an immediate retry from the unchanged prepared image often succeeds
 
 ## CloudKit sync test in progress
 - 6 test messages injected into main backup (00008101-000E60C43C40001E) with password `glorious1`
