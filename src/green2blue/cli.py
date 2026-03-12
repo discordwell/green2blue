@@ -7,6 +7,7 @@ import json
 import logging
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -481,6 +482,132 @@ def _build_parser() -> argparse.ArgumentParser:
     archive_merge.add_argument("-v", "--verbose", action="store_true")
     archive_merge.add_argument("-q", "--quiet", action="store_true")
     archive_merge.set_defaults(func=_cmd_archive_merge)
+
+    archive_export_android = archive_subs.add_parser(
+        "export-android",
+        help="Export the merged archive view as an Android-style ZIP for reuse by the iOS injector",
+    )
+    archive_export_android.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_export_android.add_argument("output_zip", type=Path, help="Output Android-style ZIP path")
+    archive_export_android.add_argument(
+        "--merge-run",
+        type=int,
+        default=None,
+        help="Specific merge run ID to export (defaults to latest, auto-merge if none exists)",
+    )
+    archive_export_android.add_argument(
+        "--country",
+        type=str,
+        default="US",
+        help="Default country code used if a merge needs to be materialized (default: US)",
+    )
+    archive_export_android.add_argument("-v", "--verbose", action="store_true")
+    archive_export_android.add_argument("-q", "--quiet", action="store_true")
+    archive_export_android.set_defaults(func=_cmd_archive_export_android)
+
+    archive_inject_ios = archive_subs.add_parser(
+        "inject-ios",
+        help="Export the merged archive view and inject it into an iPhone backup using the proven pipeline",
+    )
+    archive_inject_ios.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_inject_ios.add_argument(
+        "--merge-run",
+        type=int,
+        default=None,
+        help="Specific merge run ID to export (defaults to latest, auto-merge if none exists)",
+    )
+    archive_inject_ios.add_argument(
+        "--backup",
+        type=str,
+        default=None,
+        help="iPhone backup path or UDID (auto-detect if omitted)",
+    )
+    archive_inject_ios.add_argument(
+        "--backup-root",
+        type=Path,
+        default=None,
+        help="Override the default backup directory",
+    )
+    archive_inject_ios.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Backup encryption password",
+    )
+    archive_inject_ios.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Export and parse without modifying the backup",
+    )
+    archive_inject_ios.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt",
+    )
+    archive_inject_ios.add_argument(
+        "--country",
+        type=str,
+        default="US",
+        help="Default country code for merge/export normalization (default: US)",
+    )
+    archive_inject_ios.add_argument(
+        "--ck-strategy",
+        type=str,
+        choices=["none", "fake-synced", "pending-upload", "icloud-reset"],
+        default="none",
+        help="CloudKit metadata strategy for iCloud Messages sync survival (default: none)",
+    )
+    archive_inject_ios.add_argument(
+        "--mode",
+        type=str,
+        choices=["insert", "overwrite", "clone"],
+        default="insert",
+        help="Injection mode: insert new rows, overwrite sacrifice messages, or clone existing",
+    )
+    archive_inject_ios.add_argument(
+        "--sacrifice-chat",
+        type=int,
+        action="append",
+        default=None,
+        dest="sacrifice_chats",
+        help="Chat ROWID to sacrifice (repeatable, required for --mode overwrite)",
+    )
+    archive_inject_ios.add_argument(
+        "--service",
+        type=str,
+        choices=["SMS", "iMessage"],
+        default="SMS",
+        help="Message service type: SMS or iMessage (default: SMS)",
+    )
+    archive_inject_ios.add_argument(
+        "--disable-icloud-sync",
+        action="store_true",
+        default=False,
+        help="Set CloudKitSyncingEnabled=False in backup",
+    )
+    archive_inject_ios.add_argument(
+        "--no-attachments",
+        action="store_true",
+        default=False,
+        help="Skip copying MMS attachment files",
+    )
+    archive_inject_ios.add_argument(
+        "--skip-duplicates",
+        action="store_true",
+        default=True,
+        help="Skip duplicate messages (default: on)",
+    )
+    archive_inject_ios.add_argument(
+        "--no-skip-duplicates",
+        action="store_false",
+        dest="skip_duplicates",
+        help="Do not skip duplicate messages",
+    )
+    archive_inject_ios.add_argument("-v", "--verbose", action="store_true")
+    archive_inject_ios.add_argument("-q", "--quiet", action="store_true")
+    archive_inject_ios.set_defaults(func=_cmd_archive_inject_ios)
 
     # --- corpus (privacy-safe sample capture) ---
     corpus_parser = subparsers.add_parser(
@@ -1147,6 +1274,116 @@ def _cmd_archive_merge(args: argparse.Namespace) -> int:
     print(f"  Merged messages:       {result.merged_messages}")
     print(f"  Duplicate messages:    {result.duplicate_messages}")
     return 0
+
+
+def _cmd_archive_export_android(args: argparse.Namespace) -> int:
+    """Export the merged archive view as an Android-style ZIP."""
+    from green2blue.archive import export_merged_android_zip
+
+    result = export_merged_android_zip(
+        args.archive_path,
+        args.output_zip,
+        merge_run_id=args.merge_run,
+        country=args.country,
+    )
+    print(f"Archive: {result.archive_path}")
+    print(f"  Output ZIP:             {result.output_zip}")
+    print(f"  Merge run ID:           {result.merge_run_id}")
+    print(f"  Records written:        {result.records_written}")
+    print(f"  Attachment files:       {result.attachment_files_written}")
+    print(f"  Attachments missing:    {result.attachments_missing_data}")
+    return 0
+
+
+def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
+    """Export the merged archive view and inject it into an iPhone backup."""
+    from green2blue.archive import export_merged_android_zip
+    from green2blue.ios.backup import find_backup
+    from green2blue.models import CKStrategy, InjectionMode
+    from green2blue.pipeline import run_pipeline
+
+    injection_mode = InjectionMode(args.mode)
+    if injection_mode == InjectionMode.OVERWRITE and not args.sacrifice_chats:
+        print("Error: --mode overwrite requires at least one --sacrifice-chat", file=sys.stderr)
+        return 1
+
+    backup_info = find_backup(args.backup, args.backup_root)
+
+    skip_prompt = args.backup or args.yes or not sys.stdin.isatty()
+    if not skip_prompt:
+        confirmed_path = _confirm_backup(backup_info, args.backup_root)
+        if confirmed_path is None:
+            print("Aborted.", file=sys.stderr)
+            return 1
+        if confirmed_path != backup_info.path:
+            backup_info = find_backup(str(confirmed_path), args.backup_root)
+
+    ck_strategy = CKStrategy(args.ck_strategy)
+
+    with tempfile.TemporaryDirectory(prefix="g2b_archive_inject_") as tmpdir:
+        export_zip = Path(tmpdir) / "merged_export.zip"
+        export_result = export_merged_android_zip(
+            args.archive_path,
+            export_zip,
+            merge_run_id=args.merge_run,
+            country=args.country,
+        )
+        print(f"Exported merged archive to: {export_result.output_zip}")
+
+        result = run_pipeline(
+            export_path=export_zip,
+            backup_path_or_udid=str(backup_info.path),
+            backup_root=args.backup_root,
+            country=args.country,
+            skip_duplicates=args.skip_duplicates,
+            include_attachments=not args.no_attachments,
+            dry_run=args.dry_run,
+            password=args.password,
+            ck_strategy=ck_strategy,
+            service=args.service,
+            injection_mode=injection_mode,
+            sacrifice_chats=args.sacrifice_chats,
+            disable_icloud_sync=args.disable_icloud_sync,
+        )
+
+    cl_stats = result.clone_stats
+    ow_stats = result.overwrite_stats
+    stats = result.injection_stats
+    if cl_stats:
+        print("\n--- Clone Summary (Merged Archive) ---")
+        print(f"Messages parsed:      {result.total_messages_parsed}")
+        print(f"Messages cloned:      {cl_stats.messages_cloned}")
+        print(f"Clone source ROWID:   {cl_stats.clone_source_rowid}")
+        print(f"CK metadata duped:    {'yes' if cl_stats.ck_metadata_duplicated else 'no'}")
+    elif ow_stats:
+        print("\n--- Overwrite Summary (Merged Archive) ---")
+        print(f"Messages parsed:      {result.total_messages_parsed}")
+        print(f"Messages overwritten: {ow_stats.messages_overwritten}")
+        print(f"Messages skipped:     {ow_stats.messages_skipped + result.skipped_count}")
+    elif stats:
+        print("\n--- Injection Summary (Merged Archive) ---")
+        print(f"Messages parsed:   {result.total_messages_parsed}")
+        print(f"Messages injected: {stats.messages_inserted}")
+        print(f"Messages skipped:  {stats.messages_skipped + result.skipped_count}")
+
+    if result.safety_copy_path:
+        print(f"\nSafety copy:       {result.safety_copy_path}")
+
+    if result.verification:
+        v = result.verification
+        status = "PASSED" if v.passed else "FAILED"
+        print(f"\nVerification:      {status} ({v.checks_passed}/{v.checks_run} checks)")
+        for err in v.errors:
+            print(f"  ERROR: {err}")
+        for warn in v.warnings:
+            print(f"  WARNING: {warn}")
+
+    if result.conversion_warnings:
+        print(f"\nWarnings ({len(result.conversion_warnings)}):")
+        for w in result.conversion_warnings[:10]:
+            print(f"  - {w}")
+
+    return 0 if not result.verification or result.verification.passed else 2
 
 
 def _cmd_corpus_capture(args: argparse.Namespace) -> int:

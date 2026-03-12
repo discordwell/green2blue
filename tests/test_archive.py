@@ -8,8 +8,10 @@ from pathlib import Path
 
 from green2blue.archive import (
     ArchiveMergeResult,
+    AndroidArchiveExportResult,
     CanonicalArchive,
     build_archive_report,
+    export_merged_android_zip,
     import_android_export,
     import_ios_backup,
     merge_archive,
@@ -17,6 +19,9 @@ from green2blue.archive import (
 from green2blue.converter.timestamp import unix_ms_to_ios_ns
 from green2blue.ios.manifest import compute_file_id
 from green2blue.models import ATTACHMENT_PLACEHOLDER
+from green2blue.parser.ndjson_parser import count_messages
+from green2blue.parser.zip_reader import open_export_zip
+from green2blue.pipeline import run_pipeline
 
 
 class TestAndroidArchiveImport:
@@ -277,6 +282,75 @@ class TestArchiveMerge:
         assert report.latest_merge["duplicate_messages"] == 1
         assert not any("cross-source merge" in warning for warning in report.warnings)
 
+    def test_merge_groups_subset_participant_sets_when_titles_match(self, tmp_dir):
+        archive_path = tmp_dir / "group_merge.g2b.sqlite"
+
+        with CanonicalArchive(archive_path) as archive:
+            android_run = archive.start_import("android-export", "/tmp/android.zip")
+            ios_run = archive.start_import("ios-backup", "/tmp/ios-backup")
+
+            pa = archive.get_or_create_participant("+12025550111", "phone")
+            pb = archive.get_or_create_participant("+12025550112", "phone")
+            pc = archive.get_or_create_participant("+12025550113", "phone")
+
+            android_conv = archive.get_or_create_conversation(
+                "android:mms:thread:1",
+                kind="group",
+                source_thread_id="1",
+                title="Weekend Plans",
+            )
+            for sort_order, participant_id in enumerate((pa, pb, pc)):
+                archive.link_conversation_participant(
+                    android_conv, participant_id, role="member", sort_order=sort_order,
+                )
+            ios_conv = archive.get_or_create_conversation(
+                "ios:chat:any;+;chat123",
+                kind="group",
+                source_thread_id="9",
+                title="Weekend Plans",
+            )
+            for sort_order, participant_id in enumerate((pa, pb)):
+                archive.link_conversation_participant(
+                    ios_conv, participant_id, role="member", sort_order=sort_order,
+                )
+
+            archive.insert_message(
+                source_uid="android:group-1",
+                source_type="android.mms",
+                import_run_id=android_run,
+                conversation_id=android_conv,
+                direction="incoming",
+                sent_at_ms=1_700_000_100_000,
+                read_state="read",
+                service_hint="MMS",
+                subject="Weekend Plans",
+                body_text="Saturday works",
+                has_attachments=False,
+                has_url=False,
+                raw_json='{"thread_id":1}',
+            )
+            archive.insert_message(
+                source_uid="ios:group-1",
+                source_type="ios.message",
+                import_run_id=ios_run,
+                conversation_id=ios_conv,
+                direction="incoming",
+                sent_at_ms=1_700_000_200_000,
+                read_state="read",
+                service_hint="SMS",
+                subject="Weekend Plans",
+                body_text="See you there",
+                has_attachments=False,
+                has_url=False,
+                raw_json='{"handle_address":"+12025550111"}',
+            )
+            archive.finish_import(android_run, 1, 0)
+            archive.finish_import(ios_run, 1, 0)
+            archive.conn.commit()
+
+        result = merge_archive(archive_path)
+        assert result.merged_conversations == 1
+
 
 class TestArchiveWarnings:
     def test_report_warns_on_unsupported_feature_markers(self, tmp_dir):
@@ -324,3 +398,51 @@ class TestArchiveWarnings:
         assert any("replies or reactions" in warning for warning in report.warnings)
         assert any("edited messages" in warning for warning in report.warnings)
         assert any("rich app/message effects" in warning for warning in report.warnings)
+
+
+class TestArchiveExport:
+    def test_export_merged_android_zip_round_trips_into_pipeline_dry_run(
+        self,
+        sample_backup_dir,
+        tmp_dir,
+    ):
+        _populate_ios_backup(sample_backup_dir)
+        android_zip = _create_matching_android_export(tmp_dir)
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+        export_zip = tmp_dir / "merged_export.zip"
+
+        import_android_export(android_zip, archive_path)
+        import_ios_backup(sample_backup_dir, archive_path)
+        merge_archive(archive_path)
+
+        result = export_merged_android_zip(archive_path, export_zip)
+
+        assert isinstance(result, AndroidArchiveExportResult)
+        assert result.records_written == 2
+        assert result.attachment_files_written == 1
+        assert result.attachments_missing_data == 0
+
+        with open_export_zip(export_zip) as export:
+            counts = count_messages(export.ndjson_path)
+            assert counts["total"] == 2
+            assert counts["sms"] == 1
+            assert counts["mms"] == 1
+            assert export.has_attachments()
+
+        pipeline_result = run_pipeline(
+            export_path=export_zip,
+            backup_path_or_udid=str(sample_backup_dir),
+            dry_run=True,
+        )
+        assert pipeline_result.total_messages_parsed == 2
+
+    def test_export_auto_merges_when_no_merge_run_exists(self, sample_backup_dir, tmp_dir):
+        _populate_ios_backup(sample_backup_dir)
+        archive_path = tmp_dir / "archive.g2b.sqlite"
+        export_zip = tmp_dir / "auto_merge.zip"
+
+        import_ios_backup(sample_backup_dir, archive_path)
+        result = export_merged_android_zip(archive_path, export_zip)
+
+        assert result.merge_run_id >= 1
+        assert export_zip.exists()

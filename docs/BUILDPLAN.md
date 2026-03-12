@@ -77,4 +77,6 @@ Android-to-iPhone injector into a universal backup and merge tool.
 - Done: Android export import into the canonical archive.
 - Done: iPhone backup import into the canonical archive.
 - Done: archive-aware reporting and first-pass cross-source merge materialization.
+- Done: merged archive export back into the proven Android ZIP contract.
+- Done: direct merged-archive -> iPhone inject command on top of the existing pipeline.
 - Next: better identity resolution, richer unsupported-feature warnings, and wizard orchestration.

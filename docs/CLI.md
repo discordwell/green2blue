@@ -69,6 +69,8 @@ Canonical archive workflows for future merge and re-render support.
 | `archive inspect <archive.sqlite>` | Inspect a canonical archive |
 | `archive merge <archive.sqlite>` | Materialize a merged cross-source view inside the archive |
 | `archive report <archive.sqlite>` | Generate a migration-oriented archive report |
+| `archive export-android <archive.sqlite> <output.zip>` | Export the merged archive view as an Android-style ZIP |
+| `archive inject-ios <archive.sqlite>` | Export the merged view and inject it into an iPhone backup |
 
 #### `green2blue archive import-ios <backup> <archive.sqlite>`
 
@@ -151,6 +153,8 @@ green2blue archive import-ios /path/to/iphone-backup merged.g2b.sqlite
 green2blue archive merge merged.g2b.sqlite
 green2blue archive inspect merged.g2b.sqlite
 green2blue archive report merged.g2b.sqlite
+green2blue archive export-android merged.g2b.sqlite merged-export.zip
+green2blue archive inject-ios merged.g2b.sqlite --backup <UDID>
 ```
 
 You can also pass a backup UDID to `archive import-ios` instead of a full path

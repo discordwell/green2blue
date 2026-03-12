@@ -172,6 +172,8 @@ green2blue archive import-ios <backup> <archive.sqlite>
 green2blue archive inspect <archive.sqlite>
 green2blue archive merge <archive.sqlite>
 green2blue archive report <archive.sqlite>
+green2blue archive export-android <archive.sqlite> <merged.zip>
+green2blue archive inject-ios <archive.sqlite> --backup <path-or-udid>
 green2blue corpus capture <zip> <sample.zip>
 green2blue list-backups        List available iPhone backups
 green2blue inspect <zip>       Show export contents
@@ -190,11 +192,16 @@ green2blue archive import-ios ~/Library/Application\\ Support/MobileSync/Backup/
 green2blue archive merge merged.g2b.sqlite
 green2blue archive inspect merged.g2b.sqlite
 green2blue archive report merged.g2b.sqlite
+green2blue archive export-android merged.g2b.sqlite merged-export.zip
+green2blue archive inject-ios merged.g2b.sqlite --backup <UDID>
 ```
 
 That archive is the intended merge pivot for the future "universal backup"
 workflow. The new `archive merge` command materializes the first merged view
-inside the archive using participant normalization and duplicate suppression.
+inside the archive using participant normalization, group-chat heuristics, and
+duplicate suppression. `archive export-android` turns that merged view back
+into the existing Android ZIP contract, and `archive inject-ios` uses that
+adapter to feed the proven iPhone injection pipeline directly.
 
 ### Privacy-Safe Corpus Capture
 

@@ -40,6 +40,7 @@ def merge_archive(
         conversations = _load_conversations(conn, participants)
         attachments = _load_attachment_signatures(conn)
         messages = _load_messages(conn)
+        merged_keys = _assign_merged_keys(conversations)
 
         merge_run_id = archive.start_merge_run(strategy, country.upper())
 
@@ -47,7 +48,7 @@ def merge_archive(
         merged_conversation_messages: dict[str, list[dict[str, object]]] = defaultdict(list)
 
         for conversation in conversations.values():
-            merged_key = _merged_conversation_key(conversation)
+            merged_key = merged_keys[int(conversation["id"])]
             merged_id = archive.get_or_create_merged_conversation(
                 merge_run_id,
                 merge_key=merged_key,
@@ -65,7 +66,7 @@ def merge_archive(
 
         for message in messages:
             conversation = conversations[message["conversation_id"]]
-            merged_key = _merged_conversation_key(conversation)
+            merged_key = merged_keys[int(conversation["id"])]
             merged_conversation_messages[merged_key].append({
                 **message,
                 "attachment_signature": attachments.get(message["id"], ()),
@@ -169,6 +170,7 @@ def _load_conversations(conn, participants) -> dict[int, dict[str, object]]:
             "conversation_key": row["conversation_key"],
             "kind": row["kind"],
             "title": row["title"],
+            "normalized_title": _normalize_title(row["title"]),
             "participant_ids": participant_ids,
             "identity_keys": tuple(identity_keys),
         }
@@ -224,11 +226,104 @@ def _load_attachment_signatures(conn) -> dict[int, tuple[tuple[str, str, str, st
     return {key: tuple(value) for key, value in signatures.items()}
 
 
-def _merged_conversation_key(conversation: dict[str, object]) -> str:
+def _assign_merged_keys(conversations: dict[int, dict[str, object]]) -> dict[int, str]:
+    direct_keys: dict[int, str] = {}
+    group_keys: dict[int, str] = {}
+
+    for conversation in conversations.values():
+        identity_keys = tuple(conversation["identity_keys"])
+        if conversation["kind"] == "direct":
+            if identity_keys:
+                direct_keys[int(conversation["id"])] = f"direct:{identity_keys[0]}"
+            elif conversation["normalized_title"]:
+                direct_keys[int(conversation["id"])] = f"direct:title:{conversation['normalized_title']}"
+            else:
+                direct_keys[int(conversation["id"])] = f"direct:{conversation['conversation_key']}"
+
+    group_conversations = sorted(
+        (conversation for conversation in conversations.values() if conversation["kind"] != "direct"),
+        key=lambda conversation: (
+            -len(conversation["identity_keys"]),
+            conversation["normalized_title"],
+            int(conversation["id"]),
+        ),
+    )
+    clusters: list[dict[str, object]] = []
+    for conversation in group_conversations:
+        match = _best_group_cluster_match(conversation, clusters)
+        if match is None:
+            key = _new_group_cluster_key(conversation)
+            clusters.append({
+                "merge_key": key,
+                "identity_keys": set(conversation["identity_keys"]),
+                "normalized_title": conversation["normalized_title"],
+            })
+            group_keys[int(conversation["id"])] = key
+            continue
+
+        group_keys[int(conversation["id"])] = str(match["merge_key"])
+        match["identity_keys"].update(conversation["identity_keys"])
+        if not match["normalized_title"] and conversation["normalized_title"]:
+            match["normalized_title"] = conversation["normalized_title"]
+
+    return direct_keys | group_keys
+
+
+def _best_group_cluster_match(
+    conversation: dict[str, object],
+    clusters: list[dict[str, object]],
+) -> dict[str, object] | None:
+    best: tuple[tuple[int, int, int], dict[str, object]] | None = None
+    for cluster in clusters:
+        score = _group_match_score(conversation, cluster)
+        if score is None:
+            continue
+        if best is None or score > best[0]:
+            best = (score, cluster)
+    return None if best is None else best[1]
+
+
+def _group_match_score(
+    conversation: dict[str, object],
+    cluster: dict[str, object],
+) -> tuple[int, int, int] | None:
+    identities = set(conversation["identity_keys"])
+    cluster_identities = set(cluster["identity_keys"])
+    if not identities:
+        if conversation["normalized_title"] and conversation["normalized_title"] == cluster["normalized_title"]:
+            return (1, 0, 0)
+        return None
+
+    intersection = identities & cluster_identities
+    if not intersection:
+        return None
+
+    overlap = len(intersection)
+    size_diff = abs(len(identities) - len(cluster_identities))
+    title_match = (
+        bool(conversation["normalized_title"])
+        and conversation["normalized_title"] == cluster["normalized_title"]
+    )
+    is_subsetish = identities <= cluster_identities or cluster_identities <= identities
+    jaccard_numerator = overlap
+    jaccard_denominator = len(identities | cluster_identities)
+
+    if identities == cluster_identities:
+        return (3, overlap, -size_diff)
+    if is_subsetish and size_diff <= 1 and overlap >= max(2, min(len(identities), len(cluster_identities)) - 1):
+        return (2 + int(title_match), overlap, -size_diff)
+    if title_match and jaccard_numerator * 2 >= jaccard_denominator and overlap >= 2:
+        return (2, overlap, -size_diff)
+    return None
+
+
+def _new_group_cluster_key(conversation: dict[str, object]) -> str:
     identity_keys = conversation["identity_keys"]
     if identity_keys:
-        return f"{conversation['kind']}:{'|'.join(identity_keys)}"
-    return f"{conversation['kind']}:{conversation['conversation_key']}"
+        return f"group:{'|'.join(identity_keys)}"
+    if conversation["normalized_title"]:
+        return f"group:title:{conversation['normalized_title']}"
+    return f"group:{conversation['conversation_key']}"
 
 
 def _normalize_identity(address: str, kind: str, country: str) -> str:
@@ -260,6 +355,12 @@ def _normalize_body(body_text: object) -> str:
     if body_text is None:
         return ""
     return _WS_RE.sub(" ", str(body_text).strip())
+
+
+def _normalize_title(title: object) -> str:
+    if title is None:
+        return ""
+    return _WS_RE.sub(" ", str(title).strip().lower())
 
 
 def _message_rank(message: dict[str, object]) -> tuple[int, int, int]:

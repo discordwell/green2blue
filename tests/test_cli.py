@@ -583,6 +583,53 @@ class TestArchiveCommands:
         assert "Merge run ID:" in captured.out
         assert "Duplicate messages:" in captured.out
 
+    def test_archive_export_android_creates_zip(self, tmp_dir):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        _populate_backup_with_messages(backup_dir)
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+        output_zip = tmp_dir / "merged_export.zip"
+
+        main([
+            "archive", "import-ios",
+            str(backup_dir),
+            str(archive_path),
+        ])
+
+        ret = main([
+            "archive", "export-android",
+            str(archive_path),
+            str(output_zip),
+        ])
+
+        assert ret == 0
+        assert output_zip.exists()
+
+    def test_archive_inject_ios_dry_run_uses_merged_archive(self, tmp_dir):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        _populate_backup_with_messages(backup_dir)
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+
+        ret = main([
+            "archive", "import-ios",
+            str(backup_dir),
+            str(archive_path),
+        ])
+        assert ret == 0
+
+        ret = main([
+            "archive", "inject-ios",
+            str(archive_path),
+            "--backup", str(backup_dir),
+            "--dry-run",
+            "--yes",
+        ])
+
+        assert ret == 0
+
 
 class TestCorpusCommands:
     def test_corpus_capture_creates_zip(self, sample_export_zip, tmp_dir):
