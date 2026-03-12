@@ -420,6 +420,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     archive_import_android.add_argument("export_zip", type=Path, help="Path to the Android export ZIP")
     archive_import_android.add_argument("output", type=Path, help="Output archive SQLite path")
+    archive_import_android.add_argument(
+        "--no-resume",
+        action="store_false",
+        dest="resume",
+        default=True,
+        help="Always create a new import run even if this exact source was already imported",
+    )
     archive_import_android.add_argument("-v", "--verbose", action="store_true")
     archive_import_android.add_argument("-q", "--quiet", action="store_true")
     archive_import_android.set_defaults(func=_cmd_archive_import_android)
@@ -445,6 +452,13 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Backup encryption password",
+    )
+    archive_import_ios.add_argument(
+        "--no-resume",
+        action="store_false",
+        dest="resume",
+        default=True,
+        help="Always create a new import run even if this exact backup state was already imported",
     )
     archive_import_ios.add_argument("-v", "--verbose", action="store_true")
     archive_import_ios.add_argument("-q", "--quiet", action="store_true")
@@ -1160,9 +1174,10 @@ def _cmd_archive_import_android(args: argparse.Namespace) -> int:
     """Import an Android export into a canonical archive."""
     from green2blue.archive import import_android_export
 
-    result = import_android_export(args.export_zip, args.output)
+    result = import_android_export(args.export_zip, args.output, resume=args.resume)
     print(f"Archive: {result.archive_path}")
     print(f"  Import run ID:        {result.import_run_id}")
+    print(f"  Reused existing:      {'yes' if result.reused_existing else 'no'}")
     print(f"  Messages imported:    {result.messages_imported}")
     print(f"  Messages deduped:     {result.messages_deduped}")
     print(f"  Conversations touched:{result.conversations_touched}")
@@ -1181,11 +1196,13 @@ def _cmd_archive_import_ios(args: argparse.Namespace) -> int:
         args.output,
         backup_root=args.backup_root,
         password=args.password,
+        resume=args.resume,
     )
     print(f"Archive: {result.archive_path}")
     print(f"  Backup UDID:          {result.backup_udid}")
     print(f"  Backup path:          {result.backup_path}")
     print(f"  Import run ID:        {result.import_run_id}")
+    print(f"  Reused existing:      {'yes' if result.reused_existing else 'no'}")
     print(f"  Messages imported:    {result.messages_imported}")
     print(f"  Messages deduped:     {result.messages_deduped}")
     print(f"  Conversations touched:{result.conversations_touched}")
@@ -1225,7 +1242,19 @@ def _cmd_archive_report(args: argparse.Namespace) -> int:
     print(f"  Messages:                {report.summary.messages}")
     print(f"  Messages with media:     {report.messages_with_attachments}")
     print(f"  Messages with URLs:      {report.messages_with_url}")
+    print(f"  Attachment stubs:        {report.missing_attachment_blobs}")
     print(f"  Merge runs:              {report.merge_runs}")
+
+    if report.import_run_summaries:
+        print("\nImport runs:")
+        for run in report.import_run_summaries:
+            print(
+                f"  #{run['id']} {run['source_type']} "
+                f"[{run['status']}] messages={run['message_count']} "
+                f"attachments={run['attachment_count']}"
+            )
+            if run["source_path"]:
+                print(f"     {run['source_path']}")
 
     print("\nMessage sources:")
     for key, value in sorted(report.source_type_counts.items()):
@@ -1254,6 +1283,14 @@ def _cmd_archive_report(args: argparse.Namespace) -> int:
         print(f"  Merged conversations:{report.latest_merge['merged_conversations']}")
         print(f"  Merged messages:     {report.latest_merge['merged_messages']}")
         print(f"  Duplicate messages:  {report.latest_merge['duplicate_messages']}")
+        if report.latest_merge_winner_source_counts:
+            print("  Winner sources:")
+            for key, value in sorted(report.latest_merge_winner_source_counts.items()):
+                print(f"    {key}: {value}")
+
+    print("\nUnsupported / downgraded feature markers:")
+    for key, value in sorted(report.unsupported_feature_counts.items()):
+        print(f"  {key}: {value}")
 
     if report.warnings:
         print("\nWarnings:")

@@ -34,12 +34,11 @@ def export_merged_android_zip(
 ) -> AndroidArchiveExportResult:
     archive_path = Path(archive_path)
     output_zip = Path(output_zip)
+    resolved_merge_run_id = _resolve_merge_run_id(archive_path, merge_run_id, country)
 
     with CanonicalArchive(archive_path) as archive:
         conn = archive.conn
         assert conn is not None
-
-        resolved_merge_run_id = _resolve_merge_run_id(archive_path, conn, merge_run_id, country)
         participants = _load_merged_participants(conn, resolved_merge_run_id)
         attachments = _load_message_parts(conn, resolved_merge_run_id)
         messages = _load_merged_winners(conn, resolved_merge_run_id, mode=mode)
@@ -84,16 +83,18 @@ def export_merged_android_zip(
 
 def _resolve_merge_run_id(
     archive_path: Path,
-    conn: sqlite3.Connection,
     merge_run_id: int | None,
     country: str,
 ) -> int:
     if merge_run_id is not None:
         return merge_run_id
 
-    row = conn.execute("SELECT id FROM merge_runs ORDER BY id DESC LIMIT 1").fetchone()
-    if row is not None:
-        return int(row["id"])
+    with CanonicalArchive(archive_path) as archive:
+        conn = archive.conn
+        assert conn is not None
+        row = conn.execute("SELECT id FROM merge_runs ORDER BY id DESC LIMIT 1").fetchone()
+        if row is not None:
+            return int(row["id"])
 
     result = merge_archive(archive_path, country=country)
     return result.merge_run_id

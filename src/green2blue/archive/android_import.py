@@ -16,6 +16,7 @@ from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
 class AndroidArchiveImportResult:
     archive_path: Path
     import_run_id: int
+    reused_existing: bool
     messages_imported: int
     messages_deduped: int
     conversations_touched: int
@@ -27,11 +28,40 @@ class AndroidArchiveImportResult:
 def import_android_export(
     export_zip: Path | str,
     archive_path: Path | str,
+    *,
+    resume: bool = True,
 ) -> AndroidArchiveImportResult:
     archive_path = Path(archive_path)
+    export_path = Path(export_zip)
+    source_fingerprint = _fingerprint_path(export_path)
 
-    with open_export_zip(export_zip) as export, CanonicalArchive(archive_path) as archive:
-        import_run_id = archive.start_import("android-export", str(Path(export_zip)))
+    with CanonicalArchive(archive_path) as archive:
+        source_path_text = str(export_path)
+        if resume:
+            existing = archive.find_completed_import_run(
+                source_type="android-export",
+                source_path=source_path_text,
+                source_fingerprint=source_fingerprint,
+            )
+            if existing is not None:
+                summary = archive.summarize_import_run(int(existing["id"]))
+                return AndroidArchiveImportResult(
+                    archive_path=archive_path,
+                    import_run_id=int(existing["id"]),
+                    reused_existing=True,
+                    messages_imported=int(existing["message_count"]),
+                    messages_deduped=0,
+                    conversations_touched=summary["conversations"],
+                    participants_touched=summary["participants"],
+                    attachments_imported=int(existing["attachment_count"]),
+                    blobs_imported=summary["blobs"],
+                )
+
+        import_run_id = archive.start_import(
+            "android-export",
+            source_path_text,
+            source_fingerprint=source_fingerprint,
+        )
         seen_conversations: set[int] = set()
         seen_participants: set[int] = set()
         messages_imported = 0
@@ -39,21 +69,22 @@ def import_android_export(
         attachments_imported = 0
         blob_ids_seen: set[int] = set()
 
-        for msg in parse_ndjson(export.ndjson_path):
-            imported, attachment_count, conversation_id, participant_ids, blob_ids = _import_message(
-                archive,
-                export,
-                import_run_id,
-                msg,
-            )
-            if imported:
-                messages_imported += 1
-            else:
-                messages_deduped += 1
-            attachments_imported += attachment_count
-            seen_conversations.add(conversation_id)
-            seen_participants.update(participant_ids)
-            blob_ids_seen.update(blob_ids)
+        with open_export_zip(export_zip) as export:
+            for msg in parse_ndjson(export.ndjson_path):
+                imported, attachment_count, conversation_id, participant_ids, blob_ids = _import_message(
+                    archive,
+                    export,
+                    import_run_id,
+                    msg,
+                )
+                if imported:
+                    messages_imported += 1
+                else:
+                    messages_deduped += 1
+                attachments_imported += attachment_count
+                seen_conversations.add(conversation_id)
+                seen_participants.update(participant_ids)
+                blob_ids_seen.update(blob_ids)
 
         archive.finish_import(import_run_id, messages_imported, attachments_imported)
         archive.conn.commit()
@@ -61,6 +92,7 @@ def import_android_export(
         return AndroidArchiveImportResult(
             archive_path=archive_path,
             import_run_id=import_run_id,
+            reused_existing=False,
             messages_imported=messages_imported,
             messages_deduped=messages_deduped,
             conversations_touched=len(seen_conversations),
@@ -280,3 +312,11 @@ def _resolve_attachment_path(export: ExtractedExport, part: MMSPart) -> Path | N
         if candidate.exists():
             return candidate
     return None
+
+
+def _fingerprint_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()

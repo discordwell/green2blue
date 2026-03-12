@@ -621,8 +621,7 @@ def _ask_yes_no(prompt: str, *, default: bool) -> bool:
 
 
 def _default_archive_path(backup_info: BackupInfo) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path.cwd() / ".g2b_archives" / f"{backup_info.udid}_{stamp}.g2b.sqlite"
+    return Path.cwd() / ".g2b_archives" / f"{backup_info.udid}.g2b.sqlite"
 
 
 # ---------------------------------------------------------------------------

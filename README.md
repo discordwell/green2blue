@@ -213,6 +213,21 @@ duplicate suppression. `archive export-android` turns that merged view back
 into the existing Android ZIP contract, and `archive inject-ios` uses that
 adapter to feed the proven iPhone injection pipeline directly.
 
+Archive imports are resumable by default: if you import the exact same Android
+ZIP or the exact same iPhone backup state again, green2blue reuses the prior
+completed import run instead of creating a second empty dedupe-only run. Use
+`--no-resume` on the archive import commands to force a fresh run.
+
+The merge wizard uses a stable archive path at
+`.g2b_archives/<BACKUP_UDID>.g2b.sqlite`, so repeated wizard runs can reuse the
+same canonical archive instead of starting from scratch every time.
+
+`archive report` is also now a real migration report. It includes:
+- per-import-run summaries
+- latest-merge winner-source counts
+- unsupported/downgraded feature markers
+- metadata-only attachment counts
+
 ### Privacy-Safe Corpus Capture
 
 Use the corpus command to generate a representative Android sample ZIP that can

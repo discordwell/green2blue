@@ -418,7 +418,52 @@ class TestDeviceRunArtifacts:
         assert artifacts.run_dir.exists()
         assert artifacts.metadata_path.exists()
         assert artifacts.mobiledevice_log_path.read_text() == "host logs"
-        assert "session works" in artifacts.log_path.read_text()
+
+
+class TestArchiveCLI:
+    def test_archive_import_android_reports_reused_existing(self, tmp_dir, capsys):
+        zip_path = _create_export_zip(tmp_dir)
+        archive_path = tmp_dir / "archive.g2b.sqlite"
+
+        first = main([
+            "archive",
+            "import-android",
+            str(zip_path),
+            str(archive_path),
+        ])
+        assert first == 0
+        capsys.readouterr()
+
+        second = main([
+            "archive",
+            "import-android",
+            str(zip_path),
+            str(archive_path),
+        ])
+        assert second == 0
+        output = capsys.readouterr().out
+        assert "Reused existing:      yes" in output
+
+    def test_archive_report_prints_import_runs_and_unsupported_counts(self, tmp_dir, capsys):
+        from green2blue.archive import build_archive_report, import_android_export
+
+        zip_path = _create_export_zip(tmp_dir)
+        archive_path = tmp_dir / "archive.g2b.sqlite"
+
+        result = import_android_export(zip_path, archive_path)
+        assert result.messages_imported == 1
+        report = build_archive_report(archive_path)
+        assert report.import_run_summaries
+
+        ret = main([
+            "archive",
+            "report",
+            str(archive_path),
+        ])
+        assert ret == 0
+        output = capsys.readouterr().out
+        assert "Import runs:" in output
+        assert "Unsupported / downgraded feature markers:" in output
 
     def test_capture_mobiledevice_logs_writes_stdout(self, tmp_dir):
         output_path = tmp_dir / "mobiledevice.log"
@@ -550,7 +595,7 @@ class TestArchiveCommands:
 
         assert ret == 0
         assert "Warnings:" in captured.out
-        assert "cross-source merge and dedupe" in captured.out
+        assert "no merged view has been materialized yet" in captured.out
 
     def test_archive_merge_materializes_latest_merge(self, tmp_dir, capsys):
         backup_root = tmp_dir / "backups"

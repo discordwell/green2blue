@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import tempfile
 from collections import defaultdict
@@ -20,6 +21,7 @@ from green2blue.models import ATTACHMENT_PLACEHOLDER
 class IOSArchiveImportResult:
     archive_path: Path
     import_run_id: int
+    reused_existing: bool
     messages_imported: int
     messages_deduped: int
     conversations_touched: int
@@ -46,6 +48,7 @@ def import_ios_backup(
     *,
     backup_root: Path | None = None,
     password: str | None = None,
+    resume: bool = True,
 ) -> IOSArchiveImportResult:
     """Import an iPhone backup's Messages data into the canonical archive."""
     backup_info = find_backup(str(backup) if backup is not None else None, backup_root)
@@ -57,6 +60,8 @@ def import_ios_backup(
     encrypted_backup = None
 
     try:
+        source_fingerprint = _backup_fingerprint(manifest_path, sms_db_path)
+
         if backup_info.is_encrypted:
             if not password:
                 raise EncryptedBackupError(
@@ -92,7 +97,34 @@ def import_ios_backup(
             sqlite3.connect(sms_db_path) as conn,
         ):
             conn.row_factory = sqlite3.Row
-            import_run_id = archive.start_import("ios-backup", str(backup_info.path))
+            source_path_text = str(backup_info.path)
+            if resume:
+                existing = archive.find_completed_import_run(
+                    source_type="ios-backup",
+                    source_path=source_path_text,
+                    source_fingerprint=source_fingerprint,
+                )
+                if existing is not None:
+                    summary = archive.summarize_import_run(int(existing["id"]))
+                    return IOSArchiveImportResult(
+                        archive_path=archive_path,
+                        import_run_id=int(existing["id"]),
+                        reused_existing=True,
+                        messages_imported=int(existing["message_count"]),
+                        messages_deduped=0,
+                        conversations_touched=summary["conversations"],
+                        participants_touched=summary["participants"],
+                        attachments_imported=int(existing["attachment_count"]),
+                        blobs_imported=summary["blobs"],
+                        backup_path=backup_info.path,
+                        backup_udid=backup_info.udid,
+                    )
+
+            import_run_id = archive.start_import(
+                "ios-backup",
+                source_path_text,
+                source_fingerprint=source_fingerprint,
+            )
             result = _import_messages(
                 archive,
                 conn,
@@ -111,6 +143,7 @@ def import_ios_backup(
         return IOSArchiveImportResult(
             archive_path=archive_path,
             import_run_id=import_run_id,
+            reused_existing=False,
             messages_imported=result["messages_imported"],
             messages_deduped=result["messages_deduped"],
             conversations_touched=len(result["conversation_ids"]),
@@ -465,3 +498,13 @@ def _basename_or_none(path_str: str | None) -> str | None:
     if not path_str:
         return None
     return Path(path_str).name
+
+
+def _backup_fingerprint(manifest_path: Path, sms_db_path: Path) -> str:
+    digest = hashlib.sha256()
+    for path in (manifest_path, sms_db_path):
+        digest.update(path.name.encode("utf-8"))
+        with path.open("rb") as fh:
+            while chunk := fh.read(1024 * 1024):
+                digest.update(chunk)
+    return digest.hexdigest()

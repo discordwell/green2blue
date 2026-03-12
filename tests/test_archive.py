@@ -31,6 +31,7 @@ class TestAndroidArchiveImport:
         result = import_android_export(sample_export_zip, archive_path)
 
         assert archive_path.exists()
+        assert result.reused_existing is False
         assert result.messages_imported == 3
         assert result.messages_deduped == 0
         assert result.attachments_imported == 1
@@ -45,13 +46,30 @@ class TestAndroidArchiveImport:
         assert summary.blobs == 1
         assert summary.blob_bytes > 0
 
-    def test_reimport_dedupes_messages(self, sample_export_zip, tmp_dir):
+    def test_reimport_reuses_existing_import_by_default(self, sample_export_zip, tmp_dir):
         archive_path = tmp_dir / "sample.g2b.sqlite"
 
         first = import_android_export(sample_export_zip, archive_path)
         second = import_android_export(sample_export_zip, archive_path)
 
         assert first.messages_imported == 3
+        assert second.reused_existing is True
+        assert second.messages_imported == 3
+        assert second.messages_deduped == 0
+
+        conn = sqlite3.connect(archive_path)
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM import_runs").fetchone()[0] == 1
+        conn.close()
+
+    def test_reimport_without_resume_creates_second_import_run(self, sample_export_zip, tmp_dir):
+        archive_path = tmp_dir / "sample.g2b.sqlite"
+
+        first = import_android_export(sample_export_zip, archive_path)
+        second = import_android_export(sample_export_zip, archive_path, resume=False)
+
+        assert first.messages_imported == 3
+        assert second.reused_existing is False
         assert second.messages_imported == 0
         assert second.messages_deduped == 3
 
@@ -150,6 +168,7 @@ class TestIOSArchiveImport:
         result = import_ios_backup(sample_backup_dir, archive_path)
 
         assert archive_path.exists()
+        assert result.reused_existing is False
         assert result.messages_imported == 2
         assert result.messages_deduped == 0
         assert result.attachments_imported == 1
@@ -175,7 +194,7 @@ class TestIOSArchiveImport:
         assert attachment_row["filename"] == "image000000.jpg"
         conn.close()
 
-    def test_reimport_ios_backup_dedupes_messages(self, sample_backup_dir, tmp_dir):
+    def test_reimport_ios_backup_reuses_existing_import_by_default(self, sample_backup_dir, tmp_dir):
         _populate_ios_backup(sample_backup_dir)
         archive_path = tmp_dir / "ios.g2b.sqlite"
 
@@ -183,12 +202,13 @@ class TestIOSArchiveImport:
         second = import_ios_backup(sample_backup_dir, archive_path)
 
         assert first.messages_imported == 2
-        assert second.messages_imported == 0
-        assert second.messages_deduped == 2
+        assert second.reused_existing is True
+        assert second.messages_imported == 2
+        assert second.messages_deduped == 0
 
         conn = sqlite3.connect(archive_path)
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
-        assert conn.execute("SELECT COUNT(*) FROM import_runs").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM import_runs").fetchone()[0] == 1
         conn.close()
 
 
@@ -208,11 +228,13 @@ class TestArchiveReport:
         report = build_archive_report(archive_path)
 
         assert report.summary.import_runs == 2
+        assert len(report.import_run_summaries) == 2
         assert report.source_type_counts["android.sms"] >= 1
         assert report.source_type_counts["ios.message"] == 2
         assert report.messages_with_attachments >= 2
         assert report.messages_with_url == 0
-        assert any("cross-source merge" in warning for warning in report.warnings)
+        assert report.missing_attachment_blobs == 0
+        assert any("merged view has been materialized" in warning for warning in report.warnings)
 
 
 def _create_matching_android_export(tmp_dir: Path) -> Path:
@@ -280,7 +302,8 @@ class TestArchiveMerge:
         assert report.latest_merge is not None
         assert report.latest_merge["merged_conversations"] == 1
         assert report.latest_merge["duplicate_messages"] == 1
-        assert not any("cross-source merge" in warning for warning in report.warnings)
+        assert report.latest_merge_winner_source_counts["ios.message"] == 2
+        assert not any("merged view has been materialized" in warning for warning in report.warnings)
 
     def test_merge_groups_subset_participant_sets_when_titles_match(self, tmp_dir):
         archive_path = tmp_dir / "group_merge.g2b.sqlite"
@@ -351,6 +374,71 @@ class TestArchiveMerge:
         result = merge_archive(archive_path)
         assert result.merged_conversations == 1
 
+    def test_merge_direct_chat_title_identity_matches_participant_identity(self, tmp_dir):
+        archive_path = tmp_dir / "direct_merge.g2b.sqlite"
+
+        with CanonicalArchive(archive_path) as archive:
+            android_run = archive.start_import("android-export", "/tmp/android.zip")
+            ios_run = archive.start_import("ios-backup", "/tmp/ios-backup")
+
+            participant_id = archive.get_or_create_participant("+12025550111", "phone")
+
+            android_conv = archive.get_or_create_conversation(
+                "android:sms:thread:1",
+                kind="direct",
+                source_thread_id="1",
+                title="+12025550111",
+            )
+            archive.link_conversation_participant(
+                android_conv,
+                participant_id,
+                role="peer",
+                sort_order=0,
+            )
+            ios_conv = archive.get_or_create_conversation(
+                "ios:chat:any;+;+12025550111",
+                kind="direct",
+                source_thread_id="2",
+                title="tel:+1 (202) 555-0111",
+            )
+
+            archive.insert_message(
+                source_uid="android:direct-1",
+                source_type="android.sms",
+                import_run_id=android_run,
+                conversation_id=android_conv,
+                direction="incoming",
+                sent_at_ms=1_700_000_100_000,
+                read_state="read",
+                service_hint="SMS",
+                subject=None,
+                body_text="hello",
+                has_attachments=False,
+                has_url=False,
+                raw_json='{"thread_id":1}',
+            )
+            archive.insert_message(
+                source_uid="ios:direct-1",
+                source_type="ios.message",
+                import_run_id=ios_run,
+                conversation_id=ios_conv,
+                direction="incoming",
+                sent_at_ms=1_700_000_200_000,
+                read_state="read",
+                service_hint="SMS",
+                subject=None,
+                body_text="hi",
+                has_attachments=False,
+                has_url=False,
+                raw_json='{"guid":"msg-1"}',
+            )
+            archive.finish_import(android_run, 1, 0)
+            archive.finish_import(ios_run, 1, 0)
+            archive.conn.commit()
+
+        result = merge_archive(archive_path)
+        assert result.merged_conversations == 1
+
 
 class TestArchiveWarnings:
     def test_report_warns_on_unsupported_feature_markers(self, tmp_dir):
@@ -395,6 +483,9 @@ class TestArchiveWarnings:
 
         report = build_archive_report(archive_path)
 
+        assert report.unsupported_feature_counts["reply_or_reaction"] == 1
+        assert report.unsupported_feature_counts["edited"] == 1
+        assert report.unsupported_feature_counts["rich_effect"] == 1
         assert any("replies or reactions" in warning for warning in report.warnings)
         assert any("edited messages" in warning for warning in report.warnings)
         assert any("rich app/message effects" in warning for warning in report.warnings)

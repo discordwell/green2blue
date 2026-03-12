@@ -81,4 +81,7 @@ Android-to-iPhone injector into a universal backup and merge tool.
 - Done: direct merged-archive -> iPhone inject command on top of the existing pipeline.
 - Done: first-pass wizard orchestration for the merged archive flow.
 - Done: wizard device orchestration for doctor -> optional rollback backup -> live restore.
-- Next: better identity resolution, richer unsupported-feature warnings, and durable/resumable large-history workflow support.
+- Done: resumable exact-source archive imports for Android ZIPs and iPhone backups.
+- Done: richer archive reports with import-run summaries, winner-source counts, and unsupported-feature markers.
+- Done: stronger direct-chat identity matching via normalized title/address hints.
+- Next: fuller source-vs-rendered verification and more resilient large-history staging beyond import resume.

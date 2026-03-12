@@ -78,6 +78,13 @@ Canonical archive workflows for future merge and re-render support.
 |------|-------------|
 | `--backup-root <path>` | Override the default backup directory when resolving a UDID |
 | `--password <pw>` | Backup encryption password for encrypted iPhone backups |
+| `--no-resume` | Force a new import run even if the exact same backup state was already imported |
+
+#### `green2blue archive import-android <zip> <archive.sqlite>`
+
+| Flag | Description |
+|------|-------------|
+| `--no-resume` | Force a new import run even if the exact same export ZIP was already imported |
 
 ### `green2blue corpus <subcommand>`
 
@@ -159,3 +166,14 @@ green2blue archive inject-ios merged.g2b.sqlite --backup <UDID>
 
 You can also pass a backup UDID to `archive import-ios` instead of a full path
 and combine it with `--backup-root`.
+
+Exact-source archive imports are resumable by default. If the same Android ZIP
+or same iPhone backup state is imported again, green2blue reuses the existing
+completed import run instead of creating a second empty/deduped run. Use
+`--no-resume` to force a fresh run.
+
+`archive report` now includes:
+- per-import-run summaries
+- winner-source counts from the latest merge
+- unsupported/downgraded feature markers
+- metadata-only attachment counts

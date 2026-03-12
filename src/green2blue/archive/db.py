@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS import_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_type TEXT NOT NULL,
     source_path TEXT,
+    source_fingerprint TEXT,
     imported_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed',
     message_count INTEGER NOT NULL DEFAULT 0,
     attachment_count INTEGER NOT NULL DEFAULT 0
 );
@@ -146,6 +148,9 @@ CREATE TABLE IF NOT EXISTS merged_messages (
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
     FOREIGN KEY (duplicate_of_message_id) REFERENCES messages(id) ON DELETE SET NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_import_runs_lookup
+ON import_runs(source_type, source_path, source_fingerprint, status);
 """
 
 
@@ -162,6 +167,7 @@ class CanonicalArchive:
         self.conn = sqlite3.connect(self.archive_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
+        _ensure_schema_compat(self.conn)
         if is_new:
             self.set_meta("archive_format", "green2blue-canonical")
             self.set_meta("archive_version", "1")
@@ -192,11 +198,26 @@ class CanonicalArchive:
             (key, value),
         )
 
-    def start_import(self, source_type: str, source_path: str | None) -> int:
+    def start_import(
+        self,
+        source_type: str,
+        source_path: str | None,
+        *,
+        source_fingerprint: str | None = None,
+    ) -> int:
         assert self.conn is not None
         cur = self.conn.execute(
-            "INSERT INTO import_runs (source_type, source_path, imported_at) VALUES (?, ?, ?)",
-            (source_type, source_path, datetime.now(timezone.utc).isoformat()),
+            """
+            INSERT INTO import_runs (
+                source_type, source_path, source_fingerprint, imported_at, status
+            ) VALUES (?, ?, ?, ?, 'running')
+            """,
+            (
+                source_type,
+                source_path,
+                source_fingerprint,
+                datetime.now(timezone.utc).isoformat(),
+            ),
         )
         self.set_meta("updated_at", datetime.now(timezone.utc).isoformat())
         return int(cur.lastrowid)
@@ -204,9 +225,93 @@ class CanonicalArchive:
     def finish_import(self, import_run_id: int, message_count: int, attachment_count: int) -> None:
         assert self.conn is not None
         self.conn.execute(
-            "UPDATE import_runs SET message_count = ?, attachment_count = ? WHERE id = ?",
+            """
+            UPDATE import_runs
+            SET message_count = ?,
+                attachment_count = ?,
+                status = 'completed'
+            WHERE id = ?
+            """,
             (message_count, attachment_count, import_run_id),
         )
+
+    def find_completed_import_run(
+        self,
+        *,
+        source_type: str,
+        source_path: str | None,
+        source_fingerprint: str | None,
+    ) -> sqlite3.Row | None:
+        assert self.conn is not None
+        return self.conn.execute(
+            """
+            SELECT id, message_count, attachment_count
+            FROM import_runs
+            WHERE source_type = ?
+              AND source_path IS ?
+              AND source_fingerprint IS ?
+              AND status = 'completed'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (source_type, source_path, source_fingerprint),
+        ).fetchone()
+
+    def summarize_import_run(self, import_run_id: int) -> dict[str, int]:
+        assert self.conn is not None
+        return {
+            "messages": int(
+                self.conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE import_run_id = ?",
+                    (import_run_id,),
+                ).fetchone()[0]
+            ),
+            "conversations": int(
+                self.conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT conversation_id)
+                    FROM messages
+                    WHERE import_run_id = ?
+                    """,
+                    (import_run_id,),
+                ).fetchone()[0]
+            ),
+            "participants": int(
+                self.conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT cp.participant_id)
+                    FROM messages m
+                    JOIN conversation_participants cp
+                      ON cp.conversation_id = m.conversation_id
+                    WHERE m.import_run_id = ?
+                    """,
+                    (import_run_id,),
+                ).fetchone()[0]
+            ),
+            "attachments": int(
+                self.conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM message_attachments ma
+                    JOIN messages m ON m.id = ma.message_id
+                    WHERE m.import_run_id = ?
+                    """,
+                    (import_run_id,),
+                ).fetchone()[0]
+            ),
+            "blobs": int(
+                self.conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT ma.blob_id)
+                    FROM message_attachments ma
+                    JOIN messages m ON m.id = ma.message_id
+                    WHERE m.import_run_id = ?
+                      AND ma.blob_id IS NOT NULL
+                    """,
+                    (import_run_id,),
+                ).fetchone()[0]
+            ),
+        }
 
     def get_or_create_participant(self, address: str, kind: str) -> int:
         assert self.conn is not None
@@ -497,3 +602,19 @@ def detect_address_kind(address: str) -> str:
 
 def json_dumps_stable(payload: dict[str, object]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _ensure_schema_compat(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "import_runs", "source_fingerprint", "TEXT")
+    _ensure_column(conn, "import_runs", "status", "TEXT NOT NULL DEFAULT 'completed'")
+    conn.execute("UPDATE import_runs SET status = 'completed' WHERE status IS NULL")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    existing = {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column in existing:
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

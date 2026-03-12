@@ -37,7 +37,7 @@ def merge_archive(
         assert conn is not None
 
         participants = _load_participants(conn, country)
-        conversations = _load_conversations(conn, participants)
+        conversations = _load_conversations(conn, participants, country)
         attachments = _load_attachment_signatures(conn)
         messages = _load_messages(conn)
         merged_keys = _assign_merged_keys(conversations)
@@ -142,7 +142,7 @@ def _load_participants(conn, country: str) -> dict[int, dict[str, str]]:
     return participants
 
 
-def _load_conversations(conn, participants) -> dict[int, dict[str, object]]:
+def _load_conversations(conn, participants, country: str) -> dict[int, dict[str, object]]:
     conversation_rows = conn.execute(
         "SELECT id, conversation_key, kind, title FROM conversations",
     ).fetchall()
@@ -165,12 +165,14 @@ def _load_conversations(conn, participants) -> dict[int, dict[str, object]]:
             for participant_id in participant_ids
             if participant_id in participants
         })
+        title_identity = _normalize_identity_hint(row["title"], country)
         conversations[int(row["id"])] = {
             "id": int(row["id"]),
             "conversation_key": row["conversation_key"],
             "kind": row["kind"],
             "title": row["title"],
             "normalized_title": _normalize_title(row["title"]),
+            "title_identity": title_identity,
             "participant_ids": participant_ids,
             "identity_keys": tuple(identity_keys),
         }
@@ -235,6 +237,8 @@ def _assign_merged_keys(conversations: dict[int, dict[str, object]]) -> dict[int
         if conversation["kind"] == "direct":
             if identity_keys:
                 direct_keys[int(conversation["id"])] = f"direct:{identity_keys[0]}"
+            elif conversation["title_identity"]:
+                direct_keys[int(conversation["id"])] = f"direct:{conversation['title_identity']}"
             elif conversation["normalized_title"]:
                 direct_keys[int(conversation["id"])] = f"direct:title:{conversation['normalized_title']}"
             else:
@@ -327,15 +331,35 @@ def _new_group_cluster_key(conversation: dict[str, object]) -> str:
 
 
 def _normalize_identity(address: str, kind: str, country: str) -> str:
-    if kind == "email":
-        return f"email:{address.strip().lower()}"
-    if kind == "phone":
+    if kind in {"email", "phone"}:
+        hinted = _normalize_identity_hint(address, country)
+        if hinted is not None:
+            return hinted
+    return f"opaque:{_clean_identity_text(address)}"
+
+
+def _normalize_identity_hint(value: object, country: str) -> str | None:
+    if value is None:
+        return None
+    cleaned = _clean_identity_text(str(value))
+    if not cleaned:
+        return None
+    if "@" in cleaned:
+        return f"email:{cleaned}"
+    if any(ch.isdigit() for ch in cleaned):
         try:
-            normalized = normalize_phone(address, country)
+            return f"phone:{normalize_phone(cleaned, country)}"
         except PhoneNormalizationError:
-            normalized = address
-        return f"phone:{normalized}"
-    return f"opaque:{address.strip().lower()}"
+            return f"phone:{cleaned}"
+    return None
+
+
+def _clean_identity_text(value: str) -> str:
+    cleaned = value.strip().lower()
+    for prefix in ("tel:", "sms:", "mailto:", "imessage:"):
+        if cleaned.startswith(prefix):
+            return cleaned.removeprefix(prefix).strip()
+    return cleaned
 
 
 def _message_fingerprint(message: dict[str, object]) -> str:
