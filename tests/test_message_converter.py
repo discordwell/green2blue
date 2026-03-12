@@ -185,8 +185,22 @@ class TestMMSConversion:
         att = msg.attachments[0]
         assert att.mime_type == "image/jpeg"
         assert att.uti == "public.jpeg"
-        assert att.transfer_name == "photo.jpg"
+        assert att.transfer_name == "image000000.jpg"
         assert att.guid.startswith("at_0_")
+
+    def test_sent_mms_preserves_original_attachment_filename(self):
+        parts = (
+            MMSPart(content_type="text/plain", text="Look at this!"),
+            MMSPart(
+                content_type="image/jpeg",
+                data_path="data/parts/photo.jpg",
+                filename="photo.jpg",
+            ),
+        )
+        mms = _make_mms(parts=parts, msg_box=2)
+        result = convert_messages([mms])
+        att = result.messages[0].attachments[0]
+        assert att.transfer_name == "photo.jpg"
 
     def test_mms_skips_smil_parts(self):
         parts = (

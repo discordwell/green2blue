@@ -222,12 +222,13 @@
   - many real rows decode to MMCS/iCloud transfer keys like `mmcs-url`, `mmcs-owner`, `decryption-key`, `file-size`
   - some real RCS rows decode to `{'service': 'RCS', 'file': {...}}`
   - many ordinary local JPEG rows have `user_info=NULL`
+  - many file-backed SMS/MMS image rows that render correctly also have `user_info=NULL`, so `user_info` is not required for inline media display
   - imported local attachments should not inherit stale `user_info` from a cloned template row
 - `preview_generation_state` behaves like a processing-state field, not a media-type enum:
-  - for materialized file-backed image/video rows, the common real values are non-zero (`1` and `3` dominate; `5` exists but is rare)
-  - forcing imported attachments to `0` caused Messages to index them as attachments without rendering inline media
-  - imported attachments should preserve `preview_generation_state` from a cloned real template row when possible
-  - if no template exists, file-backed image/video imports should default to `1`
+  - the actual SMS/MMS rows that rendered correctly in the wet tests overwhelmingly used `preview_generation_state=0`, with some working iMessage rows at `5`
+  - the earlier `3` default was a bad inference caused by cloning prior synthetic rows instead of native attachment templates
+  - imported attachments should prefer native same-service templates and preserve their preview state
+  - if no good template exists, file-backed image/video imports should fall back to `0`
 - `transfer_name` is not globally standardized in real backups:
   - many materialized MMS images use `image000000.jpg`, `image000001.jpg`, etc.
   - many metadata-only rows keep original-looking names like `IMG_5180.JPG`, `Resized_IMG_3175.jpg`, `media-1.png`, or hash-like filenames
@@ -237,7 +238,7 @@
     - outgoing image attachments are more often materialized local files (`filename` set, `transfer_state=5`)
     - outgoing image `transfer_name` values skew heavily toward original camera-style names (`IMG_...`)
     - incoming image `transfer_name` values are mixed between `image000000.ext` and original-looking names
-  - practical conclusion: preserve realistic-looking names when convenient, but do not block on matching filename style exactly
+  - practical conclusion: for incoming SMS/MMS photo imports, `image000000.ext` style is the safest default; do not overfit beyond that
 
 ## message_summary_info plist structure (reverse-engineered from real iOS 26.2)
 - Binary plist dict on every message with text (27,033/27,050 messages in real backup)

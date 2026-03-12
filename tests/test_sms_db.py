@@ -583,7 +583,7 @@ class TestAttachmentInsertion:
                 )
                 assert cursor.fetchone()["ck_server_change_token_blob"] is None
 
-    def test_attachment_without_template_defaults_preview_generation_state_one_for_media(self, empty_sms_db):
+    def test_attachment_without_template_defaults_preview_generation_state_zero_for_media(self, empty_sms_db):
         att = iOSAttachment(
             guid="green2blue-att:no-template",
             filename="~/Library/SMS/Attachments/cc/test-uuid/photo.jpg",
@@ -620,8 +620,144 @@ class TestAttachmentInsertion:
                 """,
                 ("green2blue-att:no-template",),
             ).fetchone()
-            assert row["preview_generation_state"] == 1
+            assert row["preview_generation_state"] == 0
             assert row["user_info"] is None
+            assert plistlib.loads(row["attribution_info"]) == {"pgenp": True}
+
+    def test_attachment_template_ignores_green2blue_rows_and_prefers_same_service(self, empty_sms_db):
+        conn = sqlite3.connect(empty_sms_db)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(attachment)").fetchall()}
+
+        def insert_attachment(rowid: int, guid: str, preview: int, *, ai: bytes | None):
+            values = {
+                "ROWID": rowid,
+                "guid": guid,
+                "created_date": 721692700 + rowid,
+                "start_date": 0,
+                "filename": f"~/Library/SMS/Attachments/aa/{guid}/image000000.jpg",
+                "uti": "public.jpeg",
+                "mime_type": "image/jpeg",
+                "transfer_state": 5,
+                "is_outgoing": 0,
+                "transfer_name": "image000000.jpg",
+                "total_bytes": 2048,
+                "hide_attachment": 0,
+                "ck_sync_state": 1,
+                "original_guid": guid,
+                "is_commsafety_sensitive": 0,
+                "preview_generation_state": preview,
+                "attribution_info": ai,
+            }
+            insert_cols = [col for col in values if col in cols]
+            placeholders = ", ".join("?" for _ in insert_cols)
+            conn.execute(
+                f"INSERT INTO attachment ({', '.join(insert_cols)}) VALUES ({placeholders})",
+                tuple(values[col] for col in insert_cols),
+            )
+
+        # Native SMS template we want to win.
+        conn.execute(
+            """
+            INSERT INTO message
+                (ROWID, guid, text, handle_id, service, date, date_read, date_delivered,
+                 is_delivered, is_finished, is_from_me, is_empty, is_read, is_sent,
+                 cache_has_attachments, was_data_detected, part_count, ck_sync_state,
+                 ck_record_id, ck_record_change_tag)
+            VALUES
+                (1, 'REAL-SMS-1', '\uFFFC', 1, 'SMS', 721692700000000000, 0, 0,
+                 1, 1, 0, 0, 1, 0, 1, 1, 1, 1, '', '')
+            """
+        )
+        insert_attachment(
+            1,
+            "at_0_real_sms",
+            0,
+            ai=plistlib.dumps({"pgenp": True}, fmt=plistlib.FMT_BINARY),
+        )
+        conn.execute(
+            "INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (1, 1)"
+        )
+
+        # Later iMessage template should lose to same-service SMS.
+        conn.execute(
+            """
+            INSERT INTO message
+                (ROWID, guid, text, handle_id, service, date, date_read, date_delivered,
+                 is_delivered, is_finished, is_from_me, is_empty, is_read, is_sent,
+                 cache_has_attachments, was_data_detected, part_count, ck_sync_state,
+                 ck_record_id, ck_record_change_tag)
+            VALUES
+                (2, 'REAL-IMESSAGE-1', '\uFFFC', 1, 'iMessage', 721692701000000000, 0, 0,
+                 1, 1, 0, 0, 1, 0, 1, 1, 1, 1, '', '')
+            """
+        )
+        insert_attachment(2, "at_0_real_imessage", 5, ai=None)
+        conn.execute(
+            "INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (2, 2)"
+        )
+
+        # A green2blue synthetic row should never be reused as the template.
+        conn.execute(
+            """
+            INSERT INTO message
+                (ROWID, guid, text, handle_id, service, date, date_read, date_delivered,
+                 is_delivered, is_finished, is_from_me, is_empty, is_read, is_sent,
+                 cache_has_attachments, was_data_detected, part_count, ck_sync_state,
+                 ck_record_id, ck_record_change_tag)
+            VALUES
+                (3, 'green2blue:old-template', '\uFFFC', 1, 'SMS', 721692702000000000, 0, 0,
+                 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, '', '')
+            """
+        )
+        insert_attachment(
+            3,
+            "at_0_green2blue_old",
+            3,
+            ai=plistlib.dumps({"pgenp": True}, fmt=plistlib.FMT_BINARY),
+        )
+        conn.execute(
+            "INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (3, 3)"
+        )
+        conn.commit()
+        conn.close()
+
+        att = iOSAttachment(
+            guid="green2blue-att:template-choice",
+            filename="~/Library/SMS/Attachments/cc/test-uuid/photo.jpg",
+            mime_type="image/jpeg",
+            uti="public.jpeg",
+            transfer_name="photo.jpg",
+            total_bytes=1024,
+            created_date=721692800,
+        )
+        msg = iOSMessage(
+            guid="green2blue:template-choice",
+            text="check this",
+            handle_id="+12025551234",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier="+12025551234",
+            attachments=(att,),
+        )
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[msg],
+        )
+
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            row = db.conn.execute(
+                """
+                SELECT preview_generation_state, attribution_info
+                FROM attachment WHERE guid = ?
+                """,
+                ("green2blue-att:template-choice",),
+            ).fetchone()
+            assert row["preview_generation_state"] == 0
             assert plistlib.loads(row["attribution_info"]) == {"pgenp": True}
 
 

@@ -11,6 +11,7 @@ import logging
 import uuid
 from collections import defaultdict
 from dataclasses import replace
+from pathlib import PurePosixPath
 
 from green2blue.converter.phone import normalize_phone
 from green2blue.converter.timestamp import unix_ms_to_ios_ns, unix_s_to_ios_ns
@@ -62,6 +63,61 @@ MIME_TO_UTI: dict[str, str] = {
     "application/smil": "public.xml",
     "application/octet-stream": "public.data",
 }
+
+MIME_TO_EXTENSION: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+    "video/mp4": ".mp4",
+    "video/3gpp": ".3gp",
+    "video/3gpp2": ".3g2",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/amr": ".amr",
+    "audio/aac": ".aac",
+    "audio/mp4": ".m4a",
+    "application/pdf": ".pdf",
+}
+
+
+def _native_attachment_filename(
+    *,
+    original_filename: str | None,
+    content_type: str,
+    attachment_index: int,
+    service: str,
+    is_from_me: bool,
+    fallback_token: str,
+) -> str:
+    """Return an iOS-native-looking filename for a copied attachment.
+
+    Real incoming SMS/MMS media rows usually materialize as sequential
+    ``image000000.ext`` names rather than preserving the Android export
+    filename. Preserve original names elsewhere to avoid gratuitous drift.
+    """
+    original_name = PurePosixPath(original_filename).name if original_filename else ""
+    ext = PurePosixPath(original_name).suffix.lower()
+    if not ext:
+        ext = MIME_TO_EXTENSION.get(content_type, "")
+
+    if service == "SMS" and not is_from_me:
+        if content_type.startswith("image/"):
+            return f"image{attachment_index:06d}{ext}"
+        if content_type.startswith("video/"):
+            return f"video{attachment_index:06d}{ext}"
+
+    if original_name:
+        return original_name
+    return f"attachment_{fallback_token}{ext}"
 
 
 def convert_messages(
@@ -311,7 +367,14 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
 
         att_uuid = str(uuid.uuid4()).upper()
         att_guid = f"at_{attachment_index}_{att_uuid}"
-        filename = part.filename or f"attachment_{att_uuid[:8]}"
+        filename = _native_attachment_filename(
+            original_filename=part.filename,
+            content_type=part.content_type,
+            attachment_index=attachment_index,
+            service=service,
+            is_from_me=is_from_me,
+            fallback_token=att_uuid[:8],
+        )
         uti = MIME_TO_UTI.get(part.content_type, "public.data")
 
         # iOS attachment path: two hex-byte subdirs, then the attachment GUID dir.

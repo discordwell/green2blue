@@ -41,11 +41,10 @@ from green2blue.models import (
     message_content_hash,
 )
 
-# Real file-backed image/video attachments in the reference backup most often
-# use a non-zero preview_generation_state (usually 1 or 3). Treat it as a
-# processing-state field, not a media-type enum, and preserve cloned values
-# from real attachment templates whenever possible.
-_DEFAULT_PREVIEW_GENERATION_STATE = 1
+# Real file-backed SMS/MMS attachments most often use preview_generation_state=0.
+# Treat it as a processing-state field, not a media-type enum, and preserve
+# cloned values from real attachment templates whenever possible.
+_DEFAULT_PREVIEW_GENERATION_STATE = 0
 _DEFAULT_ATTRIBUTION_INFO = plistlib.dumps(
     {"pgenp": True},
     fmt=plistlib.FMT_BINARY,
@@ -207,7 +206,9 @@ class SMSDatabase:
 
                 # Insert attachments
                 for att in msg.attachments:
-                    att_rowid = self._insert_attachment(cursor, att, msg.is_from_me)
+                    att_rowid = self._insert_attachment(
+                        cursor, att, msg.is_from_me, msg.service,
+                    )
                     self._insert_message_attachment_join(cursor, msg_rowid, att_rowid)
                     stats.attachments_inserted += 1
                     stats.attachment_rowids.append(att_rowid)
@@ -711,10 +712,14 @@ class SMSDatabase:
         return cursor.lastrowid
 
     def _insert_attachment(
-        self, cursor: sqlite3.Cursor, att: iOSAttachment, is_outgoing: bool
+        self,
+        cursor: sqlite3.Cursor,
+        att: iOSAttachment,
+        is_outgoing: bool,
+        service: str,
     ) -> int:
         """Insert an attachment and return its ROWID."""
-        template = self._find_attachment_template(cursor, att, is_outgoing)
+        template = self._find_attachment_template(cursor, att, is_outgoing, service)
         if template is not None:
             values = dict(template)
             values.pop("ROWID", None)
@@ -746,7 +751,7 @@ class SMSDatabase:
                 values["ck_server_change_token_blob"] = None
             if (
                 "preview_generation_state" in values
-                and values["preview_generation_state"] is None
+                and values["preview_generation_state"] in (None, 0)
             ):
                 values["preview_generation_state"] = _default_preview_generation_state(
                     att.mime_type
@@ -816,63 +821,90 @@ class SMSDatabase:
         cursor: sqlite3.Cursor,
         att: iOSAttachment,
         is_outgoing: bool,
+        service: str,
     ) -> sqlite3.Row | None:
         """Find a real attachment row to clone for a new attachment."""
         family = None
         if att.mime_type and "/" in att.mime_type:
             family = att.mime_type.split("/", 1)[0] + "/%"
 
+        template_base = (
+            "SELECT * FROM attachment a "
+            "WHERE a.filename IS NOT NULL "
+            "AND NOT EXISTS ("
+            "    SELECT 1 FROM message_attachment_join maj "
+            "    JOIN message m ON m.ROWID = maj.message_id "
+            "    WHERE maj.attachment_id = a.ROWID "
+            "      AND m.guid LIKE 'green2blue:%'"
+            ")"
+        )
+        order_terms = [
+            "CASE WHEN EXISTS ("
+            "    SELECT 1 FROM message_attachment_join maj "
+            "    JOIN message m ON m.ROWID = maj.message_id "
+            "    WHERE maj.attachment_id = a.ROWID "
+            "      AND m.service = ?"
+            ") THEN 0 ELSE 1 END",
+        ]
+        if "attribution_info" in self._att_schema:
+            order_terms.append("CASE WHEN a.attribution_info IS NOT NULL THEN 0 ELSE 1 END")
+        if "preview_generation_state" in self._att_schema:
+            order_terms.append(
+                "CASE WHEN COALESCE(a.preview_generation_state, 0) = 0 THEN 0 ELSE 1 END"
+            )
+        order_terms.append("a.ROWID DESC")
+        order_clause = " ORDER BY " + ", ".join(order_terms) + " LIMIT 1"
+
         queries: list[tuple[str, tuple[object, ...]]] = [
             (
-                "SELECT * FROM attachment "
-                "WHERE filename IS NOT NULL AND mime_type = ? AND is_outgoing = ? "
-                "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
-                (att.mime_type, int(is_outgoing)),
+                template_base
+                + " AND a.mime_type = ? AND a.is_outgoing = ?"
+                + order_clause,
+                (service, att.mime_type, int(is_outgoing)),
             ),
             (
-                "SELECT * FROM attachment "
-                "WHERE filename IS NOT NULL AND uti = ? AND is_outgoing = ? "
-                "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
-                (att.uti, int(is_outgoing)),
+                template_base
+                + " AND a.uti = ? AND a.is_outgoing = ?"
+                + order_clause,
+                (service, att.uti, int(is_outgoing)),
             ),
         ]
         if family is not None:
             queries.append(
                 (
-                    "SELECT * FROM attachment "
-                    "WHERE filename IS NOT NULL AND mime_type LIKE ? AND is_outgoing = ? "
-                    "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
-                    (family, int(is_outgoing)),
+                    template_base
+                    + " AND a.mime_type LIKE ? AND a.is_outgoing = ?"
+                    + order_clause,
+                    (service, family, int(is_outgoing)),
                 ),
             )
         queries.extend([
             (
-                "SELECT * FROM attachment "
-                "WHERE filename IS NOT NULL AND mime_type = ? "
-                "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
-                (att.mime_type,),
+                template_base
+                + " AND a.mime_type = ?"
+                + order_clause,
+                (service, att.mime_type),
             ),
             (
-                "SELECT * FROM attachment "
-                "WHERE filename IS NOT NULL AND uti = ? "
-                "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
-                (att.uti,),
+                template_base
+                + " AND a.uti = ?"
+                + order_clause,
+                (service, att.uti),
             ),
         ])
         if family is not None:
             queries.append(
                 (
-                    "SELECT * FROM attachment "
-                    "WHERE filename IS NOT NULL AND mime_type LIKE ? "
-                    "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
-                    (family,),
+                    template_base
+                    + " AND a.mime_type LIKE ?"
+                    + order_clause,
+                    (service, family),
                 ),
             )
         queries.append(
             (
-                "SELECT * FROM attachment "
-                "WHERE filename IS NOT NULL ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
-                (),
+                template_base + order_clause,
+                (service,),
             ),
         )
 
@@ -1004,7 +1036,9 @@ class SMSDatabase:
                 # Remove old attachment joins and add new ones
                 self._remove_old_attachments(cursor, sacrifice["rowid"])
                 for att in msg.attachments:
-                    att_rowid = self._insert_attachment(cursor, att, msg.is_from_me)
+                    att_rowid = self._insert_attachment(
+                        cursor, att, msg.is_from_me, msg.service,
+                    )
                     self._insert_message_attachment_join(cursor, sacrifice["rowid"], att_rowid)
                     stats.attachments_inserted += 1
                     stats.attachment_rowids.append(att_rowid)

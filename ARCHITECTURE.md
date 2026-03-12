@@ -101,7 +101,7 @@ Injection output is validated against real iOS backup data. Key field mappings:
 - **attachment.created_date** = Apple epoch **seconds** (NOT nanoseconds like message.date)
 - **attachment.start_date** = 0
 - **attachment.original_guid** = same as guid
-- **attachment.preview_generation_state** behaves like a processing-state field, not a media-type enum. For imported local attachments, green2blue preserves the value from a cloned real attachment template when one exists; otherwise it defaults file-backed image/video imports to `1`. In the reference backup, real materialized image/video attachments commonly use non-zero states (`1` or `3`).
+- **attachment.preview_generation_state** behaves like a processing-state field, not a media-type enum. For imported local attachments, green2blue prefers real same-service attachment templates and preserves their preview state when possible; the fallback for new file-backed media is `0`, which matches the dominant real SMS/MMS shape in the reference backup.
 - **attachment.user_info** is attachment transport metadata when present (commonly MMCS/iCloud or RCS binary plist data), not rendering metadata. For imported local attachments, green2blue clears inherited `user_info` instead of cloning stale transport records from template rows.
 - Attachments stored in **MediaDomain** (not HomeDomain)
 - Attachment paths: two-level hex subdirs `{hash[:2]}/{hash[2:4]}/{UUID}/{filename}`
