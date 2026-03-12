@@ -72,7 +72,12 @@ def _run_prepare_sync_for_result(
     from green2blue.ios.prepare_sync import prepare_sync
 
     kwargs = {}
-    if injection_mode == InjectionMode.OVERWRITE and result.overwrite_stats is not None:
+    if injection_mode == InjectionMode.INSERT and result.injection_stats is not None:
+        kwargs = {
+            "message_rowids": result.injection_stats.message_rowids,
+            "attachment_rowids": result.injection_stats.attachment_rowids,
+        }
+    elif injection_mode == InjectionMode.OVERWRITE and result.overwrite_stats is not None:
         kwargs = {
             "message_rowids": result.overwrite_stats.message_rowids,
             "attachment_rowids": result.overwrite_stats.attachment_rowids,

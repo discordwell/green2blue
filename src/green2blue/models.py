@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from uuid import NAMESPACE_URL, uuid5
 
+ATTACHMENT_PLACEHOLDER = "\uFFFC"
+
 # --- Android models (parsed from SMS Import/Export NDJSON) ---
 
 
@@ -128,7 +130,7 @@ class iOSChat:
 class iOSAttachment:
     """An attachment in sms.db (attachment table)."""
 
-    guid: str  # UUID for this attachment
+    guid: str  # Real iOS style, e.g. "at_0_<UUID>"
     filename: str  # iOS-side path: ~/Library/SMS/Attachments/...
     mime_type: str  # e.g., "image/jpeg"
     uti: str  # Uniform Type Identifier, e.g., "public.jpeg"
@@ -143,7 +145,7 @@ class iOSMessage:
     """A message row in sms.db (message table)."""
 
     guid: str  # UUID, e.g., "green2blue:<uuid>"
-    text: str | None  # Message body (None for attachment-only MMS)
+    text: str | None  # Message body, including leading attachment placeholders
     handle_id: str  # E.164 phone of the sender/recipient handle
     date: int  # CoreData timestamp in nanoseconds
     date_read: int  # CoreData timestamp in nanoseconds, 0 if unread
@@ -222,12 +224,30 @@ def message_content_hash(msg: iOSMessage) -> str:
     Used by both the converter (pre-injection dedup) and the database
     injector (post-injection dedup against existing messages).
     """
+    text = compose_message_text(msg.text, len(msg.attachments)) or ""
     group_key = ",".join(sorted(msg.group_members))
     content = (
         f"{msg.service}|{msg.handle_id}|{msg.chat_identifier}|"
-        f"{group_key}|{msg.date}|{msg.text or ''}"
+        f"{group_key}|{msg.date}|{text}"
     )
     return hashlib.sha256(content.encode()).hexdigest()
+
+
+def compose_message_text(text: str | None, attachment_count: int) -> str | None:
+    """Normalize message text to the shape used by real attachment messages.
+
+    Real iOS prepends one U+FFFC object replacement character per attachment.
+    Caption text, if present, follows those placeholders directly.
+    """
+    if attachment_count <= 0:
+        return text
+
+    prefix = ATTACHMENT_PLACEHOLDER * attachment_count
+    if text is None:
+        return prefix
+    if text.startswith(prefix):
+        return text
+    return prefix + text
 
 
 @dataclass

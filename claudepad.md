@@ -123,7 +123,8 @@
 - Fixed 15+ field mismatches to match real iOS behavior:
   - message: version=10, account/account_guid=NULL, ck_record_id/tag='', was_data_detected=1, is_delivered=True always
   - chat: account_login='E:', server_change_token='', group_id=UUID, account_id auto-detected from existing chats
-  - attachment: created_date in seconds (not ns), start_date=0, original_guid=guid, preview_generation_state
+  - attachment: created_date in seconds (not ns), start_date=0, original_guid=guid
+  - later real-backup analysis superseded our early preview-generation guess: `preview_generation_state` behaves like a processing-state field, not a simple image/video enum; for materialized image/video rows the common real values are non-zero (`1` or `3`)
 - Updated prepare_sync.py: CK field resets use '' not NULL, server_change_token '' not NULL
 - Updated ARCHITECTURE.md with field matching documentation
 - 258 tests pass, lint clean
@@ -209,6 +210,34 @@
 - Unplugging and replugging iPhone may be needed to refresh Finder's backup list
 - Restore checkpoint + secondary backups all show same timestamp in Finder (from shared Info.plist Date field), making it impossible for users to distinguish — hide extras before restore
 - **IsFullBackup: Apple/Finder sets `False` on ALL backups for this device.** `True` = full wipe-and-restore; `False` = partial overlay (no wipe). Previous sessions manually set `True` which likely caused restore failures. Codebase does NOT set this flag. NEVER set to `True` without explicit reason.
+
+## Attachment row semantics from real backups
+- Real `attachment` rows come in at least two distinct shapes:
+  - materialized local attachment: `filename` set, `transfer_state=5`, matching `MediaDomain/Library/SMS/Attachments/...` payload present in the backup
+  - metadata-only attachment: `filename=NULL`, `transfer_state=0`, `transfer_name` still populated, but no matching attachment payload present in the backup manifest
+- The `filename=NULL` / `transfer_state=0` rows are common in real SMS image traffic, including multi-attachment messages. They appear to represent attachments that Messages knows about logically but that are not stored as local backup files.
+- For imported media, green2blue should prefer the materialized-local shape, because it is physically copying media bytes into the backup and needs a concrete attachment path for restore.
+- When cloning a real attachment row as a template, attachment CloudKit metadata must be scrubbed. Imported attachments should not inherit `ck_sync_state=1`, `ck_record_id`, or `ck_server_change_token_blob` from a synced template row.
+- `user_info` is usually a binary plist containing transport metadata, not rendering metadata:
+  - many real rows decode to MMCS/iCloud transfer keys like `mmcs-url`, `mmcs-owner`, `decryption-key`, `file-size`
+  - some real RCS rows decode to `{'service': 'RCS', 'file': {...}}`
+  - many ordinary local JPEG rows have `user_info=NULL`
+  - imported local attachments should not inherit stale `user_info` from a cloned template row
+- `preview_generation_state` behaves like a processing-state field, not a media-type enum:
+  - for materialized file-backed image/video rows, the common real values are non-zero (`1` and `3` dominate; `5` exists but is rare)
+  - forcing imported attachments to `0` caused Messages to index them as attachments without rendering inline media
+  - imported attachments should preserve `preview_generation_state` from a cloned real template row when possible
+  - if no template exists, file-backed image/video imports should default to `1`
+- `transfer_name` is not globally standardized in real backups:
+  - many materialized MMS images use `image000000.jpg`, `image000001.jpg`, etc.
+  - many metadata-only rows keep original-looking names like `IMG_5180.JPG`, `Resized_IMG_3175.jpg`, `media-1.png`, or hash-like filenames
+  - conclusion: sequential `image000000.ext` naming is common, but not universal
+  - direction matters somewhat, but not enough to derive a strict rule:
+    - incoming image attachments are more often metadata-only (`filename=NULL`, `transfer_state=0`)
+    - outgoing image attachments are more often materialized local files (`filename` set, `transfer_state=5`)
+    - outgoing image `transfer_name` values skew heavily toward original camera-style names (`IMG_...`)
+    - incoming image `transfer_name` values are mixed between `image000000.ext` and original-looking names
+  - practical conclusion: preserve realistic-looking names when convenient, but do not block on matching filename style exactly
 
 ## message_summary_info plist structure (reverse-engineered from real iOS 26.2)
 - Binary plist dict on every message with text (27,033/27,050 messages in real backup)

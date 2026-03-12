@@ -57,6 +57,87 @@ def patch_mbfile_blob(
     return _patch_via_plistlib(existing_blob, new_size, int(new_mtime), None)
 
 
+def clone_mbfile_blob(
+    existing_blob: bytes,
+    new_size: int,
+    *,
+    new_mtime: float | None = None,
+    new_relative_path: str | None = None,
+    new_encryption_key: bytes | None = None,
+    new_digest: bytes | None = None,
+    new_mode: int | None = None,
+    new_protection_class: int | None = None,
+) -> bytes:
+    """Clone a real MBFile blob and patch selected fields via plistlib.
+
+    This preserves the richer NSKeyedArchiver object graph used by real iOS
+    backups, including UID-backed RelativePath and EncryptionKey objects.
+    """
+    if new_mtime is None:
+        new_mtime = time.time()
+
+    try:
+        plist = plistlib.loads(existing_blob)
+    except Exception:
+        return build_mbfile_blob(
+            new_size,
+            float(new_mtime),
+            mode=new_mode or 0o100644,
+            encryption_key=new_encryption_key,
+            protection_class=new_protection_class or 3,
+            digest=new_digest,
+        )
+
+    objects = plist.get("$objects")
+    if not objects:
+        return build_mbfile_blob(
+            new_size,
+            float(new_mtime),
+            mode=new_mode or 0o100644,
+            encryption_key=new_encryption_key,
+            protection_class=new_protection_class or 3,
+            digest=new_digest,
+        )
+
+    mbfile = None
+    for obj in objects:
+        if isinstance(obj, dict) and "Size" in obj:
+            mbfile = obj
+            break
+
+    if mbfile is None:
+        return build_mbfile_blob(
+            new_size,
+            float(new_mtime),
+            mode=new_mode or 0o100644,
+            encryption_key=new_encryption_key,
+            protection_class=new_protection_class or 3,
+            digest=new_digest,
+        )
+
+    timestamp = int(new_mtime)
+    mbfile["Size"] = new_size
+    if "Birth" in mbfile:
+        mbfile["Birth"] = timestamp
+    if "LastModified" in mbfile:
+        mbfile["LastModified"] = timestamp
+    if "LastStatusChange" in mbfile:
+        mbfile["LastStatusChange"] = timestamp
+    if new_mode is not None:
+        mbfile["Mode"] = new_mode
+    if new_protection_class is not None:
+        mbfile["ProtectionClass"] = new_protection_class
+
+    if new_relative_path is not None:
+        _patch_or_add_relative_path(objects, mbfile, new_relative_path)
+    if new_encryption_key is not None:
+        _patch_or_add_encryption_key(objects, mbfile, new_encryption_key)
+    if new_digest is not None:
+        _patch_or_add_digest(plist, objects, new_digest)
+
+    return plistlib.dumps(plist, fmt=plistlib.FMT_BINARY)
+
+
 def _patch_via_plistlib(
     existing_blob: bytes,
     new_size: int,
@@ -226,6 +307,51 @@ def _patch_or_add_digest(
             objects.append(new_digest)
             obj["Digest"] = plistlib.UID(new_uid)
             return
+
+
+def _patch_or_add_relative_path(
+    objects: list, mbfile: dict, new_relative_path: str,
+) -> None:
+    """Patch or add RelativePath in an MBFile dict."""
+    relative_path_ref = mbfile.get("RelativePath")
+    if isinstance(relative_path_ref, plistlib.UID):
+        objects[relative_path_ref] = new_relative_path
+    else:
+        new_uid = len(objects)
+        objects.append(new_relative_path)
+        mbfile["RelativePath"] = plistlib.UID(new_uid)
+
+
+def _patch_or_add_encryption_key(
+    objects: list, mbfile: dict, new_encryption_key: bytes,
+) -> None:
+    """Patch or add EncryptionKey, preserving NSData wrapper when present."""
+    encryption_key_ref = mbfile.get("EncryptionKey")
+    if isinstance(encryption_key_ref, plistlib.UID):
+        resolved = objects[encryption_key_ref]
+        if isinstance(resolved, dict) and "NS.data" in resolved:
+            resolved["NS.data"] = new_encryption_key
+            return
+        objects[encryption_key_ref] = new_encryption_key
+        return
+
+    if isinstance(encryption_key_ref, bytes):
+        mbfile["EncryptionKey"] = new_encryption_key
+        return
+
+    data_uid = len(objects)
+    class_uid = data_uid + 1
+    objects.extend([
+        {
+            "NS.data": new_encryption_key,
+            "$class": plistlib.UID(class_uid),
+        },
+        {
+            "$classname": "NSMutableData",
+            "$classes": ["NSMutableData", "NSData", "NSObject"],
+        },
+    ])
+    mbfile["EncryptionKey"] = plistlib.UID(data_uid)
 
 
 def build_mbfile_blob(

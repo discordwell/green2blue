@@ -17,7 +17,11 @@ import sqlite3
 from pathlib import Path
 
 from green2blue.exceptions import ManifestError
-from green2blue.ios.plist_utils import build_mbfile_blob, patch_mbfile_blob
+from green2blue.ios.plist_utils import (
+    build_mbfile_blob,
+    clone_mbfile_blob,
+    patch_mbfile_blob,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,12 +123,25 @@ class ManifestDB:
         self._ensure_directory_entries(relative_path, domain)
 
         file_id = compute_file_id(domain, relative_path)
-        blob = build_mbfile_blob(
-            file_size,
-            encryption_key=encryption_key,
-            protection_class=protection_class,
-            digest=digest,
-        )
+        template_blob = self._get_attachment_template_blob(domain, flags=1)
+        if template_blob is not None:
+            blob = clone_mbfile_blob(
+                template_blob,
+                file_size,
+                new_relative_path=relative_path,
+                new_encryption_key=encryption_key,
+                # Real attachment entries do not carry a Digest field in the
+                # backups we have validated against.
+                new_digest=None,
+                new_protection_class=protection_class,
+            )
+        else:
+            blob = build_mbfile_blob(
+                file_size,
+                encryption_key=encryption_key,
+                protection_class=protection_class,
+                digest=digest,
+            )
 
         cursor = self.conn.cursor()
         cursor.execute(
@@ -167,14 +184,43 @@ class ManifestDB:
             if cursor.fetchone() is not None:
                 continue
 
-            # Build directory MBFile blob (mode=0o40755, size=0)
-            dir_blob = build_mbfile_blob(0, mode=0o40755)
+            template_blob = self._get_attachment_template_blob(domain, flags=2)
+            if template_blob is not None:
+                dir_blob = clone_mbfile_blob(
+                    template_blob,
+                    0,
+                    new_relative_path=parent_str,
+                    new_encryption_key=None,
+                    new_digest=None,
+                )
+            else:
+                # Build directory MBFile blob (mode=0o40755, size=0)
+                dir_blob = build_mbfile_blob(0, mode=0o40755)
             cursor.execute(
                 """INSERT INTO Files (fileID, domain, relativePath, flags, file)
                    VALUES (?, ?, ?, ?, ?)""",
                 (dir_file_id, domain, parent_str, 2, dir_blob),
             )
             logger.debug("Created directory entry: %s/%s", domain, parent_str)
+
+    def _get_attachment_template_blob(
+        self, domain: str, flags: int,
+    ) -> bytes | None:
+        """Return a real SMS attachment MBFile blob to clone from, if present."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """SELECT file FROM Files
+               WHERE domain = ?
+                 AND flags = ?
+                 AND relativePath LIKE 'Library/SMS/Attachments/%'
+                 AND file IS NOT NULL
+               LIMIT 1""",
+            (domain, flags),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return row["file"]
 
     def get_file_encryption_info(self, file_id: str) -> tuple[bytes, int]:
         """Extract the EncryptionKey and ProtectionClass for a file entry.

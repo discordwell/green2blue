@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import struct
 
+from green2blue.models import ATTACHMENT_PLACEHOLDER
+
 
 def _encode_typedstream_int(value: int) -> bytes:
     """Encode an integer using Apple's typedstream variable-length format.
@@ -112,8 +114,99 @@ _SUFFIX = bytes.fromhex(
     "868686"  # end NSDictionary, end attribute run, end NSAttributedString
 )
 
+_FILE_TRANSFER_KEY = "__kIMFileTransferGUIDAttributeName"
+_MESSAGE_PART_KEY = "__kIMMessagePartAttributeName"
+_STRING_OBJECT_PREFIX = bytes.fromhex("92849696")
+_FIRST_DICT_PREFIX = bytes.fromhex(
+    "92"
+    "8484840c4e5344696374696f6e61727900"
+    "94"
+    "840169"
+)
+_NEXT_DICT_PREFIX = bytes.fromhex("92849899")
+_FIRST_NUMBER_PREFIX = bytes.fromhex(
+    "92"
+    "848484084e534e756d62657200"
+    "8484074e5356616c756500"
+    "94"
+    "84012a"
+    "84"
+    "9999"
+)
+_NEXT_NUMBER_PREFIX = bytes.fromhex("929b92849d9c9f99")
 
-def build_attributed_body(text: str) -> bytes | None:
+
+def _string_object(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return _STRING_OBJECT_PREFIX + _encode_typedstream_int(len(encoded)) + encoded + b"\x86"
+
+
+def _number_object(value: int, *, first: bool) -> bytes:
+    prefix = _FIRST_NUMBER_PREFIX if first else _NEXT_NUMBER_PREFIX
+    return prefix + _encode_typedstream_int(value)
+
+
+def _attribute_dict(
+    *,
+    part_index: int,
+    file_transfer_guid: str | None,
+    first: bool,
+) -> bytes:
+    key_count = 2 if file_transfer_guid else 1
+    prefix = _FIRST_DICT_PREFIX if first else _NEXT_DICT_PREFIX
+    body = bytearray(prefix)
+    body += _encode_typedstream_int(key_count)
+    if file_transfer_guid:
+        body += _string_object(_FILE_TRANSFER_KEY)
+        body += _string_object(file_transfer_guid)
+    body += _string_object(_MESSAGE_PART_KEY)
+    body += _number_object(part_index, first=first)
+    return bytes(body)
+
+
+def _build_multipart_attributed_body(
+    text: str,
+    attachment_guids: tuple[str, ...],
+) -> bytes:
+    text_bytes = text.encode("utf-8")
+    caption_text = text[len(attachment_guids):]
+    runs: list[tuple[int, str | None, int]] = [
+        (1, guid, idx) for idx, guid in enumerate(attachment_guids)
+    ]
+    if caption_text:
+        caption_len = len(caption_text.encode("utf-16-le")) // 2
+        runs.append((caption_len, None, len(attachment_guids)))
+
+    blob = bytearray()
+    blob += _PREFIX
+    blob += _encode_typedstream_int(len(text_bytes))
+    blob += text_bytes
+    blob += _MIDDLE
+
+    for run_index, (run_length, file_guid, part_index) in enumerate(runs):
+        if run_index == 0:
+            blob += b"\x01"
+            blob += _encode_typedstream_int(run_length)
+        else:
+            blob += b"\x97"
+            blob += _encode_typedstream_int(run_index + 1)
+            blob += _encode_typedstream_int(run_length)
+
+        blob += _attribute_dict(
+            part_index=part_index,
+            file_transfer_guid=file_guid,
+            first=(run_index == 0),
+        )
+        blob += b"\x86\x86\x86" if run_index == len(runs) - 1 else b"\x86\x86"
+
+    return bytes(blob)
+
+
+def build_attributed_body(
+    text: str | None,
+    *,
+    attachment_guids: tuple[str, ...] = (),
+) -> bytes | None:
     """Build an attributedBody typedstream blob for a message.
 
     Produces a minimal NSAttributedString with a single attribute run
@@ -129,6 +222,15 @@ def build_attributed_body(text: str) -> bytes | None:
     Returns:
         Typedstream blob bytes, or None if text is empty/None.
     """
+    if not text:
+        if attachment_guids:
+            text = ATTACHMENT_PLACEHOLDER * len(attachment_guids)
+        else:
+            return None
+
+    if attachment_guids:
+        return _build_multipart_attributed_body(text, attachment_guids)
+
     if not text:
         return None
 

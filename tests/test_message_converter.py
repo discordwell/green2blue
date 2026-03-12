@@ -180,12 +180,13 @@ class TestMMSConversion:
         mms = _make_mms(parts=parts)
         result = convert_messages([mms])
         msg = result.messages[0]
+        assert msg.text == "\uFFFCLook at this!"
         assert len(msg.attachments) == 1
         att = msg.attachments[0]
         assert att.mime_type == "image/jpeg"
         assert att.uti == "public.jpeg"
         assert att.transfer_name == "photo.jpg"
-        assert att.guid.startswith("green2blue-att:")
+        assert att.guid.startswith("at_0_")
 
     def test_mms_skips_smil_parts(self):
         parts = (

@@ -12,6 +12,7 @@ import pytest
 from green2blue.ios.manifest import ManifestDB, compute_file_id
 from green2blue.ios.plist_utils import (
     build_mbfile_blob,
+    clone_mbfile_blob,
     extract_mbfile_digest,
     patch_mbfile_blob,
 )
@@ -59,6 +60,60 @@ class TestComputeFileId:
 
 
 class TestManifestDB:
+    def _make_realish_attachment_blob(
+        self,
+        relative_path: str,
+        *,
+        protection_class: int = 3,
+        mode: int = 33152,
+        include_encryption_key: bool = True,
+    ) -> bytes:
+        objects: list[object] = [
+            "$null",
+            {
+                "LastModified": 1773221846,
+                "Flags": 0,
+                "GroupID": 501,
+                "$class": plistlib.UID(5 if include_encryption_key else 3),
+                "LastStatusChange": 1773223597,
+                "RelativePath": plistlib.UID(2),
+                "Birth": 1773221823,
+                "Size": 76188,
+                "Mode": mode,
+                "UserID": 501,
+                "InodeNumber": 187716,
+                "ProtectionClass": protection_class,
+            },
+            relative_path,
+        ]
+        class_uid = 3
+        if include_encryption_key:
+            objects[1]["EncryptionKey"] = plistlib.UID(3)
+            objects.extend([
+                {
+                    "NS.data": b"\x03\x00\x00\x00" + b"\xaa" * 40,
+                    "$class": plistlib.UID(4),
+                },
+                {
+                    "$classname": "NSMutableData",
+                    "$classes": ["NSMutableData", "NSData", "NSObject"],
+                },
+            ])
+            class_uid = 5
+
+        objects.append({
+            "$classname": "MBFile",
+            "$classes": ["MBFile", "NSObject"],
+        })
+        objects[1]["$class"] = plistlib.UID(class_uid)
+
+        return plistlib.dumps({
+            "$archiver": "NSKeyedArchiver",
+            "$version": 100000,
+            "$top": {"root": plistlib.UID(1)},
+            "$objects": objects,
+        }, fmt=plistlib.FMT_BINARY)
+
     def test_open_close(self, manifest_db):
         m = ManifestDB(manifest_db)
         m.open()
@@ -264,6 +319,73 @@ class TestManifestDB:
             assert row is not None
             assert row[0] == "MediaDomain"
 
+    def test_add_attachment_entry_clones_real_attachment_template(self, manifest_db):
+        rel_path = "Library/SMS/Attachments/71/c6/UUID/complex_photo.jpg"
+        template_path = "Library/SMS/Attachments/00/00/existing/image000000.jpg"
+        template_blob = self._make_realish_attachment_blob(template_path)
+        template_id = compute_file_id("MediaDomain", template_path)
+        conn = sqlite3.connect(manifest_db)
+        conn.execute(
+            "INSERT INTO Files VALUES (?, ?, ?, ?, ?)",
+            (template_id, "MediaDomain", template_path, 1, template_blob),
+        )
+        conn.commit()
+        conn.close()
+
+        new_enc_key = b"\x03\x00\x00\x00" + b"\xbb" * 40
+        with ManifestDB(manifest_db) as m:
+            file_id = m.add_attachment_entry(
+                rel_path,
+                file_size=2048,
+                domain="MediaDomain",
+                encryption_key=new_enc_key,
+                protection_class=3,
+                digest=hashlib.sha1(b"ciphertext").digest(),
+            )
+            entry = m.get_entry(file_id)
+
+        plist = plistlib.loads(entry["file"])
+        objects = plist["$objects"]
+        mbfile = next(obj for obj in objects if isinstance(obj, dict) and "Size" in obj)
+        assert mbfile["Mode"] == 33152
+        assert "LastStatusChange" in mbfile
+        assert "RelativePath" in mbfile
+        assert "Digest" not in mbfile
+        assert objects[mbfile["RelativePath"]] == rel_path
+        enc_wrapper = objects[mbfile["EncryptionKey"]]
+        assert enc_wrapper["NS.data"] == new_enc_key
+
+    def test_directory_entries_clone_real_attachment_directory_template(self, manifest_db):
+        template_dir = "Library/SMS/Attachments/00/00/existing"
+        template_blob = self._make_realish_attachment_blob(
+            template_dir,
+            protection_class=4,
+            mode=16895,
+            include_encryption_key=False,
+        )
+        template_id = compute_file_id("MediaDomain", template_dir)
+        conn = sqlite3.connect(manifest_db)
+        conn.execute(
+            "INSERT INTO Files VALUES (?, ?, ?, ?, ?)",
+            (template_id, "MediaDomain", template_dir, 2, template_blob),
+        )
+        conn.commit()
+        conn.close()
+
+        rel_path = "Library/SMS/Attachments/ab/cd/UUID/photo.jpg"
+        with ManifestDB(manifest_db) as m:
+            m.add_attachment_entry(rel_path, file_size=1024, domain="MediaDomain")
+            dir_id = compute_file_id("MediaDomain", "Library/SMS/Attachments/ab/cd/UUID")
+            entry = m.get_entry(dir_id)
+
+        plist = plistlib.loads(entry["file"])
+        objects = plist["$objects"]
+        mbfile = next(obj for obj in objects if isinstance(obj, dict) and "Size" in obj)
+        assert mbfile["Mode"] == 16895
+        assert mbfile["ProtectionClass"] == 4
+        assert "LastStatusChange" in mbfile
+        assert objects[mbfile["RelativePath"]] == "Library/SMS/Attachments/ab/cd/UUID"
+
 
 class TestPatchMBFileDigest:
     """Tests for digest patching in MBFile blobs."""
@@ -397,3 +519,43 @@ class TestPatchMBFileDigest:
         # Use the shared extraction function (same one verify.py uses)
         stored = extract_mbfile_digest(entry["file"])
         assert stored == expected_digest
+
+
+class TestCloneMBFileBlob:
+    def test_clone_preserves_relative_path_and_wrapped_encryption_key(self):
+        existing = plistlib.dumps({
+            "$archiver": "NSKeyedArchiver",
+            "$version": 100000,
+            "$top": {"root": plistlib.UID(1)},
+            "$objects": [
+                "$null",
+                {
+                    "RelativePath": plistlib.UID(2),
+                    "EncryptionKey": plistlib.UID(3),
+                    "LastStatusChange": 1700000000,
+                    "ProtectionClass": 3,
+                    "Mode": 33152,
+                    "Size": 100,
+                    "$class": plistlib.UID(5),
+                },
+                "Library/SMS/Attachments/original.jpg",
+                {"NS.data": b"\x03\x00\x00\x00" + b"\xaa" * 40, "$class": plistlib.UID(4)},
+                {
+                    "$classname": "NSMutableData",
+                    "$classes": ["NSMutableData", "NSData", "NSObject"],
+                },
+                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+            ],
+        }, fmt=plistlib.FMT_BINARY)
+
+        updated = clone_mbfile_blob(
+            existing,
+            2048,
+            new_relative_path="Library/SMS/Attachments/new.jpg",
+            new_encryption_key=b"\x03\x00\x00\x00" + b"\xbb" * 40,
+        )
+        plist = plistlib.loads(updated)
+        objects = plist["$objects"]
+        mbfile = next(obj for obj in objects if isinstance(obj, dict) and "Size" in obj)
+        assert objects[mbfile["RelativePath"]] == "Library/SMS/Attachments/new.jpg"
+        assert objects[mbfile["EncryptionKey"]]["NS.data"] == b"\x03\x00\x00\x00" + b"\xbb" * 40

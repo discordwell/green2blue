@@ -8,6 +8,7 @@ build/
 .ruff_cache/
 .eggs/
 .pristine_backups/
+.backup_stash/
 .live_device_backups/
 .live_device_runs/
 .live_restore_roots/

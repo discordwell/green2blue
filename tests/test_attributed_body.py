@@ -151,6 +151,186 @@ class TestBuildAttributedBody:
         )
         assert build_attributed_body("Ok") == expected
 
+    def test_one_attachment_only_exact_match(self):
+        expected = bytes.fromhex(
+            "040B73747265616D747970656481E803"
+            "840140"
+            "848484124E5341747472696275746564537472696E6700"
+            "8484084E534F626A65637400"
+            "85"
+            "92"
+            "848484084E53537472696E6701"
+            "94"
+            "84012B"
+            "03EFBFBC"
+            "86"
+            "84026949"
+            "0101"
+            "92"
+            "8484840C4E5344696374696F6E61727900"
+            "94"
+            "840169"
+            "02"
+            "92"
+            "849696"
+            "225F5F6B494D46696C655472616E73666572475549444174747269627574654E616D65"
+            "86"
+            "92"
+            "849696"
+            "2961745F305F31463136463946302D374244322D343731302D423146332D303232324444313930344136"
+            "86"
+            "92"
+            "849696"
+            "1D5F5F6B494D4D657373616765506172744174747269627574654E616D65"
+            "86"
+            "92"
+            "848484084E534E756D62657200"
+            "8484074E5356616C756500"
+            "94"
+            "84012A"
+            "84"
+            "9999"
+            "00"
+            "868686"
+        )
+        assert build_attributed_body(
+            "\uFFFC",
+            attachment_guids=("at_0_1F16F9F0-7BD2-4710-B1F3-0222DD1904A6",),
+        ) == expected
+
+    def test_one_attachment_with_caption_exact_match(self):
+        expected = bytes.fromhex(
+            "040B73747265616D747970656481E803"
+            "840140"
+            "848484124E5341747472696275746564537472696E6700"
+            "8484084E534F626A65637400"
+            "85"
+            "92"
+            "848484084E53537472696E6701"
+            "94"
+            "84012B"
+            "0DEFBFBC466F7220676172616765"
+            "86"
+            "84026949"
+            "0101"
+            "92"
+            "8484840C4E5344696374696F6E61727900"
+            "94"
+            "840169"
+            "02"
+            "92"
+            "849696"
+            "225F5F6B494D46696C655472616E73666572475549444174747269627574654E616D65"
+            "86"
+            "92"
+            "849696"
+            "2961745F305F42334546353341452D464634462D344131382D423631432D323532323236443038423245"
+            "86"
+            "92"
+            "849696"
+            "1D5F5F6B494D4D657373616765506172744174747269627574654E616D65"
+            "86"
+            "92"
+            "848484084E534E756D62657200"
+            "8484074E5356616C756500"
+            "94"
+            "84012A"
+            "84"
+            "9999"
+            "00"
+            "8686"
+            "97020A"
+            "92"
+            "849899"
+            "01"
+            "92"
+            "849696"
+            "1D5F5F6B494D4D657373616765506172744174747269627574654E616D65"
+            "86"
+            "92"
+            "9B"
+            "92"
+            "849D9C9F99"
+            "01"
+            "868686"
+        )
+        assert build_attributed_body(
+            "\uFFFCFor garage",
+            attachment_guids=("at_0_B3EF53AE-FF4F-4A18-B61C-252226D08B2E",),
+        ) == expected
+
+    def test_two_attachments_only_exact_match(self):
+        expected = bytes.fromhex(
+            "040B73747265616D747970656481E803"
+            "840140"
+            "848484124E5341747472696275746564537472696E6700"
+            "8484084E534F626A65637400"
+            "85"
+            "92"
+            "848484084E53537472696E6701"
+            "94"
+            "84012B"
+            "06EFBFBCEFBFBC"
+            "86"
+            "84026949"
+            "0101"
+            "92"
+            "8484840C4E5344696374696F6E61727900"
+            "94"
+            "840169"
+            "02"
+            "92"
+            "849696"
+            "225F5F6B494D46696C655472616E73666572475549444174747269627574654E616D65"
+            "86"
+            "92"
+            "849696"
+            "2961745F305F36343236454444382D443331392D344143442D424345302D433642423334453832354242"
+            "86"
+            "92"
+            "849696"
+            "1D5F5F6B494D4D657373616765506172744174747269627574654E616D65"
+            "86"
+            "92"
+            "848484084E534E756D62657200"
+            "8484074E5356616C756500"
+            "94"
+            "84012A"
+            "84"
+            "9999"
+            "00"
+            "8686"
+            "970201"
+            "92"
+            "849899"
+            "02"
+            "92"
+            "849696"
+            "225F5F6B494D46696C655472616E73666572475549444174747269627574654E616D65"
+            "86"
+            "92"
+            "849696"
+            "2961745F315F36343236454444382D443331392D344143442D424345302D433642423334453832354242"
+            "86"
+            "92"
+            "849696"
+            "1D5F5F6B494D4D657373616765506172744174747269627574654E616D65"
+            "86"
+            "92"
+            "9B"
+            "92"
+            "849D9C9F99"
+            "01"
+            "868686"
+        )
+        assert build_attributed_body(
+            "\uFFFC\uFFFC",
+            attachment_guids=(
+                "at_0_6426EDD8-D319-4ACD-BCE0-C6BB34E825BB",
+                "at_1_6426EDD8-D319-4ACD-BCE0-C6BB34E825BB",
+            ),
+        ) == expected
+
     def test_emoji_utf16_length(self):
         """Emoji characters count as 2 UTF-16 units (surrogate pair)."""
         blob = build_attributed_body("\U0001f495")  # 💕
@@ -312,8 +492,8 @@ class TestAttributedBodyInjection:
             blob = cursor.fetchone()["attributedBody"]
             assert text.encode("utf-8") in blob
 
-    def test_attachment_only_message_null_attributed_body(self, empty_sms_db):
-        """Message with no text should have NULL attributedBody."""
+    def test_attachment_only_message_uses_placeholder_attributed_body(self, empty_sms_db):
+        """Attachment-only message should get a placeholder text run and attributedBody."""
         att = iOSAttachment(
             guid="green2blue-att:test",
             filename="~/Library/SMS/Attachments/ab/uuid/photo.jpg",
@@ -343,9 +523,11 @@ class TestAttributedBodyInjection:
         with SMSDatabase(empty_sms_db) as db:
             db.inject(result)
             cursor = db.conn.cursor()
-            cursor.execute("SELECT attributedBody FROM message")
+            cursor.execute("SELECT text, part_count, attributedBody FROM message")
             row = cursor.fetchone()
-            assert row["attributedBody"] is None
+            assert row["text"] == "\uFFFC"
+            assert row["part_count"] == 1
+            assert row["attributedBody"] is not None
 
     def test_multiple_messages_all_have_attributed_body(self, empty_sms_db):
         """All injected messages with text should have attributedBody."""

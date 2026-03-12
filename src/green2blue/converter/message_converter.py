@@ -20,6 +20,7 @@ from green2blue.models import (
     AndroidSMS,
     CKStrategy,
     ConversionResult,
+    compose_message_text,
     compute_chat_guid,
     compute_group_chat_identifier,
     generate_ck_record_id,
@@ -299,6 +300,7 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
 
     # Convert attachment parts
     attachments = []
+    attachment_index = 0
     for part in mms.parts:
         if part.content_type == "text/plain":
             continue
@@ -308,22 +310,22 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
             continue
 
         att_uuid = str(uuid.uuid4()).upper()
+        att_guid = f"at_{attachment_index}_{att_uuid}"
         filename = part.filename or f"attachment_{att_uuid[:8]}"
         uti = MIME_TO_UTI.get(part.content_type, "public.data")
 
-        # iOS attachment path: two hex-byte subdirs from UUID hash, then UUID dir
-        # Real iOS: Library/SMS/Attachments/c6/06/DBD8A706-.../image000000.jpg
-        att_hash = hashlib.sha256(att_uuid.encode()).hexdigest()
+        # iOS attachment path: two hex-byte subdirs, then the attachment GUID dir.
+        att_hash = hashlib.sha256(att_guid.encode()).hexdigest()
         ios_path = (
             f"~/Library/SMS/Attachments/{att_hash[:2]}/{att_hash[2:4]}"
-            f"/{att_uuid}/{filename}"
+            f"/{att_guid}/{filename}"
         )
 
         # created_date is in Apple epoch seconds (not nanoseconds like message.date)
         att_created_date_s = date_ns // 1_000_000_000
 
         attachments.append(iOSAttachment(
-            guid=f"green2blue-att:{att_uuid}",
+            guid=att_guid,
             filename=ios_path,
             mime_type=part.content_type,
             uti=uti,
@@ -332,12 +334,15 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
             source_data_path=part.data_path,
             created_date=att_created_date_s,
         ))
+        attachment_index += 1
 
     msg_guid = f"green2blue:{uuid.uuid4()}"
 
+    display_text = compose_message_text(body, len(attachments))
+
     return iOSMessage(
         guid=msg_guid,
-        text=body,
+        text=display_text,
         handle_id=handle_phone,
         date=date_ns,
         date_read=date_read_ns,
@@ -352,4 +357,3 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
         group_members=group_members,
         group_title=mms.sub,  # None for 1:1, subject string for group MMS
     )
-

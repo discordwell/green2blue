@@ -154,8 +154,8 @@ class TestMessageSummaryInfoInjection:
             parsed = plistlib.loads(blob)
             assert parsed == {"cmmS\x10": 0, "cmmAO": 0}
 
-    def test_injected_attachment_only_message_null_summary(self, empty_sms_db):
-        """Message with no text (attachment-only) should have NULL message_summary_info."""
+    def test_injected_attachment_only_message_has_summary(self, empty_sms_db):
+        """Attachment-only message should get placeholder text and summary info."""
         att = iOSAttachment(
             guid="green2blue-att:test",
             filename="~/Library/SMS/Attachments/ab/uuid/photo.jpg",
@@ -185,9 +185,11 @@ class TestMessageSummaryInfoInjection:
         with SMSDatabase(empty_sms_db) as db:
             db.inject(result)
             cursor = db.conn.cursor()
-            cursor.execute("SELECT message_summary_info FROM message")
+            cursor.execute("SELECT text, part_count, message_summary_info FROM message")
             row = cursor.fetchone()
-            assert row["message_summary_info"] is None
+            assert row["text"] == "\uFFFC"
+            assert row["part_count"] == 1
+            assert row["message_summary_info"] is not None
 
     def test_sent_message_has_summary_info(self, empty_sms_db):
         """Sent messages should also have message_summary_info."""

@@ -178,8 +178,18 @@ Generate a test export ZIP without a physical Android device:
 ```bash
 python scripts/generate_android_export_fixture.py /tmp/android_media.zip
 python scripts/generate_android_export_fixture.py --list-scenarios
+python scripts/generate_android_export_fixture.py /tmp/android_happy_path.zip --all
+python scripts/generate_android_export_fixture.py /tmp/android_negative.zip \
+  --all --include-negative-controls
 green2blue inspect /tmp/android_media.zip
 ```
+
+`--all` includes the happy-path scenarios only. Negative controls such as the
+missing-attachment case are opt-in via `--include-negative-controls`.
+
+The bundled media scenarios use real static photo/video assets, not tiny
+placeholder blobs, so wet tests can verify actual attachment rendering in
+Messages.
 
 ## License
 

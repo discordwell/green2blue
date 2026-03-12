@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import plistlib
 import sqlite3
 import uuid
 from collections import deque
@@ -30,6 +31,7 @@ from green2blue.ios.trigger_utils import (
 )
 from green2blue.models import (
     ConversionResult,
+    compose_message_text,
     compute_chat_guid,
     compute_ck_chat_id,
     iOSAttachment,
@@ -39,16 +41,27 @@ from green2blue.models import (
     message_content_hash,
 )
 
-# UTI to preview_generation_state mapping (real iOS values)
-_UTI_PREVIEW_STATE: dict[str, int] = {
-    "public.jpeg": 1, "public.png": 1, "public.heic": 1,
-    "public.heif": 1, "public.webp": 1, "public.tiff": 1,
-    "com.compuserve.gif": 1, "com.microsoft.bmp": 1,
-    "public.mpeg-4": 2, "public.3gpp": 2, "public.3gpp2": 2,
-    "com.apple.quicktime-movie": 2, "org.webmproject.webm": 2,
-}
+# Real file-backed image/video attachments in the reference backup most often
+# use a non-zero preview_generation_state (usually 1 or 3). Treat it as a
+# processing-state field, not a media-type enum, and preserve cloned values
+# from real attachment templates whenever possible.
+_DEFAULT_PREVIEW_GENERATION_STATE = 1
+_DEFAULT_ATTRIBUTION_INFO = plistlib.dumps(
+    {"pgenp": True},
+    fmt=plistlib.FMT_BINARY,
+    sort_keys=False,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _default_preview_generation_state(mime_type: str | None) -> int:
+    """Return a sane fallback preview state for imported local attachments."""
+    if mime_type and (
+        mime_type.startswith("image/") or mime_type.startswith("video/")
+    ):
+        return _DEFAULT_PREVIEW_GENERATION_STATE
+    return 0
 
 
 class SMSDatabase:
@@ -83,6 +96,9 @@ class SMSDatabase:
         }
         self._att_schema: set[str] = {
             r[1] for r in cursor.execute("PRAGMA table_info(attachment)").fetchall()
+        }
+        self._chat_schema: set[str] = {
+            r[1] for r in cursor.execute("PRAGMA table_info(chat)").fetchall()
         }
 
     def close(self) -> None:
@@ -183,6 +199,7 @@ class SMSDatabase:
                     account_guid_override=detected_account_guid,
                 )
                 stats.messages_inserted += 1
+                stats.message_rowids.append(msg_rowid)
 
                 chat_rowid = chat_rowids.get(chat_guid)
                 if chat_rowid:
@@ -193,6 +210,7 @@ class SMSDatabase:
                     att_rowid = self._insert_attachment(cursor, att, msg.is_from_me)
                     self._insert_message_attachment_join(cursor, msg_rowid, att_rowid)
                     stats.attachments_inserted += 1
+                    stats.attachment_rowids.append(att_rowid)
 
             self.conn.commit()
             return stats
@@ -241,6 +259,7 @@ class SMSDatabase:
             if chat.guid in existing_chats:
                 rowid = existing_chats[chat.guid]
                 chat_rowids[chat.guid] = rowid
+                self._backfill_chat_visibility_fields(cursor, rowid)
                 stats.chats_existing += 1
             else:
                 updates = {}
@@ -454,26 +473,65 @@ class SMSDatabase:
     def _insert_chat(self, cursor: sqlite3.Cursor, chat: iOSChat) -> int:
         """Insert a chat and return its ROWID."""
         group_id = str(uuid.uuid4()).upper()
+        values: dict[str, object] = {
+            "guid": chat.guid,
+            "style": chat.style,
+            "state": 3,
+            "account_id": chat.account_id,
+            "chat_identifier": chat.chat_identifier,
+            "service_name": chat.service_name,
+            "display_name": chat.display_name,
+            "account_login": chat.account_login,
+            "group_id": group_id,
+            "original_group_id": group_id,
+            "last_addressed_handle": "",
+            "is_filtered": 0,
+            "successful_query": 0,
+            "server_change_token": "",
+            "ck_sync_state": chat.ck_sync_state,
+            "cloudkit_record_id": chat.cloudkit_record_id,
+        }
+        cols = [col for col in values if col in self._chat_schema]
+        placeholders = ", ".join("?" for _ in cols)
         cursor.execute(
-            """INSERT INTO chat (guid, style, state, account_id, chat_identifier,
-                                 service_name, display_name, account_login,
-                                 group_id, server_change_token,
-                                 ck_sync_state, cloudkit_record_id)
-               VALUES (?, ?, 3, ?, ?, ?, ?, ?, ?, '', ?, ?)""",
-            (
-                chat.guid,
-                chat.style,
-                chat.account_id,
-                chat.chat_identifier,
-                chat.service_name,
-                chat.display_name,
-                chat.account_login,
-                group_id,
-                chat.ck_sync_state,
-                chat.cloudkit_record_id,
-            ),
+            f"INSERT INTO chat ({', '.join(cols)}) VALUES ({placeholders})",
+            tuple(values[col] for col in cols),
         )
         return cursor.lastrowid
+
+    def _backfill_chat_visibility_fields(
+        self,
+        cursor: sqlite3.Cursor,
+        chat_id: int,
+    ) -> None:
+        """Populate nullable chat visibility fields expected by Messages UI."""
+        row = cursor.execute(
+            """SELECT group_id, original_group_id, last_addressed_handle,
+                      is_filtered, successful_query
+               FROM chat WHERE ROWID = ?""",
+            (chat_id,),
+        ).fetchone()
+        if row is None:
+            return
+
+        updates: dict[str, object] = {}
+        if "original_group_id" in self._chat_schema and not row["original_group_id"]:
+            updates["original_group_id"] = row["group_id"] or str(uuid.uuid4()).upper()
+        if "last_addressed_handle" in self._chat_schema and row["last_addressed_handle"] is None:
+            updates["last_addressed_handle"] = ""
+        if "is_filtered" in self._chat_schema and row["is_filtered"] is None:
+            updates["is_filtered"] = 0
+        if "successful_query" in self._chat_schema and row["successful_query"] is None:
+            updates["successful_query"] = 0
+
+        if not updates:
+            return
+
+        set_clause = ", ".join(f"{col} = ?" for col in updates)
+        cursor.execute(
+            f"UPDATE chat SET {set_clause} WHERE ROWID = ?",
+            (*updates.values(), chat_id),
+        )
 
     def _ensure_chat_auxiliary_rows(
         self,
@@ -518,7 +576,15 @@ class SMSDatabase:
         account_guid_override: str = "",
     ) -> int:
         """Insert a message and return its ROWID."""
+        display_text = compose_message_text(msg.text, len(msg.attachments))
         cache_has_attachments = 1 if msg.attachments else 0
+        caption_text = (
+            display_text[len(msg.attachments):]
+            if msg.attachments and display_text else (display_text or "")
+        )
+        part_count = len(msg.attachments) + (1 if caption_text else 0)
+        if part_count == 0:
+            part_count = 1
 
         # Use detected account values if the message has none
         account = msg.account if msg.account else (account_override or None)
@@ -540,14 +606,17 @@ class SMSDatabase:
         msi_blob = build_message_summary_info(
             service=msg.service,
             is_from_me=msg.is_from_me,
-            has_text=bool(msg.text),
+            has_text=bool(display_text),
         ) if has_msi else None
 
         # Generate attributedBody typedstream blob
         has_ab = "attributedBody" in self._msg_schema
         ab_cols = "\n                attributedBody," if has_ab else ""
         ab_vals = "\n                ?," if has_ab else ""
-        ab_blob = build_attributed_body(msg.text) if has_ab else None
+        ab_blob = build_attributed_body(
+            display_text,
+            attachment_guids=tuple(att.guid for att in msg.attachments),
+        ) if has_ab else None
 
         # destination_caller_id (device owner's phone)
         has_dci = "destination_caller_id" in self._msg_schema
@@ -608,11 +677,11 @@ class SMSDatabase:
                 0, 0, 0,
                 0, 0,
                 0, 0, 0,
-                1, 0, 0, 0, 0
+                ?, 0, 0, 0, 0
             )""",
             (
                 msg.guid,
-                msg.text,
+                display_text,
                 handle_rowid,
                 msg.service,
                 account,
@@ -625,7 +694,7 @@ class SMSDatabase:
                 int(msg.is_delivered),
                 int(msg.is_read),
                 int(msg.is_finished),
-                0 if msg.text else 1,  # is_empty
+                0 if display_text else 1,  # is_empty
                 int(msg.was_downgraded),
                 cache_has_attachments,
                 msg.group_title,
@@ -636,6 +705,7 @@ class SMSDatabase:
                 *ab_params,
                 *dci_params,
                 *cci_params,
+                part_count,
             ),
         )
         return cursor.lastrowid
@@ -644,7 +714,55 @@ class SMSDatabase:
         self, cursor: sqlite3.Cursor, att: iOSAttachment, is_outgoing: bool
     ) -> int:
         """Insert an attachment and return its ROWID."""
-        preview_state = _UTI_PREVIEW_STATE.get(att.uti, 0)
+        template = self._find_attachment_template(cursor, att, is_outgoing)
+        if template is not None:
+            values = dict(template)
+            values.pop("ROWID", None)
+            values["guid"] = att.guid
+            values["created_date"] = att.created_date
+            values["start_date"] = 0
+            values["filename"] = att.filename
+            values["uti"] = att.uti
+            values["mime_type"] = att.mime_type
+            values["transfer_state"] = 5
+            values["is_outgoing"] = int(is_outgoing)
+            values["transfer_name"] = att.transfer_name
+            values["total_bytes"] = att.total_bytes
+            values["is_sticker"] = 0
+            values["hide_attachment"] = 0
+            values["ck_sync_state"] = 0
+            values["is_commsafety_sensitive"] = 0
+            if "attribution_info" in values:
+                values["attribution_info"] = _DEFAULT_ATTRIBUTION_INFO
+            if "user_info" in values:
+                values["user_info"] = None
+            if "sticker_user_info" in values:
+                values["sticker_user_info"] = None
+            if "sr_ck_sync_state" in values:
+                values["sr_ck_sync_state"] = 0
+            if "ck_record_id" in values:
+                values["ck_record_id"] = None
+            if "ck_server_change_token_blob" in values:
+                values["ck_server_change_token_blob"] = None
+            if (
+                "preview_generation_state" in values
+                and values["preview_generation_state"] is None
+            ):
+                values["preview_generation_state"] = _default_preview_generation_state(
+                    att.mime_type
+                )
+            if "original_guid" in values:
+                values["original_guid"] = att.guid
+
+            cols = [col for col in values if col in self._att_schema]
+            placeholders = ", ".join("?" for _ in cols)
+            cursor.execute(
+                f"INSERT INTO attachment ({', '.join(cols)}) VALUES ({placeholders})",
+                tuple(values[col] for col in cols),
+            )
+            return cursor.lastrowid
+
+        preview_state = _default_preview_generation_state(att.mime_type)
 
         # Build optional column fragments (schema detected in _inspect_schema)
         opt_cols = ""
@@ -652,6 +770,9 @@ class SMSDatabase:
         if "sr_ck_sync_state" in self._att_schema:
             opt_cols += ", sr_ck_sync_state"
             opt_vals += ", 0"
+        if "attribution_info" in self._att_schema:
+            opt_cols += ", attribution_info"
+            opt_vals += ", ?"
         if "preview_generation_state" in self._att_schema:
             opt_cols += ", preview_generation_state"
             opt_vals += ", ?"
@@ -661,6 +782,8 @@ class SMSDatabase:
 
         # Build params for optional columns
         opt_params = []
+        if "attribution_info" in self._att_schema:
+            opt_params.append(_DEFAULT_ATTRIBUTION_INFO)
         if "preview_generation_state" in self._att_schema:
             opt_params.append(preview_state)
         if "original_guid" in self._att_schema:
@@ -687,6 +810,77 @@ class SMSDatabase:
             ),
         )
         return cursor.lastrowid
+
+    def _find_attachment_template(
+        self,
+        cursor: sqlite3.Cursor,
+        att: iOSAttachment,
+        is_outgoing: bool,
+    ) -> sqlite3.Row | None:
+        """Find a real attachment row to clone for a new attachment."""
+        family = None
+        if att.mime_type and "/" in att.mime_type:
+            family = att.mime_type.split("/", 1)[0] + "/%"
+
+        queries: list[tuple[str, tuple[object, ...]]] = [
+            (
+                "SELECT * FROM attachment "
+                "WHERE filename IS NOT NULL AND mime_type = ? AND is_outgoing = ? "
+                "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
+                (att.mime_type, int(is_outgoing)),
+            ),
+            (
+                "SELECT * FROM attachment "
+                "WHERE filename IS NOT NULL AND uti = ? AND is_outgoing = ? "
+                "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
+                (att.uti, int(is_outgoing)),
+            ),
+        ]
+        if family is not None:
+            queries.append(
+                (
+                    "SELECT * FROM attachment "
+                    "WHERE filename IS NOT NULL AND mime_type LIKE ? AND is_outgoing = ? "
+                    "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
+                    (family, int(is_outgoing)),
+                ),
+            )
+        queries.extend([
+            (
+                "SELECT * FROM attachment "
+                "WHERE filename IS NOT NULL AND mime_type = ? "
+                "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
+                (att.mime_type,),
+            ),
+            (
+                "SELECT * FROM attachment "
+                "WHERE filename IS NOT NULL AND uti = ? "
+                "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
+                (att.uti,),
+            ),
+        ])
+        if family is not None:
+            queries.append(
+                (
+                    "SELECT * FROM attachment "
+                    "WHERE filename IS NOT NULL AND mime_type LIKE ? "
+                    "ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
+                    (family,),
+                ),
+            )
+        queries.append(
+            (
+                "SELECT * FROM attachment "
+                "WHERE filename IS NOT NULL ORDER BY (ck_sync_state = 0) DESC, ROWID DESC LIMIT 1",
+                (),
+            ),
+        )
+
+        for sql, params in queries:
+            row = cursor.execute(sql, params).fetchone()
+            if row is not None:
+                return row
+        return None
 
     def _insert_chat_handle_join(
         self, cursor: sqlite3.Cursor, chat_id: int, handle_id: int
@@ -861,7 +1055,15 @@ class SMSDatabase:
         account_guid_override: str = "",
     ) -> None:
         """UPDATE content columns of a sacrifice message, preserving CK metadata."""
+        display_text = compose_message_text(msg.text, len(msg.attachments))
         cache_has_attachments = 1 if msg.attachments else 0
+        caption_text = (
+            display_text[len(msg.attachments):]
+            if msg.attachments and display_text else (display_text or "")
+        )
+        part_count = len(msg.attachments) + (1 if caption_text else 0)
+        if part_count == 0:
+            part_count = 1
         account = msg.account if msg.account else (account_override or None)
         account_guid = (
             msg.account_guid if msg.account_guid
@@ -875,10 +1077,13 @@ class SMSDatabase:
         msi_blob = build_message_summary_info(
             service=msg.service,
             is_from_me=msg.is_from_me,
-            has_text=bool(msg.text),
+            has_text=bool(display_text),
         ) if has_msi else None
 
-        ab_blob = build_attributed_body(msg.text) if has_ab else None
+        ab_blob = build_attributed_body(
+            display_text,
+            attachment_guids=tuple(att.guid for att in msg.attachments),
+        ) if has_ab else None
 
         opt_sets = ""
         opt_params: list = []
@@ -894,6 +1099,9 @@ class SMSDatabase:
         if "ck_chat_id" in self._msg_schema:
             opt_sets += ", ck_chat_id = ?"
             opt_params.append(ck_chat_id)
+        if "part_count" in self._msg_schema:
+            opt_sets += ", part_count = ?"
+            opt_params.append(part_count)
 
         cursor.execute(
             f"""UPDATE message SET
@@ -916,7 +1124,7 @@ class SMSDatabase:
                 group_title = ?{opt_sets}
             WHERE ROWID = ?""",
             (
-                msg.text,
+                display_text,
                 handle_rowid,
                 msg.service,
                 account,
@@ -929,7 +1137,7 @@ class SMSDatabase:
                 int(msg.is_delivered),
                 int(msg.is_read),
                 int(msg.is_finished),
-                0 if msg.text else 1,
+                0 if display_text else 1,
                 int(msg.was_downgraded),
                 cache_has_attachments,
                 msg.group_title,
@@ -1277,6 +1485,8 @@ class InjectionStats(_BaseStats):
     def __init__(self):
         super().__init__()
         self.messages_inserted: int = 0
+        self.message_rowids: list[int] = []
+        self.attachment_rowids: list[int] = []
 
     def __repr__(self) -> str:
         return (

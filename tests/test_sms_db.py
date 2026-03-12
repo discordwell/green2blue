@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import plistlib
 import sqlite3
 
 import pytest
@@ -138,6 +139,17 @@ class TestChatInsertion:
             assert chat_service["service"] == "SMS"
             assert chat_service["chat"] == 1
 
+            cursor.execute(
+                """SELECT is_filtered, successful_query, last_addressed_handle,
+                          group_id, original_group_id
+                   FROM chat"""
+            )
+            row = cursor.fetchone()
+            assert row["is_filtered"] == 0
+            assert row["successful_query"] == 0
+            assert row["last_addressed_handle"] == ""
+            assert row["original_group_id"] == row["group_id"]
+
     def test_insert_group_chat(self, empty_sms_db):
         members = ("+12025551111", "+12025552222", "+12025553333")
         chat_identifier = compute_group_chat_identifier(members)
@@ -224,6 +236,48 @@ class TestChatInsertion:
             row = cursor.fetchone()
             assert row["service"] == "SMS"
             assert row["chat"] == chat_id
+
+    def test_existing_chat_backfills_visibility_fields(self, empty_sms_db):
+        with SMSDatabase(empty_sms_db) as db:
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "INSERT INTO handle (id, country, service) VALUES (?, 'us', 'SMS')",
+                ("+12025551234",),
+            )
+            handle_id = cursor.lastrowid
+            cursor.execute(
+                """INSERT INTO chat (
+                    guid, style, state, account_id, chat_identifier,
+                    service_name, display_name, account_login, group_id,
+                    server_change_token, ck_sync_state, cloudkit_record_id
+                ) VALUES (?, 45, 3, '', ?, 'SMS', '', 'E:', ?, '', 0, '')""",
+                ("any;-;+12025551234", "+12025551234", "TEST-GROUP-ID"),
+            )
+            chat_id = cursor.lastrowid
+            cursor.execute(
+                "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
+                (chat_id, handle_id),
+            )
+            db.conn.commit()
+
+            result = _make_result(
+                handles=[_make_handle()],
+                chats=[_make_chat()],
+                messages=[_make_message()],
+            )
+            db.inject(result)
+
+            cursor.execute(
+                """SELECT is_filtered, successful_query, last_addressed_handle,
+                          group_id, original_group_id
+                   FROM chat WHERE ROWID = ?""",
+                (chat_id,),
+            )
+            row = cursor.fetchone()
+            assert row["is_filtered"] == 0
+            assert row["successful_query"] is not None
+            assert row["last_addressed_handle"] == ""
+            assert row["original_group_id"] == row["group_id"]
 
 
 class TestMessageInsertion:
@@ -439,6 +493,136 @@ class TestAttachmentInsertion:
             # Check join table
             cursor.execute("SELECT COUNT(*) as cnt FROM message_attachment_join")
             assert cursor.fetchone()["cnt"] == 1
+
+    def test_cloned_attachment_template_resets_ck_metadata(self, empty_sms_db):
+        conn = sqlite3.connect(empty_sms_db)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(attachment)").fetchall()}
+        values = {
+            "ROWID": 1,
+            "guid": "at_0_template",
+            "created_date": 721692700,
+            "start_date": 0,
+            "filename": "~/Library/SMS/Attachments/aa/template/photo.jpg",
+            "uti": "public.jpeg",
+            "mime_type": "image/jpeg",
+            "transfer_state": 5,
+            "is_outgoing": 0,
+            "transfer_name": "image000000.jpg",
+            "total_bytes": 2048,
+            "user_info": sqlite3.Binary(b"bplist00fake-user-info"),
+            "sticker_user_info": sqlite3.Binary(b"bplist00fake-sticker-info"),
+            "hide_attachment": 0,
+            "ck_sync_state": 1,
+            "ck_record_id": "template-record-id",
+            "original_guid": "at_0_template",
+            "is_commsafety_sensitive": 0,
+            "preview_generation_state": 5,
+        }
+        if "ck_server_change_token_blob" in cols:
+            values["ck_server_change_token_blob"] = sqlite3.Binary(b"\x01\x02\x03")
+
+        insert_cols = [col for col in values if col in cols]
+        placeholders = ", ".join("?" for _ in insert_cols)
+        conn.execute(
+            f"INSERT INTO attachment ({', '.join(insert_cols)}) VALUES ({placeholders})",
+            tuple(values[col] for col in insert_cols),
+        )
+        conn.commit()
+        conn.close()
+
+        att = iOSAttachment(
+            guid="green2blue-att:ck-reset",
+            filename="~/Library/SMS/Attachments/bb/test-uuid/photo.jpg",
+            mime_type="image/jpeg",
+            uti="public.jpeg",
+            transfer_name="photo.jpg",
+            total_bytes=1024,
+            created_date=721692800,
+        )
+        msg = iOSMessage(
+            guid="green2blue:ck-reset",
+            text="check this",
+            handle_id="+12025551234",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier="+12025551234",
+            attachments=(att,),
+        )
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[msg],
+        )
+
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                """
+                SELECT ck_sync_state, ck_record_id, user_info, sticker_user_info,
+                       preview_generation_state, attribution_info
+                FROM attachment
+                WHERE guid = ?
+                """,
+                ("green2blue-att:ck-reset",),
+            )
+            row = cursor.fetchone()
+            assert row["ck_sync_state"] == 0
+            assert row["ck_record_id"] is None
+            assert row["user_info"] is None
+            assert row["sticker_user_info"] is None
+            assert row["preview_generation_state"] == 5
+            assert plistlib.loads(row["attribution_info"]) == {"pgenp": True}
+            if "ck_server_change_token_blob" in db._att_schema:
+                cursor.execute(
+                    "SELECT ck_server_change_token_blob FROM attachment WHERE guid = ?",
+                    ("green2blue-att:ck-reset",),
+                )
+                assert cursor.fetchone()["ck_server_change_token_blob"] is None
+
+    def test_attachment_without_template_defaults_preview_generation_state_one_for_media(self, empty_sms_db):
+        att = iOSAttachment(
+            guid="green2blue-att:no-template",
+            filename="~/Library/SMS/Attachments/cc/test-uuid/photo.jpg",
+            mime_type="image/jpeg",
+            uti="public.jpeg",
+            transfer_name="photo.jpg",
+            total_bytes=1024,
+            created_date=721692800,
+        )
+        msg = iOSMessage(
+            guid="green2blue:no-template",
+            text="check this",
+            handle_id="+12025551234",
+            date=721692800000000000,
+            date_read=721692800000000000,
+            date_delivered=0,
+            is_from_me=False,
+            service="SMS",
+            chat_identifier="+12025551234",
+            attachments=(att,),
+        )
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[msg],
+        )
+
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            row = db.conn.execute(
+                """
+                SELECT preview_generation_state, user_info, attribution_info
+                FROM attachment WHERE guid = ?
+                """,
+                ("green2blue-att:no-template",),
+            ).fetchone()
+            assert row["preview_generation_state"] == 1
+            assert row["user_info"] is None
+            assert plistlib.loads(row["attribution_info"]) == {"pgenp": True}
 
 
 class TestCloudKitMetadata:
