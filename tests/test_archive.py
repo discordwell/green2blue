@@ -9,6 +9,7 @@ from pathlib import Path
 from green2blue.archive import (
     ArchiveMergeResult,
     AndroidArchiveExportResult,
+    IOSRenderedTargetVerificationResult,
     ArchiveVerificationResult,
     CanonicalArchive,
     build_archive_report,
@@ -17,6 +18,7 @@ from green2blue.archive import (
     import_ios_backup,
     merge_archive,
     stage_ios_export,
+    verify_ios_render_target,
     verify_archive,
 )
 from green2blue.converter.timestamp import unix_ms_to_ios_ns
@@ -543,6 +545,98 @@ class TestArchiveStage:
         assert second.reused_existing is True
         assert second.verification_passed is True
         assert second.records_written == first.records_written
+
+    def test_stage_ios_export_rebuilds_tampered_stage_on_resume(
+        self,
+        sample_export_zip,
+        tmp_dir,
+    ):
+        archive_path = tmp_dir / "stage_tampered.g2b.sqlite"
+        stage_dir = tmp_dir / "stage_dir"
+
+        import_android_export(sample_export_zip, archive_path)
+
+        first = stage_ios_export(archive_path, stage_dir)
+        assert first.verification_passed is True
+        assert first.records_written > 0
+
+        with zipfile.ZipFile(first.output_zip, "w") as zf:
+            zf.writestr("messages.ndjson", "")
+
+        rebuilt = stage_ios_export(archive_path, stage_dir)
+
+        assert rebuilt.reused_existing is False
+        assert rebuilt.verification_passed is True
+        with open_export_zip(rebuilt.output_zip) as export:
+            counts = count_messages(export.ndjson_path)
+            assert counts["total"] == first.records_written
+
+
+class TestArchiveRenderVerify:
+    def test_verify_ios_render_target_passes_for_stage_injected_backup(
+        self,
+        sample_export_zip,
+        sample_backup_dir,
+        tmp_dir,
+    ):
+        archive_path = tmp_dir / "render_verify.g2b.sqlite"
+        stage_dir = tmp_dir / "stage_dir"
+
+        import_android_export(sample_export_zip, archive_path)
+        stage_result = stage_ios_export(archive_path, stage_dir)
+
+        pipeline_result = run_pipeline(
+            export_path=stage_result.output_zip,
+            backup_path_or_udid=str(sample_backup_dir),
+            dry_run=False,
+        )
+        verify_result = verify_ios_render_target(
+            stage_result.output_zip,
+            sample_backup_dir,
+            pipeline_result,
+        )
+
+        assert isinstance(verify_result, IOSRenderedTargetVerificationResult)
+        assert verify_result.passed is True
+        assert verify_result.actual_messages == pipeline_result.injection_stats.messages_inserted
+        assert verify_result.actual_attachments == pipeline_result.injection_stats.attachments_inserted
+
+    def test_verify_ios_render_target_detects_tampered_message_row(
+        self,
+        sample_export_zip,
+        sample_backup_dir,
+        tmp_dir,
+    ):
+        archive_path = tmp_dir / "render_verify_bad.g2b.sqlite"
+        stage_dir = tmp_dir / "stage_dir"
+
+        import_android_export(sample_export_zip, archive_path)
+        stage_result = stage_ios_export(archive_path, stage_dir)
+
+        pipeline_result = run_pipeline(
+            export_path=stage_result.output_zip,
+            backup_path_or_udid=str(sample_backup_dir),
+            dry_run=False,
+        )
+
+        sms_hash = compute_file_id("HomeDomain", "Library/SMS/sms.db")
+        sms_db = sample_backup_dir / sms_hash[:2] / sms_hash
+        conn = sqlite3.connect(sms_db)
+        conn.execute(
+            "UPDATE message SET text = 'tampered render target' WHERE ROWID = ?",
+            (pipeline_result.injection_stats.message_rowids[0],),
+        )
+        conn.commit()
+        conn.close()
+
+        verify_result = verify_ios_render_target(
+            stage_result.output_zip,
+            sample_backup_dir,
+            pipeline_result,
+        )
+
+        assert verify_result.passed is False
+        assert any("messages do not match" in error for error in verify_result.errors)
 
 
 class TestArchiveExport:

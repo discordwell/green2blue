@@ -238,7 +238,15 @@ inject from it.
 
 `archive stage-ios` gives you a durable, reusable export bundle instead of a
 throwaway temp ZIP. The merge wizard now uses the same staged-export pattern
-under `.g2b_stages/<BACKUP_UDID>`.
+under `.g2b_stages/<BACKUP_UDID>`. Existing stage bundles are re-verified
+against the archive render plan before reuse, and rebuilt automatically if
+they drifted or were tampered with.
+
+`archive inject-ios` now verifies the modified iPhone backup after render too,
+not just the staged ZIP before render. After a non-dry-run inject it checks the
+exact message and attachment rowids written into `sms.db` against the staged
+export re-converted through the normal pipeline. The merged wizard uses the
+same gate before it offers live device restore.
 
 ### Privacy-Safe Corpus Capture
 

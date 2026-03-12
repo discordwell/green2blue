@@ -10,6 +10,10 @@ from .db import ArchiveSummary, CanonicalArchive
 from .export_android import AndroidArchiveExportResult, export_merged_android_zip
 from .ios_import import IOSArchiveImportResult, import_ios_backup
 from .merge import ArchiveMergeResult, merge_archive
+from .render_verify import (
+    IOSRenderedTargetVerificationResult,
+    verify_ios_render_target,
+)
 from .report import ArchiveReport, build_archive_report
 from .stage import IOSStageResult, stage_ios_export
 from .verify import ArchiveVerificationResult, verify_archive
@@ -24,11 +28,13 @@ __all__ = [
     "CanonicalArchive",
     "IOSStageResult",
     "IOSArchiveImportResult",
+    "IOSRenderedTargetVerificationResult",
     "build_archive_report",
     "export_merged_android_zip",
     "import_android_export",
     "import_ios_backup",
     "merge_archive",
     "stage_ios_export",
+    "verify_ios_render_target",
     "verify_archive",
 ]

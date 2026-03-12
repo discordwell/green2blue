@@ -510,6 +510,7 @@ def _step_confirm_and_merge(
         merge_archive,
         stage_ios_export,
         verify_archive,
+        verify_ios_render_target,
     )
     from green2blue.models import CKStrategy, InjectionMode
     from green2blue.pipeline import run_pipeline
@@ -615,8 +616,36 @@ def _step_confirm_and_merge(
         service="SMS",
         injection_mode=InjectionMode.INSERT,
     )
+    render_verify_result = verify_ios_render_target(
+        stage_result.output_zip,
+        backup_info.path,
+        result,
+        country=country,
+        skip_duplicates=True,
+        password=password,
+        ck_strategy=CKStrategy.NONE,
+        service="SMS",
+    )
 
-    _step_results(result, has_attachments, backup_info, password)
+    status = "PASSED" if render_verify_result.passed else "FAILED"
+    print(
+        f"  Rendered target verification: {status} "
+        f"({render_verify_result.checks_passed}/{render_verify_result.checks_run})"
+    )
+    for warning in render_verify_result.warnings:
+        print(f"    WARNING: {warning}")
+    for error in render_verify_result.errors:
+        print(f"    ERROR: {error}")
+    print()
+
+    _step_results(
+        result,
+        has_attachments,
+        backup_info,
+        password,
+        render_target_passed=render_verify_result.passed,
+        render_target_errors=render_verify_result.errors,
+    )
 
 
 def _confirm_yes_no(prompt: str) -> None:
@@ -666,6 +695,9 @@ def _step_results(
     has_attachments: bool,
     backup_info: BackupInfo,
     password: str | None,
+    *,
+    render_target_passed: bool = True,
+    render_target_errors: tuple[str, ...] = (),
 ) -> None:
     """Print injection results and platform-aware next steps."""
     stats = result.injection_stats
@@ -699,6 +731,13 @@ def _step_results(
 
     if result.safety_copy_path:
         print(f"\n    Safety copy at: {result.safety_copy_path}")
+
+    if not render_target_passed:
+        print("\n  Automatic device restore is disabled because rendered target verification failed.")
+        for error in render_target_errors:
+            print(f"    - {error}")
+        _print_manual_restore_instructions()
+        return
 
     if result.verification and not result.verification.passed:
         print("\n  Automatic device restore is disabled because verification failed.")

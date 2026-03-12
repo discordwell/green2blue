@@ -1429,7 +1429,11 @@ def _cmd_archive_stage_ios(args: argparse.Namespace) -> int:
 
 def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
     """Export the merged archive view and inject it into an iPhone backup."""
-    from green2blue.archive import export_merged_android_zip, stage_ios_export
+    from green2blue.archive import (
+        export_merged_android_zip,
+        stage_ios_export,
+        verify_ios_render_target,
+    )
     from green2blue.ios.backup import find_backup
     from green2blue.models import CKStrategy, InjectionMode
     from green2blue.pipeline import run_pipeline
@@ -1451,6 +1455,7 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
             backup_info = find_backup(str(confirmed_path), args.backup_root)
 
     ck_strategy = CKStrategy(args.ck_strategy)
+    render_verify_result = None
 
     if args.stage_dir is not None:
         stage_result = stage_ios_export(
@@ -1485,6 +1490,17 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
             sacrifice_chats=args.sacrifice_chats,
             disable_icloud_sync=args.disable_icloud_sync,
         )
+        if not args.dry_run:
+            render_verify_result = verify_ios_render_target(
+                export_zip,
+                backup_info.path,
+                result,
+                country=args.country,
+                skip_duplicates=args.skip_duplicates,
+                password=args.password,
+                ck_strategy=ck_strategy,
+                service=args.service,
+            )
     else:
         with tempfile.TemporaryDirectory(prefix="g2b_archive_inject_") as tmpdir:
             export_zip = Path(tmpdir) / "merged_export.zip"
@@ -1512,6 +1528,17 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
                 sacrifice_chats=args.sacrifice_chats,
                 disable_icloud_sync=args.disable_icloud_sync,
             )
+            if not args.dry_run:
+                render_verify_result = verify_ios_render_target(
+                    export_zip,
+                    backup_info.path,
+                    result,
+                    country=args.country,
+                    skip_duplicates=args.skip_duplicates,
+                    password=args.password,
+                    ck_strategy=ck_strategy,
+                    service=args.service,
+                )
 
     cl_stats = result.clone_stats
     ow_stats = result.overwrite_stats
@@ -1545,11 +1572,24 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
         for warn in v.warnings:
             print(f"  WARNING: {warn}")
 
+    if render_verify_result is not None:
+        status = "PASSED" if render_verify_result.passed else "FAILED"
+        print(
+            f"Rendered target:   {status} "
+            f"({render_verify_result.checks_passed}/{render_verify_result.checks_run} checks)"
+        )
+        for err in render_verify_result.errors:
+            print(f"  ERROR: {err}")
+        for warn in render_verify_result.warnings:
+            print(f"  WARNING: {warn}")
+
     if result.conversion_warnings:
         print(f"\nWarnings ({len(result.conversion_warnings)}):")
         for w in result.conversion_warnings[:10]:
             print(f"  - {w}")
 
+    if render_verify_result is not None and not render_verify_result.passed:
+        return 3
     return 0 if not result.verification or result.verification.passed else 2
 
 

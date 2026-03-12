@@ -86,4 +86,5 @@ Android-to-iPhone injector into a universal backup and merge tool.
 - Done: stronger direct-chat identity matching via normalized title/address hints.
 - Done: archive verification checks for import/merge consistency before render or inject.
 - Done: durable reusable iOS stage bundles for merged exports.
-- Next: fuller rendered-target verification after stage/export and more resilient large-history workflow orchestration beyond current import/stage resume.
+- Done: rendered-target verification against the exact message/attachment rowids written into the modified iPhone backup.
+- Next: more resilient large-history workflow orchestration beyond current import/stage resume.

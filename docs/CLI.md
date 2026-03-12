@@ -193,3 +193,16 @@ completed import run instead of creating a second empty/deduped run. Use
 
 The stage command is resumable by default and will reuse a matching stage
 directory when the archive path, merge run, country, and mode all match.
+It also re-verifies the existing staged ZIP against the archive render plan and
+rebuilds the stage automatically if the bundle drifted or was tampered with.
+
+`archive inject-ios` now performs two verification layers after a non-dry-run
+inject:
+- backup integrity verification on the modified backup
+- rendered-target verification against the specific `sms.db` rowids written by
+  that inject run
+
+The rendered-target check compares the targeted message and attachment rows in
+the modified iPhone backup against the staged export re-rendered through the
+normal conversion path. If the stage bundle is fine but the modified backup no
+longer matches the intended rendered rows, `archive inject-ios` exits non-zero.

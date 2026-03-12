@@ -19,6 +19,7 @@ from green2blue.wizard import (
     _detect_country,
     _pick_backup,
     _print_no_backups_help,
+    _step_results,
     _step_workflow_choice,
     _step_welcome,
     _us_numbers_pass,
@@ -282,6 +283,7 @@ class TestWizardHappyPath:
             patch("green2blue.archive.build_archive_report") as mock_report,
             patch("green2blue.archive.verify_archive") as mock_verify,
             patch("green2blue.archive.stage_ios_export") as mock_stage,
+            patch("green2blue.archive.verify_ios_render_target") as mock_render_verify,
             patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
         ):
             mock_import_android.return_value = MagicMock(messages_imported=4)
@@ -319,6 +321,13 @@ class TestWizardHappyPath:
             mock_result.verification = MagicMock(passed=True)
             mock_result.safety_copy_path = tmp_dir / "safety"
             mock_pipeline.return_value = mock_result
+            mock_render_verify.return_value = MagicMock(
+                passed=True,
+                checks_passed=6,
+                checks_run=6,
+                warnings=(),
+                errors=(),
+            )
 
             ret = run_wizard()
 
@@ -329,6 +338,7 @@ class TestWizardHappyPath:
         mock_report.assert_called_once()
         mock_verify.assert_called_once()
         mock_stage.assert_called_once()
+        mock_render_verify.assert_called_once()
         mock_pipeline.assert_called_once()
 
     def test_wizard_live_device_restore_flow(self, tmp_dir):
@@ -417,6 +427,38 @@ class TestWizardHappyPath:
         mock_restore_backup.assert_called_once()
         assert mock_restore_backup.call_args.kwargs["backup_dir"] == backup_path.parent
         assert mock_restore_backup.call_args.kwargs["udid"] == "LIVE-TEST"
+
+    def test_step_results_blocks_live_restore_when_rendered_target_verification_fails(self, tmp_dir):
+        backup_info = BackupInfo(
+            path=tmp_dir / "backup",
+            udid="RENDER-FAIL",
+            device_name="Render Fail iPhone",
+            product_version="17.4",
+            is_encrypted=False,
+        )
+        mock_result = MagicMock()
+        mock_result.injection_stats = MagicMock(messages_inserted=2, messages_skipped=0)
+        mock_result.clone_stats = None
+        mock_result.overwrite_stats = None
+        mock_result.total_attachments_copied = 0
+        mock_result.verification = MagicMock(passed=True, errors=())
+        mock_result.safety_copy_path = None
+
+        with (
+            patch("green2blue.wizard._step_offer_device_restore") as mock_offer_restore,
+            patch("green2blue.wizard._print_manual_restore_instructions") as mock_manual,
+        ):
+            _step_results(
+                mock_result,
+                False,
+                backup_info,
+                None,
+                render_target_passed=False,
+                render_target_errors=("render mismatch",),
+            )
+
+        mock_offer_restore.assert_not_called()
+        mock_manual.assert_called_once()
 
     def test_wizard_with_no_backups(self, tmp_dir):
         """Wizard exits gracefully when no backups found."""

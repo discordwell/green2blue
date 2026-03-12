@@ -734,6 +734,127 @@ class TestArchiveCommands:
 
         assert ret == 0
 
+    def test_archive_inject_ios_runs_rendered_target_verification(self, tmp_dir, capsys):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+        stage_dir = tmp_dir / "stage"
+
+        with (
+            patch("green2blue.archive.stage_ios_export") as mock_stage,
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+            patch("green2blue.archive.verify_ios_render_target") as mock_render_verify,
+        ):
+            mock_stage.return_value = MagicMock(
+                stage_dir=stage_dir,
+                output_zip=stage_dir / "merged_export.zip",
+                metadata_path=stage_dir / "stage_metadata.json",
+                verification_passed=True,
+                verification_errors=(),
+            )
+            mock_result = MagicMock()
+            mock_result.clone_stats = None
+            mock_result.overwrite_stats = None
+            mock_result.injection_stats = MagicMock(
+                messages_inserted=2,
+                messages_skipped=0,
+            )
+            mock_result.total_messages_parsed = 2
+            mock_result.skipped_count = 0
+            mock_result.safety_copy_path = None
+            mock_result.verification = MagicMock(
+                passed=True,
+                checks_passed=6,
+                checks_run=6,
+                errors=(),
+                warnings=(),
+            )
+            mock_result.conversion_warnings = []
+            mock_pipeline.return_value = mock_result
+            mock_render_verify.return_value = MagicMock(
+                passed=True,
+                checks_passed=6,
+                checks_run=6,
+                errors=(),
+                warnings=(),
+            )
+
+            ret = main([
+                "archive", "inject-ios",
+                str(archive_path),
+                "--backup", str(backup_dir),
+                "--stage-dir", str(stage_dir),
+                "--yes",
+            ])
+
+        assert ret == 0
+        assert mock_render_verify.called
+        assert "Rendered target:   PASSED" in capsys.readouterr().out
+
+    def test_archive_inject_ios_fails_when_rendered_target_verification_fails(
+        self,
+        tmp_dir,
+        capsys,
+    ):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+        stage_dir = tmp_dir / "stage"
+
+        with (
+            patch("green2blue.archive.stage_ios_export") as mock_stage,
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+            patch("green2blue.archive.verify_ios_render_target") as mock_render_verify,
+        ):
+            mock_stage.return_value = MagicMock(
+                stage_dir=stage_dir,
+                output_zip=stage_dir / "merged_export.zip",
+                metadata_path=stage_dir / "stage_metadata.json",
+                verification_passed=True,
+                verification_errors=(),
+            )
+            mock_result = MagicMock()
+            mock_result.clone_stats = None
+            mock_result.overwrite_stats = None
+            mock_result.injection_stats = MagicMock(
+                messages_inserted=2,
+                messages_skipped=0,
+            )
+            mock_result.total_messages_parsed = 2
+            mock_result.skipped_count = 0
+            mock_result.safety_copy_path = None
+            mock_result.verification = MagicMock(
+                passed=True,
+                checks_passed=6,
+                checks_run=6,
+                errors=(),
+                warnings=(),
+            )
+            mock_result.conversion_warnings = []
+            mock_pipeline.return_value = mock_result
+            mock_render_verify.return_value = MagicMock(
+                passed=False,
+                checks_passed=4,
+                checks_run=6,
+                errors=("render mismatch",),
+                warnings=(),
+            )
+
+            ret = main([
+                "archive", "inject-ios",
+                str(archive_path),
+                "--backup", str(backup_dir),
+                "--stage-dir", str(stage_dir),
+                "--yes",
+            ])
+
+        assert ret == 3
+        captured = capsys.readouterr()
+        assert "Rendered target:   FAILED" in captured.out
+        assert "render mismatch" in captured.out
+
 
 class TestCorpusCommands:
     def test_corpus_capture_creates_zip(self, sample_export_zip, tmp_dir):
