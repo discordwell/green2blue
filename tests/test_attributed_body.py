@@ -6,6 +6,7 @@ from green2blue.ios.attributed_body import (
     _SUFFIX,
     _encode_typedstream_int,
     build_attributed_body,
+    build_attributed_body_with_metadata,
 )
 from green2blue.ios.sms_db import SMSDatabase
 from green2blue.models import (
@@ -248,8 +249,6 @@ class TestBuildAttributedBody:
             "1D5F5F6B494D4D657373616765506172744174747269627574654E616D65"
             "86"
             "92"
-            "9B"
-            "92"
             "849D9C9F99"
             "01"
             "868686"
@@ -305,16 +304,10 @@ class TestBuildAttributedBody:
             "849899"
             "02"
             "92"
-            "849696"
-            "225F5F6B494D46696C655472616E73666572475549444174747269627574654E616D65"
-            "86"
+            "99"
             "92"
             "849696"
             "2961745F315F36343236454444382D443331392D344143442D424345302D433642423334453832354242"
-            "86"
-            "92"
-            "849696"
-            "1D5F5F6B494D4D657373616765506172744174747269627574654E616D65"
             "86"
             "92"
             "9B"
@@ -328,6 +321,82 @@ class TestBuildAttributedBody:
             attachment_guids=(
                 "at_0_6426EDD8-D319-4ACD-BCE0-C6BB34E825BB",
                 "at_1_6426EDD8-D319-4ACD-BCE0-C6BB34E825BB",
+            ),
+        ) == expected
+
+    def test_two_attachments_with_caption_exact_match(self):
+        expected = bytes.fromhex(
+            "040B73747265616D747970656481E803"
+            "840140"
+            "848484124E5341747472696275746564537472696E6700"
+            "8484084E534F626A65637400"
+            "85"
+            "92"
+            "848484084E53537472696E6701"
+            "94"
+            "84012B"
+            "18EFBFBCEFBFBC486F706520796F7520617265206861707079"
+            "86"
+            "84026949"
+            "0101"
+            "92"
+            "8484840C4E5344696374696F6E61727900"
+            "94"
+            "840169"
+            "02"
+            "92"
+            "849696"
+            "225F5F6B494D46696C655472616E73666572475549444174747269627574654E616D65"
+            "86"
+            "92"
+            "849696"
+            "2961745F305F41334333313639452D313333322D344234312D393537422D393835303241353332313439"
+            "86"
+            "92"
+            "849696"
+            "1D5F5F6B494D4D657373616765506172744174747269627574654E616D65"
+            "86"
+            "92"
+            "848484084E534E756D62657200"
+            "8484074E5356616C756500"
+            "94"
+            "84012A"
+            "84"
+            "9999"
+            "00"
+            "8686"
+            "970201"
+            "92"
+            "849899"
+            "02"
+            "92"
+            "99"
+            "92"
+            "849696"
+            "2961745F315F41334333313639452D313333322D344234312D393537422D393835303241353332313439"
+            "86"
+            "92"
+            "9B"
+            "92"
+            "849D9C9F99"
+            "01"
+            "8686"
+            "970312"
+            "92"
+            "849899"
+            "01"
+            "92"
+            "9B"
+            "92"
+            "849D9C9F99"
+            "02"
+            "868686"
+        )
+        assert build_attributed_body(
+            "\uFFFC\uFFFCHope you are happy",
+            attachment_guids=(
+                "at_0_A3C3169E-1332-4B41-957B-98502A532149",
+                "at_1_A3C3169E-1332-4B41-957B-98502A532149",
             ),
         ) == expected
 
@@ -425,6 +494,27 @@ class TestBuildAttributedBody:
         blob1 = build_attributed_body("Deterministic")
         blob2 = build_attributed_body("Deterministic")
         assert blob1 == blob2
+
+    def test_url_message_prefers_rich_builder_when_available(self, monkeypatch):
+        text = "See https://example.com/link"
+        monkeypatch.setattr(
+            "green2blue.ios.attributed_body._build_url_attributed_body",
+            lambda value: b"rich-url-blob" if value == text else None,
+        )
+        blob, has_dd_results = build_attributed_body_with_metadata(text)
+        assert blob == b"rich-url-blob"
+        assert has_dd_results is True
+
+    def test_url_message_falls_back_cleanly_when_rich_builder_unavailable(self, monkeypatch):
+        text = "See https://example.com/link"
+        monkeypatch.setattr(
+            "green2blue.ios.attributed_body._build_url_attributed_body",
+            lambda value: None,
+        )
+        blob, has_dd_results = build_attributed_body_with_metadata(text)
+        assert blob is not None
+        assert text.encode("utf-8") in blob
+        assert has_dd_results is False
 
 
 class TestAttributedBodyInjection:

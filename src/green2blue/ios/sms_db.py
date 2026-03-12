@@ -23,7 +23,10 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 from green2blue.exceptions import CloneSourceError, DatabaseError, InsufficientSacrificeError
-from green2blue.ios.attributed_body import build_attributed_body
+from green2blue.ios.attributed_body import (
+    build_attributed_body,
+    build_attributed_body_with_metadata,
+)
 from green2blue.ios.message_summary import build_message_summary_info
 from green2blue.ios.trigger_utils import (
     drop_triggers,
@@ -614,10 +617,10 @@ class SMSDatabase:
         has_ab = "attributedBody" in self._msg_schema
         ab_cols = "\n                attributedBody," if has_ab else ""
         ab_vals = "\n                ?," if has_ab else ""
-        ab_blob = build_attributed_body(
+        ab_blob, has_dd_results = build_attributed_body_with_metadata(
             display_text,
             attachment_guids=tuple(att.guid for att in msg.attachments),
-        ) if has_ab else None
+        ) if has_ab else (None, 0)
 
         # destination_caller_id (device owner's phone)
         has_dci = "destination_caller_id" in self._msg_schema
@@ -665,7 +668,7 @@ class SMSDatabase:
                 ?, ?, ?,
                 ?, 0, 0, 0,
                 10, 0, 0, 0, 0,
-                0, 0, 0,
+                0, ?, 0,
                 0, 0, 1, 0,
                 0, 0, 0,
                 0, 0, 0,
@@ -699,6 +702,7 @@ class SMSDatabase:
                 int(msg.was_downgraded),
                 cache_has_attachments,
                 msg.group_title,
+                int(has_dd_results),
                 msg.ck_sync_state,
                 msg.ck_record_id,
                 msg.ck_record_change_tag,
@@ -1114,10 +1118,10 @@ class SMSDatabase:
             has_text=bool(display_text),
         ) if has_msi else None
 
-        ab_blob = build_attributed_body(
+        ab_blob, has_dd_results = build_attributed_body_with_metadata(
             display_text,
             attachment_guids=tuple(att.guid for att in msg.attachments),
-        ) if has_ab else None
+        ) if has_ab else (None, 0)
 
         opt_sets = ""
         opt_params: list = []
@@ -1127,6 +1131,8 @@ class SMSDatabase:
         if has_ab:
             opt_sets += ", attributedBody = ?"
             opt_params.append(ab_blob)
+        opt_sets += ", has_dd_results = ?"
+        opt_params.append(int(has_dd_results))
         if "destination_caller_id" in self._msg_schema:
             opt_sets += ", destination_caller_id = ?"
             opt_params.append(destination_caller_id or None)

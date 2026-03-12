@@ -337,6 +337,25 @@ class TestMessageInsertion:
             db.inject(result, skip_duplicates=False)
             assert db.get_message_count() == 5
 
+    def test_url_message_sets_has_dd_results_when_rich_body_available(self, empty_sms_db, monkeypatch):
+        text = "See https://example.com/link"
+        monkeypatch.setattr(
+            "green2blue.ios.sms_db.build_attributed_body_with_metadata",
+            lambda display_text, *, attachment_guids=(): (b"rich-url-blob", True),
+        )
+        result = _make_result(
+            handles=[_make_handle()],
+            chats=[_make_chat()],
+            messages=[_make_message(text=text)],
+        )
+        with SMSDatabase(empty_sms_db) as db:
+            db.inject(result)
+            row = db.conn.execute(
+                "SELECT has_dd_results, attributedBody FROM message"
+            ).fetchone()
+            assert row["has_dd_results"] == 1
+            assert row["attributedBody"] == b"rich-url-blob"
+
 
 class TestJoinTables:
     def test_chat_handle_join(self, empty_sms_db):

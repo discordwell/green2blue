@@ -188,6 +188,36 @@ class TestOverwriteContentUpdate:
         assert row["attributedBody"] is not None
         conn.close()
 
+    def test_has_dd_results_updated_for_rich_url_body(self, empty_sms_db: Path, monkeypatch):
+        chat_id, msg_ids = _populate_sacrifice_db(empty_sms_db, "+15551110000", 1)
+        android_msg = _make_message(
+            "+15552220000",
+            "See https://example.com/link",
+            800000000000000000,
+        )
+        result = _make_result(
+            [android_msg],
+            [_make_handle("+15552220000")],
+            [_make_chat("+15552220000")],
+        )
+        monkeypatch.setattr(
+            "green2blue.ios.sms_db.build_attributed_body_with_metadata",
+            lambda display_text, *, attachment_guids=(): (b"rich-url-blob", True),
+        )
+
+        with SMSDatabase(empty_sms_db) as db:
+            db.overwrite(result, [chat_id])
+
+        conn = sqlite3.connect(empty_sms_db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT has_dd_results, attributedBody FROM message WHERE ROWID = ?",
+            (msg_ids[0],),
+        ).fetchone()
+        assert row["has_dd_results"] == 1
+        assert row["attributedBody"] == b"rich-url-blob"
+        conn.close()
+
     def test_message_summary_info_updated(self, empty_sms_db: Path):
         chat_id, msg_ids = _populate_sacrifice_db(empty_sms_db, "+15551110000", 1)
         android_msg = _make_message("+15552220000", "Has MSI", 800000000000000000)

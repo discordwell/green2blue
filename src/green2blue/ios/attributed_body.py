@@ -36,14 +36,21 @@ Length encoding (typedstream integer format):
 
 Verified: The generator produces byte-identical output to real iOS blobs
 for all 91 tested simple NSAttributedString messages (100% match rate).
-Complex messages (containing detected data like URLs, phone numbers,
-dates, or money amounts) have additional attribute runs; iOS regenerates
-these after restore via data detection, so the simple form is correct.
+Clickable URL messages are different: they use NSMutableAttributedString
+with explicit link attributes. On macOS we build that richer form via a
+small Foundation helper; otherwise we fall back to the simple form.
 """
 
 from __future__ import annotations
 
+import re
+import shutil
 import struct
+import subprocess
+import sys
+import tempfile
+from functools import lru_cache
+from pathlib import Path
 
 from green2blue.models import ATTACHMENT_PLACEHOLDER
 
@@ -133,7 +140,66 @@ _FIRST_NUMBER_PREFIX = bytes.fromhex(
     "84"
     "9999"
 )
-_NEXT_NUMBER_PREFIX = bytes.fromhex("929b92849d9c9f99")
+_NEXT_NUMBER_PREFIX = bytes.fromhex("92849d9c9f99")
+_NEXT_FILE_TRANSFER_KEY_REF = bytes.fromhex("9299")
+_NEXT_MESSAGE_PART_KEY_REF = bytes.fromhex("929b")
+_URL_RE = re.compile(r"https?://\S+")
+_URL_HELPER_SOURCE = """import Foundation
+let text = CommandLine.arguments[1]
+let pattern = #"https?://\\S+"#
+let regex = try! NSRegularExpression(pattern: pattern)
+let nsText = text as NSString
+let full = NSRange(location: 0, length: nsText.length)
+let s = NSMutableAttributedString(string: text)
+s.addAttribute(NSAttributedString.Key(rawValue: "__kIMMessagePartAttributeName"), value: NSNumber(value: 0), range: full)
+for match in regex.matches(in: text, range: full) {
+    let urlString = nsText.substring(with: match.range)
+    if let url = URL(string: urlString) {
+        s.addAttribute(NSAttributedString.Key(rawValue: "__kIMLinkAttributeName"), value: url, range: match.range)
+    }
+}
+let data = NSArchiver.archivedData(withRootObject: s)
+print(data.map { String(format: "%02X", $0) }.joined())
+"""
+
+
+def _swift_path() -> str | None:
+    if sys.platform != "darwin":
+        return None
+    return shutil.which("swift")
+
+
+@lru_cache(maxsize=1)
+def _url_helper_path() -> Path | None:
+    if _swift_path() is None:
+        return None
+    helper_path = Path(tempfile.gettempdir()) / "green2blue_url_attributed_body.swift"
+    if not helper_path.exists() or helper_path.read_text() != _URL_HELPER_SOURCE:
+        helper_path.write_text(_URL_HELPER_SOURCE)
+    return helper_path
+
+
+@lru_cache(maxsize=256)
+def _build_url_attributed_body(text: str) -> bytes | None:
+    helper_path = _url_helper_path()
+    swift = _swift_path()
+    if helper_path is None or swift is None or _URL_RE.search(text) is None:
+        return None
+    proc = subprocess.run(
+        [swift, str(helper_path), text],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    blob_hex = proc.stdout.strip()
+    if not blob_hex:
+        return None
+    try:
+        return bytes.fromhex(blob_hex)
+    except ValueError:
+        return None
 
 
 def _string_object(value: str) -> bytes:
@@ -157,9 +223,15 @@ def _attribute_dict(
     body = bytearray(prefix)
     body += _encode_typedstream_int(key_count)
     if file_transfer_guid:
-        body += _string_object(_FILE_TRANSFER_KEY)
+        if first:
+            body += _string_object(_FILE_TRANSFER_KEY)
+        else:
+            body += _NEXT_FILE_TRANSFER_KEY_REF
         body += _string_object(file_transfer_guid)
-    body += _string_object(_MESSAGE_PART_KEY)
+    if not first and (file_transfer_guid or part_index > 1):
+        body += _NEXT_MESSAGE_PART_KEY_REF
+    else:
+        body += _string_object(_MESSAGE_PART_KEY)
     body += _number_object(part_index, first=first)
     return bytes(body)
 
@@ -202,6 +274,41 @@ def _build_multipart_attributed_body(
     return bytes(blob)
 
 
+def build_attributed_body_with_metadata(
+    text: str | None,
+    *,
+    attachment_guids: tuple[str, ...] = (),
+) -> tuple[bytes | None, bool]:
+    """Build an attributedBody blob and report whether DD results are embedded."""
+    if not text:
+        if attachment_guids:
+            text = ATTACHMENT_PLACEHOLDER * len(attachment_guids)
+        else:
+            return None, False
+
+    if attachment_guids:
+        return _build_multipart_attributed_body(text, attachment_guids), False
+
+    url_blob = _build_url_attributed_body(text)
+    if url_blob is not None:
+        return url_blob, True
+
+    text_bytes = text.encode("utf-8")
+    utf8_len = len(text_bytes)
+    utf16_len = len(text.encode("utf-16-le")) // 2
+
+    return (
+        _PREFIX
+        + _encode_typedstream_int(utf8_len)
+        + text_bytes
+        + _MIDDLE
+        + b"\x01"
+        + _encode_typedstream_int(utf16_len)
+        + _SUFFIX,
+        False,
+    )
+
+
 def build_attributed_body(
     text: str | None,
     *,
@@ -222,29 +329,8 @@ def build_attributed_body(
     Returns:
         Typedstream blob bytes, or None if text is empty/None.
     """
-    if not text:
-        if attachment_guids:
-            text = ATTACHMENT_PLACEHOLDER * len(attachment_guids)
-        else:
-            return None
-
-    if attachment_guids:
-        return _build_multipart_attributed_body(text, attachment_guids)
-
-    if not text:
-        return None
-
-    text_bytes = text.encode("utf-8")
-    utf8_len = len(text_bytes)
-    # NSString.length counts UTF-16 code units, not characters or bytes
-    utf16_len = len(text.encode("utf-16-le")) // 2
-
-    return (
-        _PREFIX
-        + _encode_typedstream_int(utf8_len)
-        + text_bytes
-        + _MIDDLE
-        + b"\x01"  # 1 attribute run
-        + _encode_typedstream_int(utf16_len)
-        + _SUFFIX
+    blob, _ = build_attributed_body_with_metadata(
+        text,
+        attachment_guids=attachment_guids,
     )
+    return blob
