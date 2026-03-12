@@ -467,6 +467,21 @@ def _build_parser() -> argparse.ArgumentParser:
     archive_report.add_argument("-q", "--quiet", action="store_true")
     archive_report.set_defaults(func=_cmd_archive_report)
 
+    archive_merge = archive_subs.add_parser(
+        "merge",
+        help="Materialize a merged cross-source view inside a canonical archive",
+    )
+    archive_merge.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_merge.add_argument(
+        "--country",
+        type=str,
+        default="US",
+        help="Default country code for participant normalization (default: US)",
+    )
+    archive_merge.add_argument("-v", "--verbose", action="store_true")
+    archive_merge.add_argument("-q", "--quiet", action="store_true")
+    archive_merge.set_defaults(func=_cmd_archive_merge)
+
     # --- corpus (privacy-safe sample capture) ---
     corpus_parser = subparsers.add_parser(
         "corpus",
@@ -1083,6 +1098,7 @@ def _cmd_archive_report(args: argparse.Namespace) -> int:
     print(f"  Messages:                {report.summary.messages}")
     print(f"  Messages with media:     {report.messages_with_attachments}")
     print(f"  Messages with URLs:      {report.messages_with_url}")
+    print(f"  Merge runs:              {report.merge_runs}")
 
     print("\nMessage sources:")
     for key, value in sorted(report.source_type_counts.items()):
@@ -1105,11 +1121,31 @@ def _cmd_archive_report(args: argparse.Namespace) -> int:
         for mime_type, count in report.top_attachment_mime_types:
             print(f"  {mime_type}: {count}")
 
+    if report.latest_merge:
+        print("\nLatest merge:")
+        print(f"  Run ID:              {report.latest_merge['id']}")
+        print(f"  Merged conversations:{report.latest_merge['merged_conversations']}")
+        print(f"  Merged messages:     {report.latest_merge['merged_messages']}")
+        print(f"  Duplicate messages:  {report.latest_merge['duplicate_messages']}")
+
     if report.warnings:
         print("\nWarnings:")
         for warning in report.warnings:
             print(f"  - {warning}")
 
+    return 0
+
+
+def _cmd_archive_merge(args: argparse.Namespace) -> int:
+    """Materialize a merged cross-source view inside a canonical archive."""
+    from green2blue.archive import merge_archive
+
+    result = merge_archive(args.archive_path, country=args.country)
+    print(f"Archive: {result.archive_path}")
+    print(f"  Merge run ID:          {result.merge_run_id}")
+    print(f"  Merged conversations:  {result.merged_conversations}")
+    print(f"  Merged messages:       {result.merged_messages}")
+    print(f"  Duplicate messages:    {result.duplicate_messages}")
     return 0
 
 

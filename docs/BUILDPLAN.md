@@ -76,4 +76,5 @@ Android-to-iPhone injector into a universal backup and merge tool.
 - Done: product docs, privacy-safe Android corpus capture, canonical archive scaffolding.
 - Done: Android export import into the canonical archive.
 - Done: iPhone backup import into the canonical archive.
-- Next: archive-aware reporting, merge logic, and wizard orchestration.
+- Done: archive-aware reporting and first-pass cross-source merge materialization.
+- Next: better identity resolution, richer unsupported-feature warnings, and wizard orchestration.

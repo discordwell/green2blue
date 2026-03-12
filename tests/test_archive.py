@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import sqlite3
+import zipfile
 from pathlib import Path
 
 from green2blue.archive import (
+    ArchiveMergeResult,
     CanonicalArchive,
     build_archive_report,
     import_android_export,
     import_ios_backup,
+    merge_archive,
 )
 from green2blue.converter.timestamp import unix_ms_to_ios_ns
 from green2blue.ios.manifest import compute_file_id
@@ -205,3 +208,119 @@ class TestArchiveReport:
         assert report.messages_with_attachments >= 2
         assert report.messages_with_url == 0
         assert any("cross-source merge" in warning for warning in report.warnings)
+
+
+def _create_matching_android_export(tmp_dir: Path) -> Path:
+    zip_path = tmp_dir / "matching_android.zip"
+    content = (
+        '{"address":"+12025550101","body":"Hello from iPhone","date":"1700000000000","type":"1","read":"1"}\n'
+    )
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("messages.ndjson", content)
+    return zip_path
+
+
+class TestArchiveMerge:
+    def test_merge_archive_materializes_cross_source_dedup(
+        self,
+        sample_backup_dir,
+        tmp_dir,
+    ):
+        _populate_ios_backup(sample_backup_dir)
+        android_zip = _create_matching_android_export(tmp_dir)
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+
+        import_android_export(android_zip, archive_path)
+        import_ios_backup(sample_backup_dir, archive_path)
+
+        result = merge_archive(archive_path)
+
+        assert isinstance(result, ArchiveMergeResult)
+        assert result.merged_conversations == 1
+        assert result.merged_messages == 2
+        assert result.duplicate_messages == 1
+
+        conn = sqlite3.connect(archive_path)
+        conn.row_factory = sqlite3.Row
+        merge_run = conn.execute(
+            "SELECT merged_conversation_count, merged_message_count, duplicate_message_count FROM merge_runs",
+        ).fetchone()
+        assert dict(merge_run) == {
+            "merged_conversation_count": 1,
+            "merged_message_count": 2,
+            "duplicate_message_count": 1,
+        }
+        dedup_rows = conn.execute(
+            """
+            SELECT is_duplicate
+            FROM merged_messages
+            ORDER BY is_duplicate, message_id
+            """
+        ).fetchall()
+        assert [row["is_duplicate"] for row in dedup_rows] == [0, 0, 1]
+        conn.close()
+
+    def test_report_shows_latest_merge(self, sample_backup_dir, tmp_dir):
+        _populate_ios_backup(sample_backup_dir)
+        android_zip = _create_matching_android_export(tmp_dir)
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+
+        import_android_export(android_zip, archive_path)
+        import_ios_backup(sample_backup_dir, archive_path)
+        merge_archive(archive_path)
+
+        report = build_archive_report(archive_path)
+
+        assert report.merge_runs == 1
+        assert report.latest_merge is not None
+        assert report.latest_merge["merged_conversations"] == 1
+        assert report.latest_merge["duplicate_messages"] == 1
+        assert not any("cross-source merge" in warning for warning in report.warnings)
+
+
+class TestArchiveWarnings:
+    def test_report_warns_on_unsupported_feature_markers(self, tmp_dir):
+        archive_path = tmp_dir / "warnings.g2b.sqlite"
+
+        with CanonicalArchive(archive_path) as archive:
+            import_run_id = archive.start_import("ios-backup", "/tmp/fake-backup")
+            participant_id = archive.get_or_create_participant("+12025550101", "phone")
+            conversation_id = archive.get_or_create_conversation(
+                "ios:chat:any;+;+12025550101",
+                kind="direct",
+                source_thread_id="1",
+                title="+12025550101",
+            )
+            archive.link_conversation_participant(
+                conversation_id,
+                participant_id,
+                role="peer",
+                sort_order=0,
+            )
+            archive.insert_message(
+                source_uid="ios:warn-1",
+                source_type="ios.message",
+                import_run_id=import_run_id,
+                conversation_id=conversation_id,
+                direction="incoming",
+                sent_at_ms=1_700_000_000_000,
+                read_state="read",
+                service_hint="iMessage",
+                subject=None,
+                body_text="Unsupported features",
+                has_attachments=False,
+                has_url=False,
+                raw_json=(
+                    '{"reply_to_guid":"abc","associated_message_guid":"tapback",'
+                    '"date_edited_ns":123,"balloon_bundle_id":"com.example.effect",'
+                    '"expressive_send_style_id":"impact"}'
+                ),
+            )
+            archive.finish_import(import_run_id, 1, 0)
+            archive.conn.commit()
+
+        report = build_archive_report(archive_path)
+
+        assert any("replies or reactions" in warning for warning in report.warnings)
+        assert any("edited messages" in warning for warning in report.warnings)
+        assert any("rich app/message effects" in warning for warning in report.warnings)

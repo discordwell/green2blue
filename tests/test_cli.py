@@ -552,6 +552,37 @@ class TestArchiveCommands:
         assert "Warnings:" in captured.out
         assert "cross-source merge and dedupe" in captured.out
 
+    def test_archive_merge_materializes_latest_merge(self, tmp_dir, capsys):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        _populate_backup_with_messages(backup_dir)
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+        matching_zip = tmp_dir / "matching_android.zip"
+        with zipfile.ZipFile(matching_zip, "w") as zf:
+            zf.writestr(
+                "messages.ndjson",
+                '{"address":"+12025550101","body":"CLI backup message","date":"1","type":"1","read":"1"}\n',
+            )
+
+        main([
+            "archive", "import-android",
+            str(matching_zip),
+            str(archive_path),
+        ])
+        main([
+            "archive", "import-ios",
+            str(backup_dir),
+            str(archive_path),
+        ])
+
+        ret = main(["archive", "merge", str(archive_path)])
+        captured = capsys.readouterr()
+
+        assert ret == 0
+        assert "Merge run ID:" in captured.out
+        assert "Duplicate messages:" in captured.out
+
 
 class TestCorpusCommands:
     def test_corpus_capture_creates_zip(self, sample_export_zip, tmp_dir):

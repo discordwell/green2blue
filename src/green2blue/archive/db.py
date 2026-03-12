@@ -101,6 +101,51 @@ CREATE TABLE IF NOT EXISTS message_attachments (
     FOREIGN KEY (blob_id) REFERENCES blobs(id) ON DELETE CASCADE,
     UNIQUE (message_id, part_index)
 );
+
+CREATE TABLE IF NOT EXISTS merge_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy TEXT NOT NULL,
+    country TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    merged_conversation_count INTEGER NOT NULL DEFAULT 0,
+    merged_message_count INTEGER NOT NULL DEFAULT 0,
+    duplicate_message_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS merged_conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    merge_run_id INTEGER NOT NULL,
+    merge_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT,
+    FOREIGN KEY (merge_run_id) REFERENCES merge_runs(id) ON DELETE CASCADE,
+    UNIQUE (merge_run_id, merge_key)
+);
+
+CREATE TABLE IF NOT EXISTS merged_conversation_participants (
+    merged_conversation_id INTEGER NOT NULL,
+    participant_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (merged_conversation_id, participant_id),
+    FOREIGN KEY (merged_conversation_id) REFERENCES merged_conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (participant_id) REFERENCES participants(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS merged_messages (
+    merge_run_id INTEGER NOT NULL,
+    merged_conversation_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    sort_order INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    is_duplicate INTEGER NOT NULL DEFAULT 0,
+    duplicate_of_message_id INTEGER,
+    PRIMARY KEY (merge_run_id, message_id),
+    FOREIGN KEY (merge_run_id) REFERENCES merge_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (merged_conversation_id) REFERENCES merged_conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (duplicate_of_message_id) REFERENCES messages(id) ON DELETE SET NULL
+);
 """
 
 
@@ -280,6 +325,120 @@ class CanonicalArchive:
             (sha256, len(data), data),
         )
         return int(cur.lastrowid), sha256
+
+    def start_merge_run(self, strategy: str, country: str) -> int:
+        assert self.conn is not None
+        cur = self.conn.execute(
+            "INSERT INTO merge_runs (strategy, country, created_at) VALUES (?, ?, ?)",
+            (strategy, country, datetime.now(timezone.utc).isoformat()),
+        )
+        self.set_meta("updated_at", datetime.now(timezone.utc).isoformat())
+        return int(cur.lastrowid)
+
+    def finish_merge_run(
+        self,
+        merge_run_id: int,
+        *,
+        merged_conversation_count: int,
+        merged_message_count: int,
+        duplicate_message_count: int,
+    ) -> None:
+        assert self.conn is not None
+        self.conn.execute(
+            """
+            UPDATE merge_runs
+            SET merged_conversation_count = ?,
+                merged_message_count = ?,
+                duplicate_message_count = ?
+            WHERE id = ?
+            """,
+            (
+                merged_conversation_count,
+                merged_message_count,
+                duplicate_message_count,
+                merge_run_id,
+            ),
+        )
+
+    def get_or_create_merged_conversation(
+        self,
+        merge_run_id: int,
+        *,
+        merge_key: str,
+        kind: str,
+        title: str | None,
+    ) -> int:
+        assert self.conn is not None
+        row = self.conn.execute(
+            "SELECT id FROM merged_conversations WHERE merge_run_id = ? AND merge_key = ?",
+            (merge_run_id, merge_key),
+        ).fetchone()
+        if row is not None:
+            return int(row["id"])
+        cur = self.conn.execute(
+            """
+            INSERT INTO merged_conversations (merge_run_id, merge_key, kind, title)
+            VALUES (?, ?, ?, ?)
+            """,
+            (merge_run_id, merge_key, kind, title),
+        )
+        return int(cur.lastrowid)
+
+    def link_merged_conversation_participant(
+        self,
+        merged_conversation_id: int,
+        participant_id: int,
+        *,
+        role: str,
+        sort_order: int,
+    ) -> None:
+        assert self.conn is not None
+        self.conn.execute(
+            """
+            INSERT INTO merged_conversation_participants (
+                merged_conversation_id, participant_id, role, sort_order
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(merged_conversation_id, participant_id) DO UPDATE SET
+                role = excluded.role,
+                sort_order = excluded.sort_order
+            """,
+            (merged_conversation_id, participant_id, role, sort_order),
+        )
+
+    def insert_merged_message(
+        self,
+        *,
+        merge_run_id: int,
+        merged_conversation_id: int,
+        message_id: int,
+        sort_order: int,
+        fingerprint: str,
+        is_duplicate: bool,
+        duplicate_of_message_id: int | None,
+    ) -> None:
+        assert self.conn is not None
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO merged_messages (
+                merge_run_id,
+                merged_conversation_id,
+                message_id,
+                sort_order,
+                fingerprint,
+                is_duplicate,
+                duplicate_of_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                merge_run_id,
+                merged_conversation_id,
+                message_id,
+                sort_order,
+                fingerprint,
+                int(is_duplicate),
+                duplicate_of_message_id,
+            ),
+        )
 
     def insert_attachment(
         self,

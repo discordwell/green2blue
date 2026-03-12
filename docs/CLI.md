@@ -67,6 +67,7 @@ Canonical archive workflows for future merge and re-render support.
 | `archive import-android <zip> <archive.sqlite>` | Import an Android export into a canonical archive |
 | `archive import-ios <backup> <archive.sqlite>` | Import an iPhone backup into a canonical archive |
 | `archive inspect <archive.sqlite>` | Inspect a canonical archive |
+| `archive merge <archive.sqlite>` | Materialize a merged cross-source view inside the archive |
 | `archive report <archive.sqlite>` | Generate a migration-oriented archive report |
 
 #### `green2blue archive import-ios <backup> <archive.sqlite>`
@@ -147,6 +148,7 @@ into one archive:
 ```bash
 green2blue archive import-android android-export.zip merged.g2b.sqlite
 green2blue archive import-ios /path/to/iphone-backup merged.g2b.sqlite
+green2blue archive merge merged.g2b.sqlite
 green2blue archive inspect merged.g2b.sqlite
 green2blue archive report merged.g2b.sqlite
 ```

@@ -158,6 +158,11 @@ def _import_messages(
             m.is_from_me,
             m.is_read,
             m.cache_has_attachments,
+            m.associated_message_guid,
+            m.reply_to_guid,
+            m.date_edited,
+            m.balloon_bundle_id,
+            m.expressive_send_style_id,
             h.id AS handle_address,
             cm.chat_id
         FROM message m
@@ -195,6 +200,11 @@ def _import_messages(
             "date_read_ns": int(row["date_read"] or 0),
             "is_from_me": int(row["is_from_me"] or 0),
             "is_read": int(row["is_read"] or 0),
+            "associated_message_guid": row["associated_message_guid"],
+            "reply_to_guid": row["reply_to_guid"],
+            "date_edited_ns": int(row["date_edited"] or 0),
+            "balloon_bundle_id": row["balloon_bundle_id"],
+            "expressive_send_style_id": row["expressive_send_style_id"],
             "chat_id": int(row["chat_id"]) if row["chat_id"] is not None else None,
             "handle_address": row["handle_address"],
             "attachments": [
