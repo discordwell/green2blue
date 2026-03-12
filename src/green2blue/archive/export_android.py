@@ -30,6 +30,7 @@ def export_merged_android_zip(
     *,
     merge_run_id: int | None = None,
     country: str = "US",
+    mode: str = "full",
 ) -> AndroidArchiveExportResult:
     archive_path = Path(archive_path)
     output_zip = Path(output_zip)
@@ -41,7 +42,7 @@ def export_merged_android_zip(
         resolved_merge_run_id = _resolve_merge_run_id(archive_path, conn, merge_run_id, country)
         participants = _load_merged_participants(conn, resolved_merge_run_id)
         attachments = _load_message_parts(conn, resolved_merge_run_id)
-        messages = _load_merged_winners(conn, resolved_merge_run_id)
+        messages = _load_merged_winners(conn, resolved_merge_run_id, mode=mode)
 
         output_zip.parent.mkdir(parents=True, exist_ok=True)
         attachment_files_written = 0
@@ -98,9 +99,13 @@ def _resolve_merge_run_id(
     return result.merge_run_id
 
 
-def _load_merged_winners(conn: sqlite3.Connection, merge_run_id: int) -> list[sqlite3.Row]:
-    return conn.execute(
-        """
+def _load_merged_winners(
+    conn: sqlite3.Connection,
+    merge_run_id: int,
+    *,
+    mode: str,
+) -> list[sqlite3.Row]:
+    query = """
         SELECT
             mm.merged_conversation_id,
             mm.sort_order,
@@ -109,10 +114,12 @@ def _load_merged_winners(conn: sqlite3.Connection, merge_run_id: int) -> list[sq
         JOIN messages m ON m.id = mm.message_id
         WHERE mm.merge_run_id = ?
           AND mm.is_duplicate = 0
-        ORDER BY mm.merged_conversation_id, mm.sort_order, m.sent_at_ms, m.id
-        """,
-        (merge_run_id,),
-    ).fetchall()
+    """
+    params: list[object] = [merge_run_id]
+    if mode == "ios-inject":
+        query += " AND m.source_type != 'ios.message'"
+    query += " ORDER BY mm.merged_conversation_id, mm.sort_order, m.sent_at_ms, m.id"
+    return conn.execute(query, params).fetchall()
 
 
 def _load_merged_participants(

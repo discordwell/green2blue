@@ -32,6 +32,15 @@ Double-click `green2blue-windows-x86_64.exe`, or run from Command Prompt.
 
 Running with no arguments launches an interactive wizard that guides you through the entire process.
 
+The wizard now supports two interactive paths:
+- direct Android export -> iPhone backup injection
+- merged Android export + iPhone backup import -> merged archive -> iPhone injection
+
+After injection, the wizard can also:
+- run a live iPhone preflight (`device doctor`)
+- create a fresh rollback backup from the connected iPhone
+- restore the modified backup directly to that same device
+
 ## Step-by-Step Guide
 
 ### 1. Export from Android
@@ -62,6 +71,7 @@ Follow the prompts: drag in your ZIP file, confirm your backup, and green2blue h
 - Inject them into the backup
 - Copy MMS attachments
 - Verify integrity
+- Optionally preflight, back up, and restore the connected iPhone directly
 
 Or use the CLI directly:
 ```bash

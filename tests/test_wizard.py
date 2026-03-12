@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import plistlib
 import sqlite3
@@ -12,11 +13,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from green2blue.ios.backup import BackupInfo, get_sms_db_hash
+from green2blue.ios.device import DeviceCheckResult, DeviceHealthReport
 from green2blue.wizard import (
     _clean_path,
     _detect_country,
     _pick_backup,
     _print_no_backups_help,
+    _step_workflow_choice,
     _step_welcome,
     _us_numbers_pass,
     run_wizard,
@@ -163,6 +166,17 @@ class TestWelcome:
         assert "Ctrl+C" in captured.out
 
 
+class TestWorkflowChoice:
+    def test_zip_path_shortcuts_to_classic_flow(self, tmp_dir):
+        zip_path = _create_export_zip(tmp_dir)
+
+        with patch("builtins.input", return_value=str(zip_path)):
+            workflow, initial = _step_workflow_choice()
+
+        assert workflow == "classic"
+        assert initial == str(zip_path)
+
+
 class TestNoBackupsHelp:
     def test_macos_instructions(self, capsys):
         with patch("green2blue.wizard.platform.system", return_value="Darwin"):
@@ -214,7 +228,8 @@ class TestWizardHappyPath:
         # 1. Export ZIP path
         # 2. Confirm backup (Y)
         # 3. Confirm inject (Y)
-        inputs = iter([str(zip_path), "y", "y"])
+        # 4. Decline automatic device restore
+        inputs = iter([str(zip_path), "y", "y", "n"])
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
@@ -236,6 +251,156 @@ class TestWizardHappyPath:
 
         assert ret == 0
         mock_pipeline.assert_called_once()
+
+    def test_merge_wizard_flow(self, tmp_dir):
+        """Wizard can build/archive/merge and inject via the merged path."""
+        root = tmp_dir / "backups"
+        root.mkdir()
+        backup_path = _create_backup(root, "MERGE-WIZARD")
+        zip_path = _create_export_zip(tmp_dir, num_messages=4)
+
+        backup_info = BackupInfo(
+            path=backup_path, udid="MERGE-WIZARD", device_name="Merge iPhone",
+            product_version="17.4", is_encrypted=False,
+        )
+
+        inputs = iter([
+            "2",            # choose merge workflow
+            str(zip_path),  # export zip
+            "y",            # confirm backup
+            "y",            # build merged archive
+            "y",            # proceed with merged injection
+            "n",            # decline automatic device restore
+        ])
+
+        with (
+            patch("builtins.input", side_effect=lambda _: next(inputs)),
+            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.archive.import_android_export") as mock_import_android,
+            patch("green2blue.archive.import_ios_backup") as mock_import_ios,
+            patch("green2blue.archive.merge_archive") as mock_merge,
+            patch("green2blue.archive.build_archive_report") as mock_report,
+            patch("green2blue.archive.export_merged_android_zip") as mock_export,
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+        ):
+            mock_import_android.return_value = MagicMock(messages_imported=4)
+            mock_import_ios.return_value = MagicMock(messages_imported=2)
+            mock_merge.return_value = MagicMock(
+                merge_run_id=7,
+                merged_conversations=3,
+                merged_messages=5,
+                duplicate_messages=1,
+            )
+            mock_report.return_value = MagicMock(warnings=("reply warning",))
+            mock_export.return_value = MagicMock(records_written=3)
+
+            mock_result = MagicMock()
+            mock_result.injection_stats = MagicMock(
+                messages_inserted=3, messages_skipped=0,
+            )
+            mock_result.clone_stats = None
+            mock_result.overwrite_stats = None
+            mock_result.total_attachments_copied = 0
+            mock_result.verification = MagicMock(passed=True)
+            mock_result.safety_copy_path = tmp_dir / "safety"
+            mock_pipeline.return_value = mock_result
+
+            ret = run_wizard()
+
+        assert ret == 0
+        mock_import_android.assert_called_once()
+        mock_import_ios.assert_called_once()
+        mock_merge.assert_called_once()
+        mock_report.assert_called_once()
+        mock_export.assert_called_once()
+        mock_pipeline.assert_called_once()
+
+    def test_wizard_live_device_restore_flow(self, tmp_dir):
+        """Wizard can doctor, create rollback backup, and restore live device."""
+        root = tmp_dir / "backups"
+        root.mkdir()
+        backup_path = _create_backup(root, "LIVE-TEST")
+        zip_path = _create_export_zip(tmp_dir, num_messages=2)
+
+        backup_info = BackupInfo(
+            path=backup_path, udid="LIVE-TEST", device_name="Live iPhone",
+            product_version="17.4", is_encrypted=False,
+        )
+
+        report = DeviceHealthReport(
+            udid="LIVE-TEST",
+            name="Live iPhone",
+            ios_version="17.4",
+            product_type="iPhone15,3",
+            state="ready",
+            ready_for_backup_restore=True,
+            hint="ready",
+            checks=(
+                DeviceCheckResult("Lockdown", True, "ok"),
+                DeviceCheckResult("MobileBackup2 service", True, "ok"),
+            ),
+        )
+
+        @contextmanager
+        def _fake_device_run_session(command, metadata):
+            yield MagicMock(run_dir=tmp_dir / "live-run")
+
+        class _FakeProgress:
+            def __init__(self, label):
+                self.label = label
+
+            def start(self):
+                return None
+
+            def finish(self):
+                return None
+
+            def callback(self, pct):
+                return None
+
+        inputs = iter([
+            str(zip_path),  # export zip
+            "y",            # use backup
+            "y",            # proceed with injection
+            "y",            # use live device restore
+            "y",            # create rollback backup
+            "y",            # restore modified backup now
+        ])
+
+        with (
+            patch("builtins.input", side_effect=lambda _: next(inputs)),
+            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+            patch("green2blue.ios.device.doctor_device", return_value=report) as mock_doctor,
+            patch(
+                "green2blue.ios.device.create_backup",
+                return_value=tmp_dir / "rollback" / "LIVE-TEST",
+            ) as mock_create_backup,
+            patch("green2blue.ios.device.restore_backup") as mock_restore_backup,
+            patch("green2blue.cli._device_run_session", side_effect=_fake_device_run_session),
+            patch("green2blue.cli._ProgressReporter", _FakeProgress),
+            patch("green2blue.cli._print_post_restore_instructions"),
+        ):
+            mock_result = MagicMock()
+            mock_result.injection_stats = MagicMock(
+                messages_inserted=2, messages_skipped=0,
+            )
+            mock_result.clone_stats = None
+            mock_result.overwrite_stats = None
+            mock_result.total_attachments_copied = 0
+            mock_result.verification = MagicMock(passed=True)
+            mock_result.safety_copy_path = tmp_dir / "safety"
+            mock_pipeline.return_value = mock_result
+
+            ret = run_wizard()
+
+        assert ret == 0
+        mock_doctor.assert_called_once_with()
+        mock_create_backup.assert_called_once()
+        assert mock_create_backup.call_args.kwargs["udid"] == "LIVE-TEST"
+        mock_restore_backup.assert_called_once()
+        assert mock_restore_backup.call_args.kwargs["backup_dir"] == backup_path.parent
+        assert mock_restore_backup.call_args.kwargs["udid"] == "LIVE-TEST"
 
     def test_wizard_with_no_backups(self, tmp_dir):
         """Wizard exits gracefully when no backups found."""
@@ -269,6 +434,7 @@ class TestWizardHappyPath:
             str(good_zip),     # good file
             "y",               # confirm backup
             "y",               # confirm inject
+            "n",               # decline automatic device restore
         ])
 
         with (
@@ -311,8 +477,8 @@ class TestWizardEncryptedBackup:
             is_encrypted=True,
         )
 
-        # Inputs: zip path, confirm backup, password, confirm inject
-        inputs = iter([str(zip_path), "y", "y"])
+        # Inputs: zip path, confirm backup, password, confirm inject, decline device restore
+        inputs = iter([str(zip_path), "y", "y", "n"])
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),

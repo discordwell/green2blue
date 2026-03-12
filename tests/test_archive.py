@@ -436,6 +436,23 @@ class TestArchiveExport:
         )
         assert pipeline_result.total_messages_parsed == 2
 
+    def test_export_for_ios_inject_excludes_ios_source_winners(self, sample_backup_dir, tmp_dir):
+        _populate_ios_backup(sample_backup_dir)
+        android_zip = _create_matching_android_export(tmp_dir)
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+        export_zip = tmp_dir / "ios_inject_export.zip"
+
+        import_android_export(android_zip, archive_path)
+        import_ios_backup(sample_backup_dir, archive_path)
+        merge_archive(archive_path)
+
+        result = export_merged_android_zip(archive_path, export_zip, mode="ios-inject")
+
+        assert result.records_written == 0
+        with open_export_zip(export_zip) as export:
+            counts = count_messages(export.ndjson_path)
+            assert counts["total"] == 0
+
     def test_export_auto_merges_when_no_merge_run_exists(self, sample_backup_dir, tmp_dir):
         _populate_ios_backup(sample_backup_dir)
         archive_path = tmp_dir / "archive.g2b.sqlite"

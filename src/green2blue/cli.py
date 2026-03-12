@@ -1327,6 +1327,7 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
             export_zip,
             merge_run_id=args.merge_run,
             country=args.country,
+            mode="ios-inject",
         )
         print(f"Exported merged archive to: {export_result.output_zip}")
 

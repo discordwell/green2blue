@@ -6,9 +6,11 @@ or explicitly via ``green2blue wizard``.
 
 from __future__ import annotations
 
+from datetime import datetime
 import getpass
 import platform
 import sys
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,15 +26,11 @@ def run_wizard() -> int:
     """Run the interactive wizard flow. Returns an exit code."""
     try:
         _step_welcome()
-        export_path = _step_export_zip()
-        sms_count, mms_count, has_attachments = _step_inspect(export_path)
-        country = _step_country_detection(export_path)
-        backup_info = _step_backup_selection()
-        password = _step_encryption(backup_info)
-        _step_confirm_and_inject(
-            export_path, backup_info, password, country,
-            sms_count, mms_count, has_attachments,
-        )
+        workflow, initial_export_raw = _step_workflow_choice()
+        if workflow == "merge":
+            _run_merge_wizard()
+        else:
+            _run_classic_wizard(initial_export_raw)
         return 0
     except KeyboardInterrupt:
         print("\n\nAborted.")
@@ -56,15 +54,59 @@ def _step_welcome() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 2: Export ZIP
+# Step 2: Workflow choice
 # ---------------------------------------------------------------------------
 
-def _step_export_zip() -> Path:
+def _step_workflow_choice() -> tuple[str, str | None]:
+    """Choose between the direct and merged workflows.
+
+    Returns (workflow, initial_export_raw). ``initial_export_raw`` is used to
+    preserve the old "paste the ZIP immediately" behavior for the classic flow.
+    """
+    print("  Workflows:")
+    print("    1. Android export -> iPhone backup")
+    print("    2. Merge Android export + iPhone backup, then inject merged result")
+    print()
+
     while True:
-        try:
-            raw = input("Drag your Android export ZIP here (or type the path): ")
-        except EOFError:
-            raise
+        raw = input(
+            "  Choose workflow [1/2] "
+            "(or drag a ZIP now for quick import): "
+        ).strip()
+        if raw in ("", "1"):
+            print()
+            return "classic", None
+        if raw == "2":
+            print()
+            return "merge", None
+        if _looks_like_path(raw):
+            print()
+            return "classic", raw
+        print("  Please enter 1 or 2, or drag a ZIP file here.\n")
+
+
+def _looks_like_path(raw: str) -> bool:
+    cleaned = _clean_path(raw)
+    if not cleaned:
+        return False
+    path = Path(cleaned)
+    return path.suffix.lower() == ".zip" or "/" in cleaned or "\\" in cleaned
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Export ZIP
+# ---------------------------------------------------------------------------
+
+def _step_export_zip(initial_raw: str | None = None) -> Path:
+    while True:
+        if initial_raw is not None:
+            raw = initial_raw
+            initial_raw = None
+        else:
+            try:
+                raw = input("Drag your Android export ZIP here (or type the path): ")
+            except EOFError:
+                raise
 
         path = _clean_path(raw)
         if not path:
@@ -110,7 +152,7 @@ def _clean_path(raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Inspect
+# Step 4: Inspect
 # ---------------------------------------------------------------------------
 
 def _step_inspect(export_path: Path) -> tuple[int, int, bool]:
@@ -150,7 +192,7 @@ def _step_inspect(export_path: Path) -> tuple[int, int, bool]:
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Country detection
+# Step 5: Country detection
 # ---------------------------------------------------------------------------
 
 def _step_country_detection(export_path: Path) -> str:
@@ -233,7 +275,7 @@ def _us_numbers_pass(export_path: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Step 5: Backup selection
+# Step 6: Backup selection
 # ---------------------------------------------------------------------------
 
 def _step_backup_selection() -> BackupInfo:
@@ -312,7 +354,7 @@ def _print_no_backups_help() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 6: Encryption
+# Step 7: Encryption
 # ---------------------------------------------------------------------------
 
 def _step_encryption(backup_info: BackupInfo) -> str | None:
@@ -366,7 +408,35 @@ def _validate_password(backup_info: BackupInfo, password: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Step 7: Confirm and inject
+# Step 8: Classic/merge flow runners
+# ---------------------------------------------------------------------------
+
+def _run_classic_wizard(initial_export_raw: str | None = None) -> None:
+    export_path = _step_export_zip(initial_export_raw)
+    sms_count, mms_count, has_attachments = _step_inspect(export_path)
+    country = _step_country_detection(export_path)
+    backup_info = _step_backup_selection()
+    password = _step_encryption(backup_info)
+    _step_confirm_and_inject(
+        export_path, backup_info, password, country,
+        sms_count, mms_count, has_attachments,
+    )
+
+
+def _run_merge_wizard() -> None:
+    export_path = _step_export_zip()
+    sms_count, mms_count, has_attachments = _step_inspect(export_path)
+    country = _step_country_detection(export_path)
+    backup_info = _step_backup_selection()
+    password = _step_encryption(backup_info)
+    _step_confirm_and_merge(
+        export_path, backup_info, password, country,
+        sms_count, mms_count, has_attachments,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 9: Confirm and inject
 # ---------------------------------------------------------------------------
 
 def _step_confirm_and_inject(
@@ -421,14 +491,150 @@ def _step_confirm_and_inject(
         injection_mode=InjectionMode.INSERT,
     )
 
-    _step_results(result, has_attachments)
+    _step_results(result, has_attachments, backup_info, password)
+
+
+def _step_confirm_and_merge(
+    export_path: Path,
+    backup_info: BackupInfo,
+    password: str | None,
+    country: str,
+    sms_count: int,
+    mms_count: int,
+    has_attachments: bool,
+) -> None:
+    """Build a merged archive, show a report, then inject the merged result."""
+    from green2blue.archive import (
+        build_archive_report,
+        export_merged_android_zip,
+        import_android_export,
+        import_ios_backup,
+        merge_archive,
+    )
+    from green2blue.models import CKStrategy, InjectionMode
+    from green2blue.pipeline import run_pipeline
+
+    total = sms_count + mms_count
+    encrypted = " (encrypted)" if backup_info.is_encrypted else ""
+
+    print("  Ready to build a merged archive:")
+    print(f"    Android export:      {total:,} messages")
+    print(f"    iPhone backup:       \"{backup_info.device_name}\" "
+          f"(iOS {backup_info.product_version}{encrypted})")
+    print("    The merged archive will be imported, merged, reported,")
+    print("    and then injected back into this iPhone backup.")
+    print()
+
+    _confirm_yes_no("  Build merged archive? [Y/n]: ")
+
+    archive_path = _default_archive_path(backup_info)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print()
+    print("  Building merged archive...")
+    print(f"    Archive path: {archive_path}")
+    print()
+
+    android_result = import_android_export(export_path, archive_path)
+    ios_result = import_ios_backup(
+        backup_info.path,
+        archive_path,
+        password=password,
+    )
+    merge_result = merge_archive(archive_path, country=country)
+    report = build_archive_report(archive_path)
+
+    print("  Merge report:\n")
+    print(f"    Android messages imported: {android_result.messages_imported}")
+    print(f"    iPhone messages imported:  {ios_result.messages_imported}")
+    print(f"    Merged conversations:      {merge_result.merged_conversations}")
+    print(f"    Merged messages:           {merge_result.merged_messages}")
+    print(f"    Duplicate messages:        {merge_result.duplicate_messages}")
+    if report.warnings:
+        print("    Warnings:")
+        for warning in report.warnings:
+            print(f"      - {warning}")
+    print()
+
+    _confirm_yes_no("  Proceed with merged injection? [Y/n]: ")
+
+    with tempfile.TemporaryDirectory(prefix="g2b_wizard_merge_") as tmpdir:
+        merged_export_zip = Path(tmpdir) / "merged_export.zip"
+        export_result = export_merged_android_zip(
+            archive_path,
+            merged_export_zip,
+            merge_run_id=merge_result.merge_run_id,
+            country=country,
+            mode="ios-inject",
+        )
+        if export_result.records_written == 0:
+            print("  The merged archive contains no new non-iPhone messages to inject.")
+            print("  The archive was still created successfully.")
+            print()
+            return
+
+        print("  Injecting merged messages...\n")
+        result = run_pipeline(
+            export_path=merged_export_zip,
+            backup_path_or_udid=str(backup_info.path),
+            country=country,
+            skip_duplicates=True,
+            include_attachments=True,
+            dry_run=False,
+            password=password,
+            ck_strategy=CKStrategy.NONE,
+            service="SMS",
+            injection_mode=InjectionMode.INSERT,
+        )
+
+    _step_results(result, has_attachments, backup_info, password)
+
+
+def _confirm_yes_no(prompt: str) -> None:
+    while True:
+        try:
+            response = input(prompt).strip().lower()
+        except EOFError:
+            raise
+        if response in ("", "y", "yes"):
+            return
+        if response in ("n", "no"):
+            print("\n  Aborted.")
+            sys.exit(0)
+        print("  Please enter Y or n.")
+
+
+def _ask_yes_no(prompt: str, *, default: bool) -> bool:
+    """Ask a yes/no question and return the answer."""
+    while True:
+        try:
+            response = input(prompt).strip().lower()
+        except EOFError:
+            raise
+        if not response:
+            return default
+        if response in ("y", "yes"):
+            return True
+        if response in ("n", "no"):
+            return False
+        print("  Please enter y or n.")
+
+
+def _default_archive_path(backup_info: BackupInfo) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path.cwd() / ".g2b_archives" / f"{backup_info.udid}_{stamp}.g2b.sqlite"
 
 
 # ---------------------------------------------------------------------------
-# Step 8: Results + next steps
+# Step 10: Results + next steps
 # ---------------------------------------------------------------------------
 
-def _step_results(result: PipelineResult, has_attachments: bool) -> None:
+def _step_results(
+    result: PipelineResult,
+    has_attachments: bool,
+    backup_info: BackupInfo,
+    password: str | None,
+) -> None:
     """Print injection results and platform-aware next steps."""
     stats = result.injection_stats
     clone_stats = result.clone_stats
@@ -462,6 +668,137 @@ def _step_results(result: PipelineResult, has_attachments: bool) -> None:
     if result.safety_copy_path:
         print(f"\n    Safety copy at: {result.safety_copy_path}")
 
+    if result.verification and not result.verification.passed:
+        print("\n  Automatic device restore is disabled because verification failed.")
+        _print_manual_restore_instructions()
+        return
+
+    _step_offer_device_restore(backup_info, password)
+
+
+def _step_offer_device_restore(
+    backup_info: BackupInfo,
+    password: str | None,
+) -> None:
+    """Offer to preflight and restore the modified backup to a live device."""
+    if not _ask_yes_no(
+        "\n  Would you like green2blue to check a connected iPhone and restore this "
+        "backup now? [y/N]: ",
+        default=False,
+    ):
+        _print_manual_restore_instructions()
+        return
+
+    from green2blue.cli import (
+        _ProgressReporter,
+        _device_run_session,
+        _print_device_health_report,
+        _print_post_restore_instructions,
+    )
+    from green2blue.ios.device import (
+        create_backup,
+        doctor_device,
+        restore_backup,
+    )
+
+    print("\n  Running device doctor...\n")
+
+    try:
+        report = doctor_device()
+    except Green2BlueError as exc:
+        print(f"  Could not check the connected iPhone: {exc}")
+        if exc.hint:
+            print(f"  Hint: {exc.hint}")
+        _print_manual_restore_instructions()
+        return
+
+    _print_device_health_report(report)
+    print()
+
+    if not report.ready_for_backup_restore:
+        _print_manual_restore_instructions()
+        return
+
+    if report.udid != backup_info.udid:
+        print("  The connected iPhone does not match the backup you modified.")
+        print(f"    Backup UDID:   {backup_info.udid}")
+        print(f"    Device UDID:   {report.udid}")
+        print()
+        print("  Wizard live restore currently supports restoring back to the")
+        print("  same device that produced the selected backup.")
+        _print_manual_restore_instructions()
+        return
+
+    create_rollback = _ask_yes_no(
+        "  Create a fresh rollback backup from the connected iPhone first? [Y/n]: ",
+        default=True,
+    )
+    if not _ask_yes_no(
+        "  Restore the modified backup to the connected iPhone now? [Y/n]: ",
+        default=True,
+    ):
+        _print_manual_restore_instructions()
+        return
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    rollback_root = Path.cwd() / ".g2b_device_backups" / stamp
+    run_artifacts = None
+    run_metadata = {
+        "backup_udid": backup_info.udid,
+        "backup_path": str(backup_info.path),
+        "device_udid": report.udid,
+        "device_name": report.name,
+        "wizard_flow": "interactive",
+    }
+
+    try:
+        with _device_run_session("wizard_restore", run_metadata) as artifacts:
+            run_artifacts = artifacts
+
+            if create_rollback:
+                print("\n  Creating rollback backup...\n")
+                backup_progress = _ProgressReporter("Backup")
+                backup_progress.start()
+                try:
+                    rollback_path = create_backup(
+                        backup_dir=rollback_root,
+                        udid=report.udid,
+                        password=password,
+                        progress_cb=backup_progress.callback,
+                    )
+                finally:
+                    backup_progress.finish()
+
+                print(f"\n  Rollback backup saved to: {rollback_path}")
+
+            print("\n  Restoring modified backup to the connected iPhone...\n")
+            restore_progress = _ProgressReporter("Restore")
+            restore_progress.start()
+            try:
+                restore_backup(
+                    backup_dir=backup_info.path.parent,
+                    udid=report.udid,
+                    password=password,
+                    progress_cb=restore_progress.callback,
+                )
+            finally:
+                restore_progress.finish()
+    except Green2BlueError as exc:
+        print(f"\n  Device restore failed: {exc}")
+        if exc.hint:
+            print(f"  Hint: {exc.hint}")
+        if run_artifacts is not None:
+            print(f"  Live device logs: {run_artifacts.run_dir}")
+        _print_manual_restore_instructions()
+        return
+
+    if run_artifacts is not None:
+        print(f"\n  Live device logs: {run_artifacts.run_dir}")
+    _print_post_restore_instructions()
+
+
+def _print_manual_restore_instructions() -> None:
+    """Print platform-aware manual restore instructions."""
     print("\n  Next steps:\n")
     if platform.system() == "Darwin":
         print("    1. Connect your iPhone to your Mac")
