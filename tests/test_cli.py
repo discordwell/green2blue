@@ -25,6 +25,8 @@ from green2blue.cli import (
     main,
 )
 from green2blue.ios.backup import BackupInfo, get_sms_db_hash
+from green2blue.ios.manifest import compute_file_id
+from green2blue.models import ATTACHMENT_PLACEHOLDER
 from green2blue.ios.device import DeviceCheckResult, DeviceHealthReport, DeviceInfo
 
 
@@ -99,6 +101,50 @@ def _create_synthetic_backup(root: Path, udid: str) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
     (backup_dir / "Manifest.mbdb").write_bytes(b"synthetic-backup")
     return backup_dir
+
+
+def _populate_backup_with_messages(backup_dir: Path) -> None:
+    sms_hash = get_sms_db_hash()
+    sms_db_path = backup_dir / sms_hash[:2] / sms_hash
+    conn = sqlite3.connect(sms_db_path)
+    conn.execute(
+        "INSERT INTO handle (ROWID, id, service, uncanonicalized_id) VALUES (1, ?, 'SMS', ?)",
+        ("+12025550101", "+12025550101"),
+    )
+    conn.execute(
+        "INSERT INTO chat (ROWID, guid, chat_identifier, service_name, display_name) "
+        "VALUES (1, ?, ?, 'SMS', ?)",
+        ("any;+;+12025550101", "+12025550101", "+12025550101"),
+    )
+    conn.execute("INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1)")
+    conn.execute(
+        "INSERT INTO message (ROWID, guid, text, handle_id, service, date, date_read, "
+        "is_from_me, is_read, is_sent, is_finished, cache_has_attachments, part_count) "
+        "VALUES (1, 'msg-1', ?, 1, 'SMS', 1, 1, 0, 1, 0, 1, 0, 1)",
+        ("CLI backup message",),
+    )
+    conn.execute(
+        "INSERT INTO message (ROWID, guid, text, handle_id, service, date, date_read, "
+        "is_from_me, is_read, is_sent, is_finished, cache_has_attachments, part_count) "
+        "VALUES (2, 'msg-2', ?, 1, 'SMS', 2, 0, 0, 0, 0, 1, 1, 2)",
+        (ATTACHMENT_PLACEHOLDER + "CLI caption",),
+    )
+    conn.execute("INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 1, 1)")
+    conn.execute("INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 2, 2)")
+    conn.execute(
+        "INSERT INTO attachment (ROWID, guid, filename, mime_type, transfer_name, total_bytes) "
+        "VALUES (1, 'att-1', ?, 'image/jpeg', 'image000000.jpg', 9)",
+        ("~/Library/SMS/Attachments/aa/bb/TEST/image000000.jpg",),
+    )
+    conn.execute("INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (2, 1)")
+    conn.commit()
+    conn.close()
+
+    rel = "Library/SMS/Attachments/aa/bb/TEST/image000000.jpg"
+    file_id = compute_file_id("HomeDomain", rel)
+    attachment_dir = backup_dir / file_id[:2]
+    attachment_dir.mkdir(exist_ok=True)
+    (attachment_dir / file_id).write_bytes(b"jpeg-bytes")
 
 
 def _ready_report(udid: str = "TEST-UDID") -> DeviceHealthReport:
@@ -433,6 +479,92 @@ class TestQuickstartCommand:
         assert "SMS Import/Export" in captured.out
         assert "Restore Backup" in captured.out
         assert ret == 0
+
+
+class TestArchiveCommands:
+    def test_archive_import_android_creates_archive(self, sample_export_zip, tmp_dir):
+        archive_path = tmp_dir / "sample.g2b.sqlite"
+
+        ret = main([
+            "archive", "import-android",
+            str(sample_export_zip),
+            str(archive_path),
+        ])
+
+        assert ret == 0
+        assert archive_path.exists()
+
+    def test_archive_inspect_prints_summary(self, sample_export_zip, tmp_dir, capsys):
+        archive_path = tmp_dir / "sample.g2b.sqlite"
+        main([
+            "archive", "import-android",
+            str(sample_export_zip),
+            str(archive_path),
+        ])
+
+        ret = main(["archive", "inspect", str(archive_path)])
+        captured = capsys.readouterr()
+
+        assert ret == 0
+        assert "Messages:" in captured.out
+        assert "Blob objects:" in captured.out
+
+    def test_archive_import_ios_creates_archive(self, tmp_dir):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        _populate_backup_with_messages(backup_dir)
+        archive_path = tmp_dir / "ios.g2b.sqlite"
+
+        ret = main([
+            "archive", "import-ios",
+            str(backup_dir),
+            str(archive_path),
+        ])
+
+        assert ret == 0
+        assert archive_path.exists()
+
+    def test_archive_report_prints_warning_for_multi_source(
+        self, sample_export_zip, tmp_dir, capsys,
+    ):
+        backup_root = tmp_dir / "backups"
+        backup_root.mkdir()
+        backup_dir = _create_backup(backup_root, "IOS-UDID")
+        _populate_backup_with_messages(backup_dir)
+        archive_path = tmp_dir / "merged.g2b.sqlite"
+
+        main([
+            "archive", "import-android",
+            str(sample_export_zip),
+            str(archive_path),
+        ])
+        main([
+            "archive", "import-ios",
+            str(backup_dir),
+            str(archive_path),
+        ])
+
+        ret = main(["archive", "report", str(archive_path)])
+        captured = capsys.readouterr()
+
+        assert ret == 0
+        assert "Warnings:" in captured.out
+        assert "cross-source merge and dedupe" in captured.out
+
+
+class TestCorpusCommands:
+    def test_corpus_capture_creates_zip(self, sample_export_zip, tmp_dir):
+        output_zip = tmp_dir / "corpus.zip"
+
+        ret = main([
+            "corpus", "capture",
+            str(sample_export_zip),
+            str(output_zip),
+        ])
+
+        assert ret == 0
+        assert output_zip.exists()
 
 
 class TestWizardSubcommand:

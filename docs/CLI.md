@@ -58,6 +58,40 @@ List all available iPhone backups.
 
 Show export contents (message counts, attachment info) without modifying anything.
 
+### `green2blue archive <subcommand>`
+
+Canonical archive workflows for future merge and re-render support.
+
+| Subcommand | Description |
+|------------|-------------|
+| `archive import-android <zip> <archive.sqlite>` | Import an Android export into a canonical archive |
+| `archive import-ios <backup> <archive.sqlite>` | Import an iPhone backup into a canonical archive |
+| `archive inspect <archive.sqlite>` | Inspect a canonical archive |
+| `archive report <archive.sqlite>` | Generate a migration-oriented archive report |
+
+#### `green2blue archive import-ios <backup> <archive.sqlite>`
+
+| Flag | Description |
+|------|-------------|
+| `--backup-root <path>` | Override the default backup directory when resolving a UDID |
+| `--password <pw>` | Backup encryption password for encrypted iPhone backups |
+
+### `green2blue corpus <subcommand>`
+
+Privacy-safe representative Android sample capture.
+
+| Subcommand | Description |
+|------------|-------------|
+| `corpus capture <zip> <output.zip>` | Build a redacted representative Android corpus ZIP |
+
+#### `green2blue corpus capture <zip> <output.zip>`
+
+| Flag | Description |
+|------|-------------|
+| `--max-per-bucket <n>` | Maximum kept messages per representative bucket |
+| `--preserve-text` | Keep original message text instead of redacting it |
+| `--preserve-media` | Keep original attachment bytes instead of generic replacement media |
+
 ### `green2blue verify <backup_path>`
 
 Verify an iPhone backup's integrity after injection.
@@ -103,3 +137,19 @@ green2blue looks for iPhone backups in the platform-specific default location:
 - **Windows**: `%APPDATA%\Apple Computer\MobileSync\Backup\` or `%USERPROFILE%\Apple\MobileSync\Backup\`
 
 Use `--backup-root` to override this on any command that accesses backups.
+
+## Canonical Archive Workflow
+
+The canonical archive is the new target-neutral storage layer for the future
+merge product. Today it already supports collecting both sides of a migration
+into one archive:
+
+```bash
+green2blue archive import-android android-export.zip merged.g2b.sqlite
+green2blue archive import-ios /path/to/iphone-backup merged.g2b.sqlite
+green2blue archive inspect merged.g2b.sqlite
+green2blue archive report merged.g2b.sqlite
+```
+
+You can also pass a backup UDID to `archive import-ios` instead of a full path
+and combine it with `--backup-root`.

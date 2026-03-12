@@ -1,8 +1,15 @@
 # green2blue
 
-Transfer your Android text messages to iPhone.
+Transfer your Android text messages to iPhone, and build toward a unified
+Android+iPhone message archive.
 
 green2blue takes an export from the free [SMS Import/Export](https://github.com/tmo1/sms-ie) Android app and injects the messages into an iPhone backup. When you restore the backup, all your messages appear in the Messages app — SMS, MMS, group chats, photos, videos, and RCS.
+
+It also now has the first canonical archive pieces for the broader backup and
+merge direction:
+- import Android exports into a target-neutral archive
+- import iPhone backups into that same archive
+- capture privacy-safe representative Android corpora for testing and sharing
 
 ## The Easy Way
 
@@ -150,15 +157,58 @@ Use `--country <code>` (e.g., `--country GB` for UK numbers). The wizard auto-de
 
 See [docs/CLI.md](docs/CLI.md) for the full command and flag reference.
 
+Additional project docs:
+- [docs/BUILDPLAN.md](docs/BUILDPLAN.md)
+- [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md)
+- [docs/RESTORE_PROTOCOL.md](docs/RESTORE_PROTOCOL.md)
+
 Quick reference:
 ```
 green2blue                     Interactive wizard
 green2blue quickstart          Step-by-step guide
 green2blue inject <zip>        Inject messages into a backup
+green2blue archive import-android <zip> <archive.sqlite>
+green2blue archive import-ios <backup> <archive.sqlite>
+green2blue archive inspect <archive.sqlite>
+green2blue archive report <archive.sqlite>
+green2blue corpus capture <zip> <sample.zip>
 green2blue list-backups        List available iPhone backups
 green2blue inspect <zip>       Show export contents
 green2blue verify <path>       Verify backup integrity
 ```
+
+### Canonical Archive
+
+The canonical archive is the new neutral storage layer for future merge and
+re-render workflows. Today you can already use it to collect both sides of a
+migration into one SQLite archive:
+
+```bash
+green2blue archive import-android android-export.zip merged.g2b.sqlite
+green2blue archive import-ios ~/Library/Application\\ Support/MobileSync/Backup/<UDID> merged.g2b.sqlite
+green2blue archive inspect merged.g2b.sqlite
+green2blue archive report merged.g2b.sqlite
+```
+
+That archive is the intended merge pivot for the future "universal backup"
+workflow.
+
+### Privacy-Safe Corpus Capture
+
+Use the corpus command to generate a representative Android sample ZIP that can
+be shared or tested without exposing a full private message history:
+
+```bash
+green2blue corpus capture full-export.zip sample-corpus.zip
+green2blue corpus capture full-export.zip sample-corpus.zip --max-per-bucket 2
+green2blue corpus capture full-export.zip sample-corpus.zip --preserve-media
+```
+
+By default this:
+- picks representative messages across SMS/MMS buckets
+- rewrites participant identities deterministically
+- redacts message text
+- replaces attachment payloads with bundled generic media unless `--preserve-media` is used
 
 ## Development
 

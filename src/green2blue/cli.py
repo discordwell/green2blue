@@ -406,6 +406,102 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("-q", "--quiet", action="store_true")
     inspect_parser.set_defaults(func=_cmd_inspect)
 
+    # --- archive (canonical archive workflows) ---
+    archive_parser = subparsers.add_parser(
+        "archive",
+        help="Canonical archive workflows for future merge / re-render support",
+    )
+    archive_subs = archive_parser.add_subparsers(dest="archive_command", help="Archive commands")
+
+    archive_import_android = archive_subs.add_parser(
+        "import-android",
+        help="Import an Android export ZIP into a canonical green2blue archive",
+    )
+    archive_import_android.add_argument("export_zip", type=Path, help="Path to the Android export ZIP")
+    archive_import_android.add_argument("output", type=Path, help="Output archive SQLite path")
+    archive_import_android.add_argument("-v", "--verbose", action="store_true")
+    archive_import_android.add_argument("-q", "--quiet", action="store_true")
+    archive_import_android.set_defaults(func=_cmd_archive_import_android)
+
+    archive_import_ios = archive_subs.add_parser(
+        "import-ios",
+        help="Import an iPhone backup into a canonical green2blue archive",
+    )
+    archive_import_ios.add_argument(
+        "backup",
+        type=str,
+        help="Backup path or UDID",
+    )
+    archive_import_ios.add_argument("output", type=Path, help="Output archive SQLite path")
+    archive_import_ios.add_argument(
+        "--backup-root",
+        type=Path,
+        default=None,
+        help="Override the default backup directory",
+    )
+    archive_import_ios.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Backup encryption password",
+    )
+    archive_import_ios.add_argument("-v", "--verbose", action="store_true")
+    archive_import_ios.add_argument("-q", "--quiet", action="store_true")
+    archive_import_ios.set_defaults(func=_cmd_archive_import_ios)
+
+    archive_inspect = archive_subs.add_parser(
+        "inspect",
+        help="Inspect a canonical green2blue archive",
+    )
+    archive_inspect.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_inspect.add_argument("-v", "--verbose", action="store_true")
+    archive_inspect.add_argument("-q", "--quiet", action="store_true")
+    archive_inspect.set_defaults(func=_cmd_archive_inspect)
+
+    archive_report = archive_subs.add_parser(
+        "report",
+        help="Generate a migration-oriented report for a canonical archive",
+    )
+    archive_report.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_report.add_argument("-v", "--verbose", action="store_true")
+    archive_report.add_argument("-q", "--quiet", action="store_true")
+    archive_report.set_defaults(func=_cmd_archive_report)
+
+    # --- corpus (privacy-safe sample capture) ---
+    corpus_parser = subparsers.add_parser(
+        "corpus",
+        help="Build privacy-safe representative Android sample corpora",
+    )
+    corpus_subs = corpus_parser.add_subparsers(dest="corpus_command", help="Corpus commands")
+
+    corpus_capture = corpus_subs.add_parser(
+        "capture",
+        help="Capture a representative sample corpus from an Android export ZIP",
+    )
+    corpus_capture.add_argument("export_zip", type=Path, help="Path to the Android export ZIP")
+    corpus_capture.add_argument("output_zip", type=Path, help="Output redacted ZIP path")
+    corpus_capture.add_argument(
+        "--max-per-bucket",
+        type=int,
+        default=1,
+        help="Maximum representative messages to keep per bucket (default: 1)",
+    )
+    corpus_capture.add_argument(
+        "--preserve-text",
+        action="store_true",
+        default=False,
+        help="Keep original message text instead of redacting it",
+    )
+    corpus_capture.add_argument(
+        "--preserve-media",
+        action="store_true",
+        default=False,
+        help="Keep original attachment bytes instead of generic replacement media",
+    )
+    corpus_capture.add_argument("-v", "--verbose", action="store_true")
+    corpus_capture.add_argument("-q", "--quiet", action="store_true")
+    corpus_capture.set_defaults(func=_cmd_corpus_capture)
+
     # --- verify ---
     verify_parser = subparsers.add_parser(
         "verify",
@@ -915,6 +1011,123 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     print(f"  Parse errors:   {counts['errors']}")
     print(f"  Attachments:    {'yes' if has_attachments else 'no'}")
 
+    return 0
+
+
+def _cmd_archive_import_android(args: argparse.Namespace) -> int:
+    """Import an Android export into a canonical archive."""
+    from green2blue.archive import import_android_export
+
+    result = import_android_export(args.export_zip, args.output)
+    print(f"Archive: {result.archive_path}")
+    print(f"  Import run ID:        {result.import_run_id}")
+    print(f"  Messages imported:    {result.messages_imported}")
+    print(f"  Messages deduped:     {result.messages_deduped}")
+    print(f"  Conversations touched:{result.conversations_touched}")
+    print(f"  Participants touched: {result.participants_touched}")
+    print(f"  Attachments imported: {result.attachments_imported}")
+    print(f"  Unique blobs stored:  {result.blobs_imported}")
+    return 0
+
+
+def _cmd_archive_import_ios(args: argparse.Namespace) -> int:
+    """Import an iPhone backup into a canonical archive."""
+    from green2blue.archive import import_ios_backup
+
+    result = import_ios_backup(
+        args.backup,
+        args.output,
+        backup_root=args.backup_root,
+        password=args.password,
+    )
+    print(f"Archive: {result.archive_path}")
+    print(f"  Backup UDID:          {result.backup_udid}")
+    print(f"  Backup path:          {result.backup_path}")
+    print(f"  Import run ID:        {result.import_run_id}")
+    print(f"  Messages imported:    {result.messages_imported}")
+    print(f"  Messages deduped:     {result.messages_deduped}")
+    print(f"  Conversations touched:{result.conversations_touched}")
+    print(f"  Participants touched: {result.participants_touched}")
+    print(f"  Attachments imported: {result.attachments_imported}")
+    print(f"  Unique blobs stored:  {result.blobs_imported}")
+    return 0
+
+
+def _cmd_archive_inspect(args: argparse.Namespace) -> int:
+    """Inspect a canonical archive."""
+    from green2blue.archive import CanonicalArchive
+
+    with CanonicalArchive(args.archive_path) as archive:
+        summary = archive.summary()
+
+    print(f"Archive: {summary.archive_path}")
+    print(f"  Import runs:      {summary.import_runs}")
+    print(f"  Conversations:    {summary.conversations}")
+    print(f"  Participants:     {summary.participants}")
+    print(f"  Messages:         {summary.messages}")
+    print(f"  Attachment parts: {summary.attachment_parts}")
+    print(f"  Blob objects:     {summary.blobs}")
+    print(f"  Blob bytes:       {summary.blob_bytes}")
+    return 0
+
+
+def _cmd_archive_report(args: argparse.Namespace) -> int:
+    """Generate a migration-oriented report for a canonical archive."""
+    from green2blue.archive import build_archive_report
+
+    report = build_archive_report(args.archive_path)
+    print(f"Archive: {report.summary.archive_path}")
+    print(f"  Import runs:             {report.summary.import_runs}")
+    print(f"  Conversations:           {report.summary.conversations}")
+    print(f"  Participants:            {report.summary.participants}")
+    print(f"  Messages:                {report.summary.messages}")
+    print(f"  Messages with media:     {report.messages_with_attachments}")
+    print(f"  Messages with URLs:      {report.messages_with_url}")
+
+    print("\nMessage sources:")
+    for key, value in sorted(report.source_type_counts.items()):
+        print(f"  {key}: {value}")
+
+    print("\nConversation kinds:")
+    for key, value in sorted(report.conversation_kind_counts.items()):
+        print(f"  {key}: {value}")
+
+    print("\nDirections:")
+    for key, value in sorted(report.direction_counts.items()):
+        print(f"  {key}: {value}")
+
+    print("\nService hints:")
+    for key, value in sorted(report.service_hint_counts.items()):
+        print(f"  {key}: {value}")
+
+    if report.top_attachment_mime_types:
+        print("\nTop attachment MIME types:")
+        for mime_type, count in report.top_attachment_mime_types:
+            print(f"  {mime_type}: {count}")
+
+    if report.warnings:
+        print("\nWarnings:")
+        for warning in report.warnings:
+            print(f"  - {warning}")
+
+    return 0
+
+
+def _cmd_corpus_capture(args: argparse.Namespace) -> int:
+    """Capture a privacy-safe representative Android corpus ZIP."""
+    from green2blue.corpus import capture_android_corpus
+
+    result = capture_android_corpus(
+        args.export_zip,
+        args.output_zip,
+        max_per_bucket=args.max_per_bucket,
+        preserve_text=args.preserve_text,
+        preserve_media=args.preserve_media,
+    )
+    print(f"Corpus ZIP: {result.output_zip}")
+    print(f"  Messages selected: {result.selected_messages}")
+    print(f"  Buckets covered:   {', '.join(result.buckets_covered) if result.buckets_covered else '(none)'}")
+    print(f"  Attachments saved: {result.attachments_written}")
     return 0
 
 
