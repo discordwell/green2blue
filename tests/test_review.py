@@ -20,7 +20,10 @@ class TestReviewSession:
         assert payload["stats"]["conversations"] == 3
         assert payload["stats"]["attachments"] == 1
         assert any(message["kind"] == "mms" for message in payload["messages"])
-        assert any(conversation["primary_address"] == "+12025551234" for conversation in payload["conversations"])
+        assert any(
+            conversation["primary_address"] == "+12025551234"
+            for conversation in payload["conversations"]
+        )
 
     def test_export_selected_zip_filters_messages_and_attachments(self, sample_export_zip):
         with open_review_session(sample_export_zip) as session:
@@ -35,12 +38,17 @@ class TestReviewSession:
             assert len(lines) == 2
             payloads = [json.loads(line) for line in lines]
 
-        texts = [payload.get("body") or payload.get("__parts", [{}])[0].get("text", "") for payload in payloads]
+        texts = [
+            payload.get("body") or payload.get("__parts", [{}])[0].get("text", "")
+            for payload in payloads
+        ]
         assert "Hello from Android!" in texts
         assert "Check out this photo!" in texts
         assert "Hello from me!" not in texts
 
     def test_export_selected_zip_requires_selection(self, sample_export_zip):
-        with open_review_session(sample_export_zip) as session:
-            with pytest.raises(ValueError, match="No messages selected"):
-                session.export_selected_zip(set())
+        with (
+            open_review_session(sample_export_zip) as session,
+            pytest.raises(ValueError, match="No messages selected"),
+        ):
+            session.export_selected_zip(set())

@@ -25,9 +25,7 @@ from tests.conftest import (
     make_ndjson_content,
 )
 
-crypto_required = pytest.mark.skipif(
-    not HAS_CRYPTO, reason="cryptography package not installed"
-)
+crypto_required = pytest.mark.skipif(not HAS_CRYPTO, reason="cryptography package not installed")
 
 
 def _create_full_backup(root: Path) -> Path:
@@ -37,23 +35,35 @@ def _create_full_backup(root: Path) -> Path:
     backup_dir.mkdir(parents=True)
 
     # Info.plist
-    (backup_dir / "Info.plist").write_bytes(plistlib.dumps({
-        "Device Name": "Integration Test iPhone",
-        "Product Version": "17.0",
-        "Unique Identifier": udid,
-    }))
+    (backup_dir / "Info.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "Device Name": "Integration Test iPhone",
+                "Product Version": "17.0",
+                "Unique Identifier": udid,
+            }
+        )
+    )
 
     # Manifest.plist
-    (backup_dir / "Manifest.plist").write_bytes(plistlib.dumps({
-        "IsEncrypted": False,
-        "Version": "3.3",
-    }))
+    (backup_dir / "Manifest.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "IsEncrypted": False,
+                "Version": "3.3",
+            }
+        )
+    )
 
     # Status.plist
-    (backup_dir / "Status.plist").write_bytes(plistlib.dumps({
-        "IsFullBackup": True,
-        "Version": "3.3",
-    }))
+    (backup_dir / "Status.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "IsFullBackup": True,
+                "Version": "3.3",
+            }
+        )
+    )
 
     # Create sms.db with full schema
     sms_hash = get_sms_db_hash()
@@ -227,9 +237,7 @@ class TestFullPipeline:
         # Verify Manifest.db was updated
         manifest_db = backup_dir / "Manifest.db"
         conn = sqlite3.connect(manifest_db)
-        cursor = conn.execute(
-            "SELECT file FROM Files WHERE relativePath = 'Library/SMS/sms.db'"
-        )
+        cursor = conn.execute("SELECT file FROM Files WHERE relativePath = 'Library/SMS/sms.db'")
         row = cursor.fetchone()
         conn.close()
         assert row is not None
@@ -352,9 +360,7 @@ class TestRealSMSIEFormat:
 
     def test_real_format_group_mms(self, tmp_dir):
         backup_dir = _create_full_backup(tmp_dir)
-        zip_path = _create_export_zip(
-            tmp_dir, records=[REAL_FORMAT_GROUP_MMS]
-        )
+        zip_path = _create_export_zip(tmp_dir, records=[REAL_FORMAT_GROUP_MMS])
 
         result = run_pipeline(
             export_path=zip_path,
@@ -605,25 +611,37 @@ def _create_encrypted_backup(root: Path, password: str = "testpass") -> Path:
     manifest_key_data = struct.pack("<I", 3) + wrapped_manifest_key
 
     # Info.plist
-    (backup_dir / "Info.plist").write_bytes(plistlib.dumps({
-        "Device Name": "Encrypted Test iPhone",
-        "Product Version": "17.0",
-        "Unique Identifier": udid,
-    }))
+    (backup_dir / "Info.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "Device Name": "Encrypted Test iPhone",
+                "Product Version": "17.0",
+                "Unique Identifier": udid,
+            }
+        )
+    )
 
     # Manifest.plist
-    (backup_dir / "Manifest.plist").write_bytes(plistlib.dumps({
-        "IsEncrypted": True,
-        "BackupKeyBag": keybag_data,
-        "ManifestKey": manifest_key_data,
-        "Version": "3.3",
-    }))
+    (backup_dir / "Manifest.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "IsEncrypted": True,
+                "BackupKeyBag": keybag_data,
+                "ManifestKey": manifest_key_data,
+                "Version": "3.3",
+            }
+        )
+    )
 
     # Status.plist
-    (backup_dir / "Status.plist").write_bytes(plistlib.dumps({
-        "IsFullBackup": True,
-        "Version": "3.3",
-    }))
+    (backup_dir / "Status.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "IsFullBackup": True,
+                "Version": "3.3",
+            }
+        )
+    )
 
     # Create plaintext sms.db, then encrypt it
     sms_hash = get_sms_db_hash()
@@ -791,10 +809,7 @@ class TestEncryptedPipeline:
             blob = rows[0][1]
             plist_data = plistlib.loads(blob)
             objects = plist_data["$objects"]
-            has_enc_key = any(
-                isinstance(obj, dict) and "EncryptionKey" in obj
-                for obj in objects
-            )
+            has_enc_key = any(isinstance(obj, dict) and "EncryptionKey" in obj for obj in objects)
             assert has_enc_key
 
             relative_path = rows[0][0]
@@ -936,7 +951,9 @@ class TestOverwritePipeline:
 
         backup_dir = _create_full_backup(tmp_dir)
         sacrifice_chat_id = _populate_backup_with_sacrifice(
-            backup_dir, "+15551110000", 3,
+            backup_dir,
+            "+15551110000",
+            3,
         )
 
         zip_path = _create_export_zip(tmp_dir)
@@ -976,7 +993,9 @@ class TestOverwritePipeline:
 
         backup_dir = _create_full_backup(tmp_dir)
         sacrifice_chat_id = _populate_backup_with_sacrifice(
-            backup_dir, "+15551110000", 3,
+            backup_dir,
+            "+15551110000",
+            3,
         )
         zip_path = _create_export_zip(tmp_dir)
 
@@ -1018,6 +1037,7 @@ class TestOverwritePipeline:
         madrid_domain = "HomeDomain"
         madrid_path = "Library/Preferences/com.apple.madrid.plist"
         from green2blue.ios.manifest import compute_file_id
+
         madrid_file_id = compute_file_id(madrid_domain, madrid_path)
 
         madrid_dir = backup_dir / madrid_file_id[:2]

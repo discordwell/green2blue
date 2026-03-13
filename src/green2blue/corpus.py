@@ -50,7 +50,9 @@ def capture_android_corpus(
         )
 
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        ndjson = "\n".join(json.dumps(record, ensure_ascii=False) for record in redacted_records) + "\n"
+        ndjson = (
+            "\n".join(json.dumps(record, ensure_ascii=False) for record in redacted_records) + "\n"
+        )
         zf.writestr("messages.ndjson", ndjson)
         for zip_name, payload in attachments:
             zf.writestr(zip_name, payload)
@@ -78,8 +80,7 @@ def _select_messages(
         if not buckets:
             continue
         chosen = tuple(
-            bucket for bucket in buckets
-            if bucket_counts.get(bucket, 0) < max_per_bucket
+            bucket for bucket in buckets if bucket_counts.get(bucket, 0) < max_per_bucket
         )
         if not chosen:
             continue
@@ -216,12 +217,14 @@ def _redact_mms(
             seq=seq,
         )
         zip_basename = filename.replace(" ", "_")
-        parts.append({
-            "seq": str(seq),
-            "ct": content_type,
-            "_data": f"/data/user/0/com.android.providers.telephony/app_parts/{zip_basename}",
-            "cl": filename,
-        })
+        parts.append(
+            {
+                "seq": str(seq),
+                "ct": content_type,
+                "_data": f"/data/user/0/com.android.providers.telephony/app_parts/{zip_basename}",
+                "cl": filename,
+            }
+        )
         attachments.append((f"data/{zip_basename}", payload))
 
     sender = _first_address_of_type(msg.addresses, 137)
@@ -252,7 +255,10 @@ def _redact_mms(
 
 
 def _redact_text(text: str, buckets: tuple[str, ...], ordinal: int) -> str:
-    urls = [f"https://example.com/sample-{ordinal}-{idx}" for idx, _ in enumerate(_URL_RE.findall(text), start=1)]
+    urls = [
+        f"https://example.com/sample-{ordinal}-{idx}"
+        for idx, _ in enumerate(_URL_RE.findall(text), start=1)
+    ]
     label = " / ".join(bucket.upper() for bucket in buckets[:2]) if buckets else "SAMPLE"
     base = f"CLAUDEUS CORPUS {ordinal}: {label}"
     if not urls:
@@ -277,17 +283,33 @@ def _redact_media_part(
             filename = part.filename or resolved.name
             return part.content_type, filename, resolved.read_bytes()
 
-    content_type, filename, payload = _generic_media_for_content_type(part.content_type, ordinal, seq)
+    content_type, filename, payload = _generic_media_for_content_type(
+        part.content_type, ordinal, seq
+    )
     return content_type, filename, payload
 
 
-def _generic_media_for_content_type(content_type: str, ordinal: int, seq: int) -> tuple[str, str, bytes]:
+def _generic_media_for_content_type(
+    content_type: str, ordinal: int, seq: int
+) -> tuple[str, str, bytes]:
     assets = files("green2blue.testing").joinpath("assets")
     if content_type == "image/png":
-        return "image/png", f"redacted_{ordinal}_{seq}.png", assets.joinpath("fixture_group.png").read_bytes()
+        return (
+            "image/png",
+            f"redacted_{ordinal}_{seq}.png",
+            assets.joinpath("fixture_group.png").read_bytes(),
+        )
     if content_type.startswith("video/"):
-        return "video/mp4", f"redacted_{ordinal}_{seq}.mp4", assets.joinpath("fixture_clip.mp4").read_bytes()
-    return "image/jpeg", f"redacted_{ordinal}_{seq}.jpg", assets.joinpath("fixture_caption.jpg").read_bytes()
+        return (
+            "video/mp4",
+            f"redacted_{ordinal}_{seq}.mp4",
+            assets.joinpath("fixture_clip.mp4").read_bytes(),
+        )
+    return (
+        "image/jpeg",
+        f"redacted_{ordinal}_{seq}.jpg",
+        assets.joinpath("fixture_caption.jpg").read_bytes(),
+    )
 
 
 def _resolve_attachment_path(export: ExtractedExport, part: MMSPart) -> Path | None:

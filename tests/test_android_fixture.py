@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from green2blue.pipeline import run_pipeline
 from green2blue.parser.ndjson_parser import count_messages, parse_ndjson
 from green2blue.parser.zip_reader import open_export_zip
+from green2blue.pipeline import run_pipeline
 from green2blue.testing.android_fixture import (
     DEFAULT_SCENARIOS,
-    SCENARIOS,
     _all_scenarios,
     main,
     write_fixture_zip,
@@ -43,12 +42,8 @@ class TestWriteFixtureZip:
             basenames = {path.name for path in export.data_dir.iterdir()}
             assert "PART_1701000002_captioned_photo.jpg" in basenames
             assert "PART_1701000003_group_image.png" in basenames
-            assert (
-                export.data_dir / "PART_1701000002_captioned_photo.jpg"
-            ).stat().st_size > 10_000
-            assert (
-                export.data_dir / "PART_1701000003_group_image.png"
-            ).stat().st_size > 50_000
+            assert (export.data_dir / "PART_1701000002_captioned_photo.jpg").stat().st_size > 10_000
+            assert (export.data_dir / "PART_1701000003_group_image.png").stat().st_size > 50_000
 
     def test_all_fixture_includes_media_scenarios(self, tmp_dir):
         zip_path = tmp_dir / "android_fixture_all.zip"
@@ -68,7 +63,8 @@ class TestWriteFixtureZip:
             assert counts["total"] == 6
 
             image_only_rcs = [
-                msg for msg in messages
+                msg
+                for msg in messages
                 if getattr(msg, "parts", ()) and len(getattr(msg, "parts", ())) == 1
             ]
             assert image_only_rcs
@@ -163,6 +159,8 @@ class TestFixturePipeline:
         )
 
         assert result.verification.passed
-        assert any("attachment files not found" in warning for warning in result.verification.warnings)
+        assert any(
+            "attachment files not found" in warning for warning in result.verification.warnings
+        )
         assert result.total_messages_parsed == 1
         assert result.total_attachments_copied == 0

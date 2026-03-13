@@ -16,7 +16,11 @@ from green2blue.models import (
 
 def _make_sms(address="+12025551234", body="hello", date=1700000000000, type_=1, read=1):
     return AndroidSMS(
-        address=address, body=body, date=date, type=type_, read=read,
+        address=address,
+        body=body,
+        date=date,
+        type=type_,
+        read=read,
     )
 
 
@@ -180,7 +184,7 @@ class TestMMSConversion:
         mms = _make_mms(parts=parts)
         result = convert_messages([mms])
         msg = result.messages[0]
-        assert msg.text == "\uFFFCLook at this!"
+        assert msg.text == "\ufffcLook at this!"
         assert len(msg.attachments) == 1
         att = msg.attachments[0]
         assert att.mime_type == "image/jpeg"
@@ -248,7 +252,9 @@ class TestGroupMMS:
         assert chat.chat_identifier.startswith("chat")
         assert chat.guid.startswith("any;+;chat")
         assert chat.participants == (
-            "+12025551111", "+12025552222", "+12025553333",
+            "+12025551111",
+            "+12025552222",
+            "+12025553333",
         )
 
     def test_group_handles_created(self):
@@ -464,7 +470,9 @@ class TestIMessageService:
     def test_imessage_with_ck_strategy(self):
         """iMessage service should work with CK strategies."""
         result = convert_messages(
-            [_make_sms()], ck_strategy=CKStrategy.FAKE_SYNCED, service="iMessage",
+            [_make_sms()],
+            ck_strategy=CKStrategy.FAKE_SYNCED,
+            service="iMessage",
         )
         msg = result.messages[0]
         assert msg.service == "iMessage"

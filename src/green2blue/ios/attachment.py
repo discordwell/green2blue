@@ -76,8 +76,11 @@ def copy_attachment_to_backup(
 
         # iOS keeps the plaintext size but stores the ciphertext digest in Manifest.db.
         manifest.add_attachment_entry(
-            ios_relative_path, file_size, domain,
-            encryption_key=enc_key_blob, protection_class=protection_class,
+            ios_relative_path,
+            file_size,
+            domain,
+            encryption_key=enc_key_blob,
+            protection_class=protection_class,
             digest=digest,
         )
     else:
@@ -96,7 +99,10 @@ def copy_attachment_to_backup(
 
         # Register in Manifest.db
         manifest.add_attachment_entry(
-            ios_relative_path, file_size, domain, digest=digest,
+            ios_relative_path,
+            file_size,
+            domain,
+            digest=digest,
         )
 
     return file_size

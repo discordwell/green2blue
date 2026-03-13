@@ -26,9 +26,7 @@ def drop_triggers(conn: sqlite3.Connection) -> list[str]:
         List of CREATE TRIGGER SQL statements for restoration.
     """
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT name, sql FROM sqlite_master WHERE type='trigger'"
-    )
+    cursor.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
     saved = []
     names = []
     for row in cursor.fetchall():
@@ -40,7 +38,7 @@ def drop_triggers(conn: sqlite3.Connection) -> list[str]:
     for name in names:
         # Parameterized queries can't be used for DDL identifiers,
         # so we validate the name contains only safe characters
-        if not all(c.isalnum() or c == '_' for c in name):
+        if not all(c.isalnum() or c == "_" for c in name):
             logger.warning("Skipping trigger with unsafe name: %r", name)
             continue
         cursor.execute(f"DROP TRIGGER IF EXISTS [{name}]")
@@ -49,9 +47,7 @@ def drop_triggers(conn: sqlite3.Connection) -> list[str]:
     return saved
 
 
-def restore_triggers(
-    conn: sqlite3.Connection, saved_triggers: list[str]
-) -> None:
+def restore_triggers(conn: sqlite3.Connection, saved_triggers: list[str]) -> None:
     """Restore previously dropped triggers.
 
     Args:
@@ -69,6 +65,4 @@ def restore_triggers(
         except sqlite3.Error as e:
             logger.warning("Failed to restore trigger: %s", e)
     conn.commit()
-    logger.debug(
-        "Restored %d/%d triggers", restored, len(saved_triggers)
-    )
+    logger.debug("Restored %d/%d triggers", restored, len(saved_triggers))

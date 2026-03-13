@@ -38,12 +38,20 @@ def build_archive_report(archive_path: Path | str) -> ArchiveReport:
             merge_runs=_scalar(conn, "SELECT COUNT(*) FROM merge_runs"),
             latest_merge=_latest_merge(conn),
             import_run_summaries=_import_run_summaries(conn),
-            source_type_counts=_count_map(conn, "SELECT source_type, COUNT(*) FROM messages GROUP BY source_type"),
-            conversation_kind_counts=_count_map(conn, "SELECT kind, COUNT(*) FROM conversations GROUP BY kind"),
-            direction_counts=_count_map(conn, "SELECT direction, COUNT(*) FROM messages GROUP BY direction"),
+            source_type_counts=_count_map(
+                conn, "SELECT source_type, COUNT(*) FROM messages GROUP BY source_type"
+            ),
+            conversation_kind_counts=_count_map(
+                conn, "SELECT kind, COUNT(*) FROM conversations GROUP BY kind"
+            ),
+            direction_counts=_count_map(
+                conn, "SELECT direction, COUNT(*) FROM messages GROUP BY direction"
+            ),
             service_hint_counts=_count_map(
                 conn,
-                "SELECT COALESCE(service_hint, '(unknown)'), COUNT(*) FROM messages GROUP BY COALESCE(service_hint, '(unknown)')",
+                "SELECT COALESCE(service_hint, '(unknown)'), COUNT(*)"
+                " FROM messages"
+                " GROUP BY COALESCE(service_hint, '(unknown)')",
             ),
             messages_with_attachments=_scalar(
                 conn,
@@ -71,10 +79,7 @@ def build_archive_report(archive_path: Path | str) -> ArchiveReport:
 
 
 def _count_map(conn: sqlite3.Connection, query: str) -> dict[str, int]:
-    return {
-        str(key): int(count)
-        for key, count in conn.execute(query).fetchall()
-    }
+    return {str(key): int(count) for key, count in conn.execute(query).fetchall()}
 
 
 def _scalar(conn: sqlite3.Connection, query: str) -> int:
@@ -217,43 +222,48 @@ def _build_warnings(conn: sqlite3.Connection) -> tuple[str, ...]:
     unsupported = _unsupported_feature_counts(conn)
 
     import_source_types = {
-        row[0]
-        for row in conn.execute("SELECT DISTINCT source_type FROM import_runs").fetchall()
+        row[0] for row in conn.execute("SELECT DISTINCT source_type FROM import_runs").fetchall()
     }
     merge_run_count = _scalar(conn, "SELECT COUNT(*) FROM merge_runs")
     if len(import_source_types) > 1 and merge_run_count == 0:
         warnings.append(
-            "Archive contains multiple source imports, but no merged view has been materialized yet.",
+            "Archive contains multiple source imports, but no merged view"
+            " has been materialized yet.",
         )
 
     rcs_like_count = unsupported["rcs_compat"]
     if rcs_like_count:
         warnings.append(
-            f"{rcs_like_count} RCS-like Android records are currently preserved through the SMS/MMS compatibility path.",
+            f"{rcs_like_count} RCS-like Android records are currently"
+            " preserved through the SMS/MMS compatibility path.",
         )
 
     reply_like_count = unsupported["reply_or_reaction"]
     if reply_like_count:
         warnings.append(
-            f"{reply_like_count} messages look like replies or reactions and may be downgraded to plain text/message order fidelity.",
+            f"{reply_like_count} messages look like replies or reactions"
+            " and may be downgraded to plain text/message order fidelity.",
         )
 
     edited_count = unsupported["edited"]
     if edited_count:
         warnings.append(
-            f"{edited_count} edited messages were detected; edit history is not fully preserved yet.",
+            f"{edited_count} edited messages were detected;"
+            " edit history is not fully preserved yet.",
         )
 
     rich_effect_count = unsupported["rich_effect"]
     if rich_effect_count:
         warnings.append(
-            f"{rich_effect_count} messages use rich app/message effects that may downgrade during migration.",
+            f"{rich_effect_count} messages use rich app/message effects"
+            " that may downgrade during migration.",
         )
 
     missing_blob_count = unsupported["missing_attachment_blob"]
     if missing_blob_count:
         warnings.append(
-            f"{missing_blob_count} attachment parts are metadata-only and do not currently have blob payloads in the archive.",
+            f"{missing_blob_count} attachment parts are metadata-only"
+            " and do not currently have blob payloads in the archive.",
         )
 
     return tuple(warnings)

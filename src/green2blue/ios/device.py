@@ -118,7 +118,10 @@ def _classify_device_exception(exc: Exception) -> tuple[str, str]:
             "password_protected",
             "Unlock the iPhone with its passcode, leave it on the home screen, and retry.",
         )
-    if "connectionterminatederror" in lowered or "ssl handshake is taking longer than 10 seconds" in lowered:
+    if (
+        "connectionterminatederror" in lowered
+        or "ssl handshake is taking longer than 10 seconds" in lowered
+    ):
         return (
             "backup_authorization_pending",
             "The backup session ended before MobileBackup2 fully came up. On a freshly "
@@ -140,13 +143,15 @@ def _classify_device_exception(exc: Exception) -> tuple[str, str]:
     if "missingvalue" in lowered:
         return (
             "pairing_blocked",
-            "The iPhone is connected but not exposing its pairing key. "
-            "Keep it unlocked on the home screen; if this follows a bad restore, use recovery mode.",
+            "The iPhone is connected but not exposing its pairing key."
+            " Keep it unlocked on the home screen; if this follows a"
+            " bad restore, use recovery mode.",
         )
     if "getprohibited" in lowered:
         return (
             "lockdown_blocked",
-            "The device is blocking lockdown queries. Unlock it fully and dismiss any setup or recovery screens.",
+            "The device is blocking lockdown queries. Unlock it"
+            " fully and dismiss any setup or recovery screens.",
         )
     if "not paired" in lowered or "userdeniedpairing" in lowered:
         return (
@@ -195,7 +200,10 @@ def build_device_recovery_plan(
             classification="springboard_not_ready",
             summary="The device never signaled that SpringBoard was ready for restore.",
             safe_to_retry=True,
-            hint="Unlock the phone, dismiss popups, leave it idle on the home screen for 20-30 seconds, then retry once.",
+            hint=(
+                "Unlock the phone, dismiss popups, leave it idle on"
+                " the home screen for 20-30 seconds, then retry once."
+            ),
             next_steps=(
                 "Unlock the iPhone to the normal home screen.",
                 "Dismiss any passcode, setup, trust, or error dialogs.",
@@ -209,9 +217,16 @@ def build_device_recovery_plan(
         return DeviceRecoveryPlan(
             operation=operation,
             classification="partial_restore_state",
-            summary=f"The restore started transferring data{pct_text} and failed during apply/reboot.",
+            summary=(
+                f"The restore started transferring data{pct_text}"
+                " and failed during apply/reboot."
+            ),
             safe_to_retry=False,
-            hint="Treat the phone as partially restored. Erase or recovery-restore it before retrying another modified backup.",
+            hint=(
+                "Treat the phone as partially restored. Erase or"
+                " recovery-restore it before retrying another"
+                " modified backup."
+            ),
             next_steps=(
                 "Do not keep retrying ordinary restore immediately on the same device state.",
                 "Erase the test phone or reflash it via recovery/DFU if needed.",
@@ -255,7 +270,10 @@ def build_device_recovery_plan(
         return DeviceRecoveryPlan(
             operation=operation,
             classification=state,
-            summary="This iOS build is not exposing MobileBackup2 over the current direct USB path.",
+            summary=(
+                "This iOS build is not exposing MobileBackup2"
+                " over the current direct USB path."
+            ),
             safe_to_retry=True,
             hint=hint,
             next_steps=(
@@ -312,10 +330,7 @@ def _is_retryable_mobilebackup_handshake_error(exc: Exception, *, progress_seen:
         return False
 
     lowered = f"{type(exc).__name__}: {exc}".lower()
-    return (
-        "protocol version exchange" in lowered
-        and "error code -1" in lowered
-    )
+    return "protocol version exchange" in lowered and "error code -1" in lowered
 
 
 def check_pymobiledevice3() -> None:
@@ -478,7 +493,9 @@ def doctor_device(udid: str | None = None) -> DeviceHealthReport:
         ios_version = getattr(lockdown, "product_version", "unknown")
         product_type = "unknown"
 
-        checks.append(DeviceCheckResult("Lockdown session", True, "Connected without auto-pairing."))
+        checks.append(
+            DeviceCheckResult("Lockdown session", True, "Connected without auto-pairing.")
+        )
 
         try:
             product_type = await _maybe_await(lockdown.get_value(key="ProductType"))
@@ -576,6 +593,7 @@ def create_backup(
     Returns:
         Path to the created backup directory (backup_dir / udid).
     """
+
     async def _create_backup_async() -> Path:
         from pymobiledevice3.services.mobilebackup2 import Mobilebackup2Service
 
@@ -604,11 +622,13 @@ def create_backup(
                 if callable(connect):
                     await _maybe_await(connect())
                 try:
-                    await _maybe_await(service.backup(
-                        full=True,
-                        backup_directory=str(backup_dir),
-                        progress_callback=_progress_wrapper,
-                    ))
+                    await _maybe_await(
+                        service.backup(
+                            full=True,
+                            backup_directory=str(backup_dir),
+                            progress_callback=_progress_wrapper,
+                        )
+                    )
                     break
                 except Exception as exc:
                     if (
@@ -619,7 +639,8 @@ def create_backup(
                         )
                     ):
                         logger.warning(
-                            "Backup handshake failed before progress on attempt %d/%d; retrying once: %s",
+                            "Backup handshake failed before progress"
+                            " on attempt %d/%d; retrying once: %s",
                             attempt,
                             _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS,
                             exc,
@@ -658,8 +679,10 @@ def restore_backup(
         password: Backup encryption password (None = unencrypted).
         progress_cb: Optional callback receiving progress percentage (0.0-100.0).
     """
+
     async def _restore_backup_async() -> None:
         from pymobiledevice3.services.mobilebackup2 import Mobilebackup2Service
+
         try:
             lockdown = await _get_lockdown_async(udid)
 
@@ -682,15 +705,17 @@ def restore_backup(
                 if callable(connect):
                     await _maybe_await(connect())
                 try:
-                    await _maybe_await(service.restore(
-                        backup_directory=str(backup_dir),
-                        system=True,
-                        settings=True,
-                        remove=True,
-                        reboot=True,
-                        password=password or "",
-                        progress_callback=_progress_wrapper,
-                    ))
+                    await _maybe_await(
+                        service.restore(
+                            backup_directory=str(backup_dir),
+                            system=True,
+                            settings=True,
+                            remove=True,
+                            reboot=True,
+                            password=password or "",
+                            progress_callback=_progress_wrapper,
+                        )
+                    )
                     break
                 except Exception as exc:
                     if (
@@ -701,7 +726,8 @@ def restore_backup(
                         )
                     ):
                         logger.warning(
-                            "Restore handshake failed before progress on attempt %d/%d; retrying once: %s",
+                            "Restore handshake failed before progress"
+                            " on attempt %d/%d; retrying once: %s",
                             attempt,
                             _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS,
                             exc,
@@ -736,8 +762,10 @@ def push_synthetic_backup(
         udid: Target device UDID (auto-select if None and only one device).
         progress_cb: Optional callback receiving progress percentage (0.0-100.0).
     """
+
     async def _push_synthetic_backup_async() -> None:
         from pymobiledevice3.services.mobilebackup2 import Mobilebackup2Service
+
         try:
             lockdown = await _get_lockdown_async(udid)
 
@@ -759,13 +787,15 @@ def push_synthetic_backup(
                 if callable(connect):
                     await _maybe_await(connect())
                 try:
-                    await _maybe_await(service.restore(
-                        backup_directory=str(backup_dir),
-                        system=True,
-                        remove=False,
-                        reboot=True,
-                        progress_callback=_progress_wrapper,
-                    ))
+                    await _maybe_await(
+                        service.restore(
+                            backup_directory=str(backup_dir),
+                            system=True,
+                            remove=False,
+                            reboot=True,
+                            progress_callback=_progress_wrapper,
+                        )
+                    )
                     break
                 except Exception as exc:
                     if (
@@ -776,7 +806,9 @@ def push_synthetic_backup(
                         )
                     ):
                         logger.warning(
-                            "Synthetic restore handshake failed before progress on attempt %d/%d; retrying once: %s",
+                            "Synthetic restore handshake failed before"
+                            " progress on attempt %d/%d;"
+                            " retrying once: %s",
                             attempt,
                             _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS,
                             exc,

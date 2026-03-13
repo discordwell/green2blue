@@ -51,12 +51,8 @@ class TestBuildMessageSummaryInfo:
 
     def test_sent_and_received_produce_same_blob(self):
         """Both sent and received SMS messages get the same blob."""
-        blob_sent = build_message_summary_info(
-            service="SMS", is_from_me=True, has_text=True
-        )
-        blob_recv = build_message_summary_info(
-            service="SMS", is_from_me=False, has_text=True
-        )
+        blob_sent = build_message_summary_info(service="SMS", is_from_me=True, has_text=True)
+        blob_recv = build_message_summary_info(service="SMS", is_from_me=False, has_text=True)
         assert blob_sent == blob_recv
 
     def test_blob_is_reused_singleton(self):
@@ -187,7 +183,7 @@ class TestMessageSummaryInfoInjection:
             cursor = db.conn.cursor()
             cursor.execute("SELECT text, part_count, message_summary_info FROM message")
             row = cursor.fetchone()
-            assert row["text"] == "\uFFFC"
+            assert row["text"] == "\ufffc"
             assert row["part_count"] == 1
             assert row["message_summary_info"] is not None
 

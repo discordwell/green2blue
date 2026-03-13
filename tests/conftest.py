@@ -102,8 +102,7 @@ REAL_FORMAT_MMS = {
             "seq": "1",
             "ct": "image/jpeg",
             "_data": (
-                "/data/user/0/com.android.providers.telephony"
-                "/app_parts/PART_1700000002_image.jpg"
+                "/data/user/0/com.android.providers.telephony/app_parts/PART_1700000002_image.jpg"
             ),
             "cl": "photo.jpg",
         },

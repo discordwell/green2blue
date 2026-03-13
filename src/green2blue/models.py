@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from uuid import NAMESPACE_URL, uuid5
 
-ATTACHMENT_PLACEHOLDER = "\uFFFC"
+ATTACHMENT_PLACEHOLDER = "\ufffc"
 
 # --- Android models (parsed from SMS Import/Export NDJSON) ---
 
@@ -199,7 +199,7 @@ def compute_group_chat_identifier(group_members: tuple[str, ...]) -> str:
     hash_input = ",".join(sorted_members)
     digest = hashlib.sha256(hash_input.encode()).digest()
     # Real iOS uses opaque decimal chat identifiers for groups.
-    chat_num = int.from_bytes(digest[:8], "big") % (10 ** 18)
+    chat_num = int.from_bytes(digest[:8], "big") % (10**18)
     return f"chat{chat_num}"
 
 
@@ -226,10 +226,7 @@ def message_content_hash(msg: iOSMessage) -> str:
     """
     text = compose_message_text(msg.text, len(msg.attachments)) or ""
     group_key = ",".join(sorted(msg.group_members))
-    content = (
-        f"{msg.service}|{msg.handle_id}|{msg.chat_identifier}|"
-        f"{group_key}|{msg.date}|{text}"
-    )
+    content = f"{msg.service}|{msg.handle_id}|{msg.chat_identifier}|{group_key}|{msg.date}|{text}"
     return hashlib.sha256(content.encode()).hexdigest()
 
 

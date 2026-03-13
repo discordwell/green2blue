@@ -123,9 +123,16 @@ def _populate_sacrifice_db(
                                     ck_sync_state, ck_record_id, ck_record_change_tag)
                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, ?, ?, ?)""",
             (
-                msg_guid, f"sacrifice message {i}", handle_rowid, service,
-                msg_date, msg_date, msg_date,
-                ck_sync_state, ck_record_id, ck_change_tag,
+                msg_guid,
+                f"sacrifice message {i}",
+                handle_rowid,
+                service,
+                msg_date,
+                msg_date,
+                msg_date,
+                ck_sync_state,
+                ck_record_id,
+                ck_change_tag,
             ),
         )
         rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -161,9 +168,7 @@ class TestOverwriteContentUpdate:
 
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT text FROM message WHERE ROWID = ?", (msg_ids[0],)
-        ).fetchone()
+        row = conn.execute("SELECT text FROM message WHERE ROWID = ?", (msg_ids[0],)).fetchone()
         assert row["text"] == "New Android text"
         assert stats.messages_overwritten == 1
         conn.close()
@@ -313,7 +318,10 @@ class TestOverwriteCKPreservation:
 
     def test_ck_sync_state_preserved(self, empty_sms_db: Path):
         chat_id, msg_ids = _populate_sacrifice_db(
-            empty_sms_db, "+15551110000", 1, ck_sync_state=1,
+            empty_sms_db,
+            "+15551110000",
+            1,
+            ck_sync_state=1,
         )
         android_msg = _make_message("+15552220000", "CK test", 800000000000000000)
         result = _make_result(
@@ -335,7 +343,10 @@ class TestOverwriteCKPreservation:
 
     def test_ck_record_id_preserved(self, empty_sms_db: Path):
         chat_id, msg_ids = _populate_sacrifice_db(
-            empty_sms_db, "+15551110000", 1, ck_sync_state=1,
+            empty_sms_db,
+            "+15551110000",
+            1,
+            ck_sync_state=1,
         )
 
         # Read the original ck_record_id
@@ -366,7 +377,10 @@ class TestOverwriteCKPreservation:
 
     def test_ck_record_change_tag_preserved(self, empty_sms_db: Path):
         chat_id, msg_ids = _populate_sacrifice_db(
-            empty_sms_db, "+15551110000", 1, ck_sync_state=1,
+            empty_sms_db,
+            "+15551110000",
+            1,
+            ck_sync_state=1,
         )
         android_msg = _make_message("+15552220000", "CK tag test", 800000000000000000)
         result = _make_result(
@@ -406,11 +420,7 @@ class TestOverwriteRowidPreservation:
             db.overwrite(result, [chat_id])
 
         conn = sqlite3.connect(empty_sms_db)
-        rowids = [
-            r[0] for r in conn.execute(
-                "SELECT ROWID FROM message ORDER BY ROWID"
-            ).fetchall()
-        ]
+        rowids = [r[0] for r in conn.execute("SELECT ROWID FROM message ORDER BY ROWID").fetchall()]
         assert rowids == msg_ids
         conn.close()
 
@@ -464,9 +474,7 @@ class TestOverwriteHandleUpdate:
             "SELECT handle_id FROM message WHERE ROWID = ?", (msg_ids[0],)
         ).fetchone()
         # The handle_id should point to the new Android contact handle
-        new_handle = conn.execute(
-            "SELECT ROWID FROM handle WHERE id = '+15552220000'"
-        ).fetchone()
+        new_handle = conn.execute("SELECT ROWID FROM handle WHERE id = '+15552220000'").fetchone()
         assert row["handle_id"] == new_handle[0]
         assert stats.handles_inserted == 1
         conn.close()
@@ -544,9 +552,7 @@ class TestOverwriteTargetCreation:
 
         assert stats.chats_inserted == 1
         conn = sqlite3.connect(empty_sms_db)
-        row = conn.execute(
-            "SELECT guid FROM chat WHERE guid = 'any;-;+15559990000'"
-        ).fetchone()
+        row = conn.execute("SELECT guid FROM chat WHERE guid = 'any;-;+15559990000'").fetchone()
         assert row is not None
         conn.close()
 
@@ -566,8 +572,12 @@ class TestOverwriteInsufficientPool:
             [_make_chat("+15552220000")],
         )
 
-        with SMSDatabase(empty_sms_db) as db, pytest.raises(
-            InsufficientSacrificeError, match="2 messages but 5 are needed",
+        with (
+            SMSDatabase(empty_sms_db) as db,
+            pytest.raises(
+                InsufficientSacrificeError,
+                match="2 messages but 5 are needed",
+            ),
         ):
             db.overwrite(result, [chat_id])
 
@@ -577,10 +587,14 @@ class TestOverwriteMultipleSacrificeChats:
 
     def test_multiple_sacrifice_chats(self, empty_sms_db: Path):
         chat_id_1, msg_ids_1 = _populate_sacrifice_db(
-            empty_sms_db, "+15551110000", 2,
+            empty_sms_db,
+            "+15551110000",
+            2,
         )
         chat_id_2, msg_ids_2 = _populate_sacrifice_db(
-            empty_sms_db, "+15553330000", 2,
+            empty_sms_db,
+            "+15553330000",
+            2,
         )
         messages = [
             _make_message("+15559990000", f"multi {i}", 800000000000000000 + i * 1000000000)
@@ -657,7 +671,9 @@ class TestOverwriteAttachments:
             created_date=800000000,
         )
         android_msg = _make_message(
-            "+15559990000", "with attachment", 800000000000000000,
+            "+15559990000",
+            "with attachment",
+            800000000000000000,
             attachments=(new_att,),
         )
         result = _make_result(
@@ -693,10 +709,7 @@ class TestOverwriteTriggerRestore:
     def test_triggers_restored_after_overwrite(self, empty_sms_db: Path):
         # Add a dummy trigger to the DB
         conn = sqlite3.connect(empty_sms_db)
-        conn.execute(
-            "CREATE TRIGGER test_trigger AFTER INSERT ON handle "
-            "BEGIN SELECT 1; END"
-        )
+        conn.execute("CREATE TRIGGER test_trigger AFTER INSERT ON handle BEGIN SELECT 1; END")
         conn.commit()
         conn.close()
 
@@ -712,9 +725,7 @@ class TestOverwriteTriggerRestore:
             db.overwrite(result, [chat_id])
 
         conn = sqlite3.connect(empty_sms_db)
-        triggers = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
-        ).fetchall()
+        triggers = conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'").fetchall()
         trigger_names = [t[0] for t in triggers]
         assert "test_trigger" in trigger_names
         conn.close()
@@ -735,8 +746,7 @@ class TestOverwriteTransactionRollback:
 
         # Pool too small should raise and rollback
         messages = [
-            _make_message("+15552220000", f"msg {i}", 800000000000000000 + i)
-            for i in range(5)
+            _make_message("+15552220000", f"msg {i}", 800000000000000000 + i) for i in range(5)
         ]
         result = _make_result(
             messages,
@@ -749,9 +759,7 @@ class TestOverwriteTransactionRollback:
 
         # Original data should be intact
         conn = sqlite3.connect(empty_sms_db)
-        text = conn.execute(
-            "SELECT text FROM message WHERE ROWID = ?", (msg_ids[0],)
-        ).fetchone()[0]
+        text = conn.execute("SELECT text FROM message WHERE ROWID = ?", (msg_ids[0],)).fetchone()[0]
         assert text == original_text
         conn.close()
 

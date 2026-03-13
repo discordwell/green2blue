@@ -455,7 +455,7 @@ def _normalize_message_text(text: str | None, attachment_count: int) -> str | No
         return text
     prefix = ATTACHMENT_PLACEHOLDER * attachment_count
     if text.startswith(prefix):
-        stripped = text[len(prefix):]
+        stripped = text[len(prefix) :]
         return stripped or None
     return text
 

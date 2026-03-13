@@ -41,9 +41,7 @@ def get_backup_dir() -> Path:
         appdata = Path.home() / "AppData" / "Roaming" / "Apple Computer" / "MobileSync" / "Backup"
         if appdata.exists():
             return appdata
-        return (
-            Path.home() / "Apple" / "MobileSync" / "Backup"
-        )
+        return Path.home() / "Apple" / "MobileSync" / "Backup"
     else:
         raise BackupNotFoundError(
             f"Unsupported platform: {system}",
@@ -161,10 +159,7 @@ def has_restore_checkpoint(backup_path: Path) -> bool:
     parent = backup_path.parent
     if not parent.exists():
         return False
-    return any(
-        entry.is_dir() and entry.name.startswith(prefix)
-        for entry in parent.iterdir()
-    )
+    return any(entry.is_dir() and entry.name.startswith(prefix) for entry in parent.iterdir())
 
 
 def create_safety_copy(backup_path: Path) -> Path:

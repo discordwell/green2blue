@@ -113,9 +113,7 @@ def _check_foreign_keys(db_path: Path, result: VerificationResult) -> None:
             result.checks_passed += 1
             logger.debug("Foreign key check: PASSED")
         else:
-            result.add_error(
-                f"{orphaned} messages reference non-existent handles"
-            )
+            result.add_error(f"{orphaned} messages reference non-existent handles")
     except sqlite3.Error as e:
         result.add_error(f"Foreign key check error: {e}")
 
@@ -170,13 +168,9 @@ def _check_join_tables(db_path: Path, result: VerificationResult) -> None:
         if orphaned_handles:
             errors.append(f"{orphaned_handles} chat_handle_join entries reference missing handles")
         if orphaned_att_msgs:
-            errors.append(
-                f"{orphaned_att_msgs} message_attachment_join refs missing messages"
-            )
+            errors.append(f"{orphaned_att_msgs} message_attachment_join refs missing messages")
         if orphaned_att:
-            errors.append(
-                f"{orphaned_att} message_attachment_join refs missing attachments"
-            )
+            errors.append(f"{orphaned_att} message_attachment_join refs missing attachments")
 
         if errors:
             for e in errors:
@@ -230,9 +224,7 @@ def _check_attachments(
             result.checks_passed += 1
             logger.debug("Attachment file check: PASSED (%d files)", checked)
         else:
-            result.add_warning(
-                f"{missing}/{checked} attachment files not found in backup"
-            )
+            result.add_warning(f"{missing}/{checked} attachment files not found in backup")
             result.checks_passed += 1  # Warning, not error
 
     except sqlite3.Error as e:
@@ -245,10 +237,7 @@ def _check_chat_indexes(db_path: Path, result: VerificationResult) -> None:
     try:
         conn = sqlite3.connect(db_path)
         tables = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
 
         if "chat_service" not in tables:
@@ -272,9 +261,7 @@ def _check_chat_indexes(db_path: Path, result: VerificationResult) -> None:
             result.checks_passed += 1
             logger.debug("Chat index consistency: PASSED")
         else:
-            result.add_error(
-                f"{missing_chat_service} chats are missing chat_service index rows"
-            )
+            result.add_error(f"{missing_chat_service} chats are missing chat_service index rows")
     except sqlite3.Error as e:
         result.add_error(f"Chat index check error: {e}")
 
@@ -314,4 +301,3 @@ def _check_manifest(
                         )
     except Exception as e:
         result.add_error(f"Manifest check error: {e}")
-

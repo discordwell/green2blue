@@ -240,9 +240,7 @@ class TestFileRecord:
         assert record.flags == 4
 
     def test_custom_permissions(self):
-        record = file_record(
-            "HomeDomain", "test.txt", b"data", mode=int(MODE_FILE_644), flags=0
-        )
+        record = file_record("HomeDomain", "test.txt", b"data", mode=int(MODE_FILE_644), flags=0)
         assert record.mode == int(MODE_FILE_644)
         assert record.flags == 0
 

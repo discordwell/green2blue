@@ -53,8 +53,10 @@ def _make_result(
         phones = {m.handle_id for m in messages}
         chats = [
             iOSChat(
-                guid=f"any;-;{p}", style=45,
-                chat_identifier=p, service_name="SMS",
+                guid=f"any;-;{p}",
+                style=45,
+                chat_identifier=p,
+                service_name="SMS",
             )
             for p in phones
         ]
@@ -76,8 +78,7 @@ def _populate_source_db(
 
     # Handle
     conn.execute(
-        "INSERT INTO handle (id, country, service, uncanonicalized_id) "
-        "VALUES (?, 'us', 'SMS', ?)",
+        "INSERT INTO handle (id, country, service, uncanonicalized_id) VALUES (?, 'us', 'SMS', ?)",
         (phone, phone),
     )
     handle_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -115,16 +116,22 @@ def _populate_source_db(
                                     message_summary_info, attributedBody)
                VALUES (?, ?, ?, 'SMS', ?, ?, ?, 0, 1, 1, 1, ?, ?, ?, ?, ?)""",
             (
-                f"source-msg-{uuid.uuid4()}", f"source text {i}", handle_rowid,
-                msg_date, msg_date, msg_date,
-                ck_sync_state, ck_record_id, ck_change_tag,
-                msi_blob, build_attributed_body(f"source text {i}"),
+                f"source-msg-{uuid.uuid4()}",
+                f"source text {i}",
+                handle_rowid,
+                msg_date,
+                msg_date,
+                msg_date,
+                ck_sync_state,
+                ck_record_id,
+                ck_change_tag,
+                msi_blob,
+                build_attributed_body(f"source text {i}"),
             ),
         )
         last_msg_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
-            "INSERT INTO chat_message_join (chat_id, message_id, message_date) "
-            "VALUES (?, ?, ?)",
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (?, ?, ?)",
             (chat_rowid, last_msg_rowid, msg_date),
         )
 
@@ -165,9 +172,7 @@ class TestCloneMessageCreation:
 
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT guid FROM message ORDER BY ROWID DESC LIMIT 1"
-        ).fetchone()
+        rows = conn.execute("SELECT guid FROM message ORDER BY ROWID DESC LIMIT 1").fetchone()
         guid = rows["guid"]
         assert not guid.startswith("green2blue:")
         # Should be a valid UUID format (uppercase)
@@ -184,9 +189,7 @@ class TestCloneMessageCreation:
 
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT text FROM message ORDER BY ROWID DESC LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT text FROM message ORDER BY ROWID DESC LIMIT 1").fetchone()
         assert row["text"] == "Hello from Android!"
         conn.close()
 
@@ -202,8 +205,7 @@ class TestCloneMessageCreation:
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT date, date_read, date_delivered FROM message "
-            "ORDER BY ROWID DESC LIMIT 1"
+            "SELECT date, date_read, date_delivered FROM message ORDER BY ROWID DESC LIMIT 1"
         ).fetchone()
         assert row["date"] == target_date
         assert row["date_read"] == target_date
@@ -221,9 +223,7 @@ class TestCloneMessageCreation:
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
         # Get the new handle's ROWID
-        new_handle = conn.execute(
-            "SELECT ROWID FROM handle WHERE id = '+15552220000'"
-        ).fetchone()
+        new_handle = conn.execute("SELECT ROWID FROM handle WHERE id = '+15552220000'").fetchone()
         cloned_msg = conn.execute(
             "SELECT handle_id FROM message ORDER BY ROWID DESC LIMIT 1"
         ).fetchone()
@@ -341,8 +341,7 @@ class TestCloneMessageSummaryInfo:
 
         conn = sqlite3.connect(empty_sms_db)
         msi_values = conn.execute(
-            "SELECT DISTINCT message_summary_info FROM message "
-            "WHERE guid NOT LIKE 'source-%'"
+            "SELECT DISTINCT message_summary_info FROM message WHERE guid NOT LIKE 'source-%'"
         ).fetchall()
         # All cloned messages should share the same MSI blob
         # (plus the source message's MSI)
@@ -405,8 +404,7 @@ class TestCloneHandle:
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT id, uncanonicalized_id, service FROM handle "
-            "WHERE id = '+15559990000'"
+            "SELECT id, uncanonicalized_id, service FROM handle WHERE id = '+15559990000'"
         ).fetchone()
         assert row is not None
         assert row["id"] == "+15559990000"
@@ -423,9 +421,7 @@ class TestCloneHandle:
 
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT service FROM handle WHERE id = '+15559990000'"
-        ).fetchone()
+        row = conn.execute("SELECT service FROM handle WHERE id = '+15559990000'").fetchone()
         assert row["service"] == "SMS"
         conn.close()
 
@@ -468,9 +464,7 @@ class TestCloneHandle:
 
         assert stats.handles_inserted == 1
         conn = sqlite3.connect(empty_sms_db)
-        count = conn.execute(
-            "SELECT COUNT(*) FROM handle WHERE id = '+15552220000'"
-        ).fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM handle WHERE id = '+15552220000'").fetchone()[0]
         assert count == 1
         conn.close()
 
@@ -617,12 +611,8 @@ class TestCloneJoinTables:
 
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
-        chat = conn.execute(
-            "SELECT ROWID FROM chat WHERE guid = 'SMS;-;+15559990000'"
-        ).fetchone()
-        handle = conn.execute(
-            "SELECT ROWID FROM handle WHERE id = '+15559990000'"
-        ).fetchone()
+        chat = conn.execute("SELECT ROWID FROM chat WHERE guid = 'SMS;-;+15559990000'").fetchone()
+        handle = conn.execute("SELECT ROWID FROM handle WHERE id = '+15559990000'").fetchone()
         join_row = conn.execute(
             "SELECT * FROM chat_handle_join WHERE chat_id = ? AND handle_id = ?",
             (chat[0], handle[0]),
@@ -640,9 +630,7 @@ class TestCloneJoinTables:
 
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
-        chat = conn.execute(
-            "SELECT ROWID FROM chat WHERE guid = 'SMS;-;+15559990000'"
-        ).fetchone()
+        chat = conn.execute("SELECT ROWID FROM chat WHERE guid = 'SMS;-;+15559990000'").fetchone()
         # Get the cloned message (last one)
         cloned_msg = conn.execute(
             "SELECT ROWID FROM message ORDER BY ROWID DESC LIMIT 1"
@@ -682,10 +670,7 @@ class TestCloneTriggerBehavior:
     def test_triggers_not_dropped(self, empty_sms_db: Path):
         # Add a dummy trigger
         conn = sqlite3.connect(empty_sms_db)
-        conn.execute(
-            "CREATE TRIGGER test_trigger AFTER INSERT ON handle "
-            "BEGIN SELECT 1; END"
-        )
+        conn.execute("CREATE TRIGGER test_trigger AFTER INSERT ON handle BEGIN SELECT 1; END")
         conn.commit()
         conn.close()
 
@@ -697,19 +682,14 @@ class TestCloneTriggerBehavior:
             db.clone(result)
 
         conn = sqlite3.connect(empty_sms_db)
-        triggers = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
-        ).fetchall()
+        triggers = conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'").fetchall()
         trigger_names = [t[0] for t in triggers]
         assert "test_trigger" in trigger_names
         conn.close()
 
     def test_triggers_still_present_after_clone(self, empty_sms_db: Path):
         conn = sqlite3.connect(empty_sms_db)
-        conn.execute(
-            "CREATE TRIGGER msg_trigger AFTER INSERT ON message "
-            "BEGIN SELECT 1; END"
-        )
+        conn.execute("CREATE TRIGGER msg_trigger AFTER INSERT ON message BEGIN SELECT 1; END")
         conn.commit()
         conn.close()
 
@@ -721,9 +701,7 @@ class TestCloneTriggerBehavior:
             db.clone(result)
 
         conn = sqlite3.connect(empty_sms_db)
-        triggers = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
-        ).fetchall()
+        triggers = conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'").fetchall()
         trigger_names = [t[0] for t in triggers]
         assert "msg_trigger" in trigger_names
         conn.close()
@@ -737,8 +715,12 @@ class TestCloneSourceErrors:
         msg = _make_message("+15552220000", "No source", 800000000000000000)
         result = _make_result([msg])
 
-        with SMSDatabase(empty_sms_db) as db, pytest.raises(
-            CloneSourceError, match="No incoming SMS message",
+        with (
+            SMSDatabase(empty_sms_db) as db,
+            pytest.raises(
+                CloneSourceError,
+                match="No incoming SMS message",
+            ),
         ):
             db.clone(result)
 
@@ -757,8 +739,12 @@ class TestCloneSourceErrors:
         msg = _make_message("+15552220000", "No handle", 800000000000000000)
         result = _make_result([msg])
 
-        with SMSDatabase(empty_sms_db) as db, pytest.raises(
-            CloneSourceError, match="No SMS handle",
+        with (
+            SMSDatabase(empty_sms_db) as db,
+            pytest.raises(
+                CloneSourceError,
+                match="No SMS handle",
+            ),
         ):
             db.clone(result)
 
@@ -781,8 +767,12 @@ class TestCloneSourceErrors:
         msg = _make_message("+15552220000", "No chat", 800000000000000000)
         result = _make_result([msg])
 
-        with SMSDatabase(empty_sms_db) as db, pytest.raises(
-            CloneSourceError, match="No SMS chat",
+        with (
+            SMSDatabase(empty_sms_db) as db,
+            pytest.raises(
+                CloneSourceError,
+                match="No SMS chat",
+            ),
         ):
             db.clone(result)
 
@@ -812,8 +802,12 @@ class TestCloneSourceErrors:
         msg = _make_message("+15552220000", "Only outgoing", 800000000000000000)
         result = _make_result([msg])
 
-        with SMSDatabase(empty_sms_db) as db, pytest.raises(
-            CloneSourceError, match="No incoming SMS message",
+        with (
+            SMSDatabase(empty_sms_db) as db,
+            pytest.raises(
+                CloneSourceError,
+                match="No incoming SMS message",
+            ),
         ):
             db.clone(result)
 
@@ -821,8 +815,7 @@ class TestCloneSourceErrors:
         """Only iMessage messages — no SMS to clone from."""
         conn = sqlite3.connect(empty_sms_db)
         conn.execute(
-            "INSERT INTO handle (id, country, service) "
-            "VALUES ('+15551110000', 'us', 'iMessage')"
+            "INSERT INTO handle (id, country, service) VALUES ('+15551110000', 'us', 'iMessage')"
         )
         handle_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
@@ -844,8 +837,12 @@ class TestCloneSourceErrors:
         msg = _make_message("+15552220000", "Only iMessage", 800000000000000000)
         result = _make_result([msg])
 
-        with SMSDatabase(empty_sms_db) as db, pytest.raises(
-            CloneSourceError, match="No incoming SMS message",
+        with (
+            SMSDatabase(empty_sms_db) as db,
+            pytest.raises(
+                CloneSourceError,
+                match="No incoming SMS message",
+            ),
         ):
             db.clone(result)
 
@@ -896,9 +893,7 @@ class TestCloneMultipleMessages:
 
         conn = sqlite3.connect(empty_sms_db)
         # Get ck_record_ids of cloned messages (not the source)
-        rows = conn.execute(
-            "SELECT ck_record_id FROM message WHERE text LIKE 'CK dup%'"
-        ).fetchall()
+        rows = conn.execute("SELECT ck_record_id FROM message WHERE text LIKE 'CK dup%'").fetchall()
         ck_ids = [r[0] for r in rows]
         assert len(ck_ids) == 3
         # All should be the same (duplicated from source)

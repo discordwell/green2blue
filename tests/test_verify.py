@@ -15,9 +15,7 @@ class TestVerifyBackup:
         sms_hash = compute_file_id("HomeDomain", "Library/SMS/sms.db")
         sms_db = sample_backup_dir / sms_hash[:2] / sms_hash
 
-        result = verify_backup(
-            sample_backup_dir, sms_db, sample_backup_dir / "Manifest.db"
-        )
+        result = verify_backup(sample_backup_dir, sms_db, sample_backup_dir / "Manifest.db")
         assert result.passed
         assert result.checks_passed > 0
 
@@ -55,7 +53,6 @@ class TestVerifyBackup:
         result = verify_backup(sample_backup_dir, sms_db)
         assert not result.passed
 
-
     def test_digest_mismatch_detected(self, sample_backup_dir):
         """Verification should fail when Manifest.db digest doesn't match sms.db."""
         sms_hash = compute_file_id("HomeDomain", "Library/SMS/sms.db")
@@ -64,22 +61,25 @@ class TestVerifyBackup:
         # Build an MBFile blob with a WRONG digest
         wrong_digest = b"\x00" * 20
         actual_size = sms_db.stat().st_size
-        blob = plistlib.dumps({
-            "$archiver": "NSKeyedArchiver",
-            "$version": 100000,
-            "$top": {"root": plistlib.UID(1)},
-            "$objects": [
-                "$null",
-                {
-                    "Size": actual_size,
-                    "LastModified": 1700000000,
-                    "Digest": plistlib.UID(2),
-                    "$class": plistlib.UID(3),
-                },
-                wrong_digest,
-                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
-            ],
-        }, fmt=plistlib.FMT_BINARY)
+        blob = plistlib.dumps(
+            {
+                "$archiver": "NSKeyedArchiver",
+                "$version": 100000,
+                "$top": {"root": plistlib.UID(1)},
+                "$objects": [
+                    "$null",
+                    {
+                        "Size": actual_size,
+                        "LastModified": 1700000000,
+                        "Digest": plistlib.UID(2),
+                        "$class": plistlib.UID(3),
+                    },
+                    wrong_digest,
+                    {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+                ],
+            },
+            fmt=plistlib.FMT_BINARY,
+        )
 
         # Update Manifest.db with the wrong-digest blob
         manifest_path = sample_backup_dir / "Manifest.db"
@@ -103,22 +103,25 @@ class TestVerifyBackup:
         # Build an MBFile blob with the CORRECT digest
         actual_digest = hashlib.sha1(sms_db.read_bytes()).digest()
         actual_size = sms_db.stat().st_size
-        blob = plistlib.dumps({
-            "$archiver": "NSKeyedArchiver",
-            "$version": 100000,
-            "$top": {"root": plistlib.UID(1)},
-            "$objects": [
-                "$null",
-                {
-                    "Size": actual_size,
-                    "LastModified": 1700000000,
-                    "Digest": plistlib.UID(2),
-                    "$class": plistlib.UID(3),
-                },
-                actual_digest,
-                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
-            ],
-        }, fmt=plistlib.FMT_BINARY)
+        blob = plistlib.dumps(
+            {
+                "$archiver": "NSKeyedArchiver",
+                "$version": 100000,
+                "$top": {"root": plistlib.UID(1)},
+                "$objects": [
+                    "$null",
+                    {
+                        "Size": actual_size,
+                        "LastModified": 1700000000,
+                        "Digest": plistlib.UID(2),
+                        "$class": plistlib.UID(3),
+                    },
+                    actual_digest,
+                    {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+                ],
+            },
+            fmt=plistlib.FMT_BINARY,
+        )
 
         manifest_path = sample_backup_dir / "Manifest.db"
         conn = sqlite3.connect(manifest_path)
@@ -140,22 +143,25 @@ class TestVerifyBackup:
         # Build an MBFile blob with a WRONG digest
         wrong_digest = b"\x00" * 20
         actual_size = sms_db.stat().st_size
-        blob = plistlib.dumps({
-            "$archiver": "NSKeyedArchiver",
-            "$version": 100000,
-            "$top": {"root": plistlib.UID(1)},
-            "$objects": [
-                "$null",
-                {
-                    "Size": actual_size,
-                    "LastModified": 1700000000,
-                    "Digest": plistlib.UID(2),
-                    "$class": plistlib.UID(3),
-                },
-                wrong_digest,
-                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
-            ],
-        }, fmt=plistlib.FMT_BINARY)
+        blob = plistlib.dumps(
+            {
+                "$archiver": "NSKeyedArchiver",
+                "$version": 100000,
+                "$top": {"root": plistlib.UID(1)},
+                "$objects": [
+                    "$null",
+                    {
+                        "Size": actual_size,
+                        "LastModified": 1700000000,
+                        "Digest": plistlib.UID(2),
+                        "$class": plistlib.UID(3),
+                    },
+                    wrong_digest,
+                    {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+                ],
+            },
+            fmt=plistlib.FMT_BINARY,
+        )
 
         # Put the wrong-digest blob in Manifest.db
         manifest_path = sample_backup_dir / "Manifest.db"

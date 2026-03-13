@@ -12,12 +12,12 @@ Install via: pip install green2blue
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import plistlib
 import struct
 import tempfile
-import hashlib
 from pathlib import Path
 
 from green2blue.exceptions import (
@@ -42,9 +42,7 @@ except ImportError:
 def check_crypto_available() -> None:
     """Raise if the cryptography package is not installed."""
     if not HAS_CRYPTO:
-        raise CryptoDependencyError(
-            "The 'cryptography' package is required for encrypted backups."
-        )
+        raise CryptoDependencyError("The 'cryptography' package is required for encrypted backups.")
 
 
 # --- Keybag parsing ---
@@ -220,9 +218,7 @@ def decrypt_file(
 
     class_key = class_keys.get(protection_class)
     if not class_key:
-        raise CryptoError(
-            f"No class key for protection class {protection_class}"
-        )
+        raise CryptoError(f"No class key for protection class {protection_class}")
 
     # Strip 4-byte protection class prefix if present
     wrapped_file_key = encryption_key[4:] if len(encryption_key) >= 4 else encryption_key
@@ -265,9 +261,7 @@ def decrypt_file_to_path(
 
     class_key = class_keys.get(protection_class)
     if not class_key:
-        raise CryptoError(
-            f"No class key for protection class {protection_class}"
-        )
+        raise CryptoError(f"No class key for protection class {protection_class}")
 
     wrapped_file_key = encryption_key[4:] if len(encryption_key) >= 4 else encryption_key
 
@@ -336,9 +330,7 @@ def encrypt_file(
 
     class_key = class_keys.get(protection_class)
     if not class_key:
-        raise CryptoError(
-            f"No class key for protection class {protection_class}"
-        )
+        raise CryptoError(f"No class key for protection class {protection_class}")
 
     wrapped_file_key = encryption_key[4:] if len(encryption_key) >= 4 else encryption_key
 
@@ -376,9 +368,7 @@ def encrypt_file_from_path(
 
     class_key = class_keys.get(protection_class)
     if not class_key:
-        raise CryptoError(
-            f"No class key for protection class {protection_class}"
-        )
+        raise CryptoError(f"No class key for protection class {protection_class}")
 
     wrapped_file_key = encryption_key[4:] if len(encryption_key) >= 4 else encryption_key
 
@@ -559,17 +549,13 @@ class EncryptedBackup:
 
         class_key = self.class_keys.get(protection_class)
         if not class_key:
-            raise CryptoError(
-                f"No class key for protection class {protection_class}"
-            )
+            raise CryptoError(f"No class key for protection class {protection_class}")
 
         file_key = os.urandom(32)
         wrapped = aes_key_wrap(class_key, file_key)
         return struct.pack("<I", protection_class) + wrapped
 
-    def encrypt_new_file(
-        self, plaintext: bytes, protection_class: int = 3
-    ) -> tuple[bytes, bytes]:
+    def encrypt_new_file(self, plaintext: bytes, protection_class: int = 3) -> tuple[bytes, bytes]:
         """Encrypt a new file for inclusion in the encrypted backup.
 
         Generates a fresh per-file key, encrypts the data, and returns
@@ -584,7 +570,10 @@ class EncryptedBackup:
         """
         enc_key_blob = self.generate_file_key(protection_class)
         encrypted = encrypt_file(
-            plaintext, enc_key_blob, protection_class, self.class_keys,
+            plaintext,
+            enc_key_blob,
+            protection_class,
+            self.class_keys,
         )
         return encrypted, enc_key_blob
 
@@ -607,9 +596,7 @@ class EncryptedBackup:
 
         class_key = self.class_keys.get(protection_class)
         if not class_key:
-            raise CryptoError(
-                f"No class key for protection class {protection_class}"
-            )
+            raise CryptoError(f"No class key for protection class {protection_class}")
 
         file_key = os.urandom(32)
         wrapped = aes_key_wrap(class_key, file_key)

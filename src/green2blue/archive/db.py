@@ -501,7 +501,8 @@ class CanonicalArchive:
         assert self.conn is not None
         missing = 0
         for row in self.conn.execute(
-            "SELECT sha256, external_relpath FROM blobs WHERE COALESCE(storage_kind, 'inline') = 'external'"
+            "SELECT sha256, external_relpath FROM blobs"
+            " WHERE COALESCE(storage_kind, 'inline') = 'external'"
         ).fetchall():
             relpath = row["external_relpath"] or self._blob_relpath(str(row["sha256"]))
             if not self._blob_absolute_path(str(relpath)).exists():
@@ -768,10 +769,7 @@ def _ensure_schema_compat(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-    existing = {
-        str(row[1])
-        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    }
+    existing = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column in existing:
         return
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

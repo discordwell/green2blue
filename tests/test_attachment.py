@@ -102,9 +102,7 @@ class TestCopyAttachmentToBackup:
         backup_dir.mkdir()
 
         ios_path = "Library/SMS/Attachments/cd/test-uuid/photo.jpg"
-        copy_attachment_to_backup(
-            source, ios_path, backup_dir, manifest, domain="HomeDomain"
-        )
+        copy_attachment_to_backup(source, ios_path, backup_dir, manifest, domain="HomeDomain")
 
         # Read the MBFile blob and verify digest matches
         file_id = compute_file_id("HomeDomain", ios_path)

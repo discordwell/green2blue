@@ -23,7 +23,11 @@ class TestCorpusCapture:
         assert "mms_captioned_media" in result.buckets_covered
 
         with open_export_zip(output_zip) as export:
-            rows = [json.loads(line) for line in export.ndjson_path.read_text().splitlines() if line.strip()]
+            rows = [
+                json.loads(line)
+                for line in export.ndjson_path.read_text().splitlines()
+                if line.strip()
+            ]
             assert len(rows) == 3
             assert rows[0]["address"] != "+12025551234"
             assert rows[0]["body"].startswith("CLAUDEUS CORPUS")
@@ -40,6 +44,10 @@ class TestCorpusCapture:
         capture_android_corpus(sample_export_zip, output_zip, preserve_text=True)
 
         with open_export_zip(output_zip) as export:
-            rows = [json.loads(line) for line in export.ndjson_path.read_text().splitlines() if line.strip()]
+            rows = [
+                json.loads(line)
+                for line in export.ndjson_path.read_text().splitlines()
+                if line.strip()
+            ]
             bodies = [row.get("body") for row in rows if "body" in row]
             assert "Hello from Android!" in bodies

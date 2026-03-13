@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import sqlite3
 import shutil
+import sqlite3
 import zipfile
 from pathlib import Path
 
 from green2blue.archive import (
-    ArchiveMergeResult,
     AndroidArchiveExportResult,
+    ArchiveMergeResult,
+    ArchiveVerificationResult,
+    CanonicalArchive,
     IOSRenderedTargetVerificationResult,
     IOSWorkflowInjectionResult,
     IOSWorkflowPreparationResult,
     IOSWorkflowStatus,
-    ArchiveVerificationResult,
-    CanonicalArchive,
     build_archive_report,
     export_merged_android_zip,
     import_android_export,
@@ -25,8 +25,8 @@ from green2blue.archive import (
     prepare_ios_workflow,
     run_ios_workflow_injection,
     stage_ios_export,
-    verify_ios_render_target,
     verify_archive,
+    verify_ios_render_target,
 )
 from green2blue.converter.timestamp import unix_ms_to_ios_ns
 from green2blue.ios.manifest import compute_file_id
@@ -210,7 +210,9 @@ class TestIOSArchiveImport:
         assert attachment_row["filename"] == "image000000.jpg"
         conn.close()
 
-    def test_reimport_ios_backup_reuses_existing_import_by_default(self, sample_backup_dir, tmp_dir):
+    def test_reimport_ios_backup_reuses_existing_import_by_default(
+        self, sample_backup_dir, tmp_dir
+    ):
         _populate_ios_backup(sample_backup_dir)
         archive_path = tmp_dir / "ios.g2b.sqlite"
 
@@ -256,7 +258,8 @@ class TestArchiveReport:
 def _create_matching_android_export(tmp_dir: Path) -> Path:
     zip_path = tmp_dir / "matching_android.zip"
     content = (
-        '{"address":"+12025550101","body":"Hello from iPhone","date":"1700000000000","type":"1","read":"1"}\n'
+        '{"address":"+12025550101","body":"Hello from iPhone",'
+        '"date":"1700000000000","type":"1","read":"1"}\n'
     )
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("messages.ndjson", content)
@@ -305,7 +308,8 @@ class TestArchiveMerge:
         conn = sqlite3.connect(archive_path)
         conn.row_factory = sqlite3.Row
         merge_run = conn.execute(
-            "SELECT merged_conversation_count, merged_message_count, duplicate_message_count FROM merge_runs",
+            "SELECT merged_conversation_count, merged_message_count,"
+            " duplicate_message_count FROM merge_runs",
         ).fetchone()
         assert dict(merge_run) == {
             "merged_conversation_count": 1,
@@ -338,7 +342,9 @@ class TestArchiveMerge:
         assert report.latest_merge["merged_conversations"] == 1
         assert report.latest_merge["duplicate_messages"] == 1
         assert report.latest_merge_winner_source_counts["ios.message"] == 2
-        assert not any("merged view has been materialized" in warning for warning in report.warnings)
+        assert not any(
+            "merged view has been materialized" in warning for warning in report.warnings
+        )
 
     def test_merge_groups_subset_participant_sets_when_titles_match(self, tmp_dir):
         archive_path = tmp_dir / "group_merge.g2b.sqlite"
@@ -359,7 +365,10 @@ class TestArchiveMerge:
             )
             for sort_order, participant_id in enumerate((pa, pb, pc)):
                 archive.link_conversation_participant(
-                    android_conv, participant_id, role="member", sort_order=sort_order,
+                    android_conv,
+                    participant_id,
+                    role="member",
+                    sort_order=sort_order,
                 )
             ios_conv = archive.get_or_create_conversation(
                 "ios:chat:any;+;chat123",
@@ -369,7 +378,10 @@ class TestArchiveMerge:
             )
             for sort_order, participant_id in enumerate((pa, pb)):
                 archive.link_conversation_participant(
-                    ios_conv, participant_id, role="member", sort_order=sort_order,
+                    ios_conv,
+                    participant_id,
+                    role="member",
+                    sort_order=sort_order,
                 )
 
             archive.insert_message(
@@ -665,7 +677,9 @@ class TestArchiveRenderVerify:
         assert isinstance(verify_result, IOSRenderedTargetVerificationResult)
         assert verify_result.passed is True
         assert verify_result.actual_messages == pipeline_result.injection_stats.messages_inserted
-        assert verify_result.actual_attachments == pipeline_result.injection_stats.attachments_inserted
+        assert (
+            verify_result.actual_attachments == pipeline_result.injection_stats.attachments_inserted
+        )
 
     def test_verify_ios_render_target_detects_tampered_message_row(
         self,
@@ -841,7 +855,8 @@ class TestArchiveBlobStore:
         with CanonicalArchive(archive_path) as archive:
             blob_path = archive.get_blob_path(blob_id)
             row = archive.conn.execute(
-                "SELECT storage_kind, external_relpath, length(data) AS data_len FROM blobs WHERE id = ?",
+                "SELECT storage_kind, external_relpath,"
+                " length(data) AS data_len FROM blobs WHERE id = ?",
                 (blob_id,),
             ).fetchone()
 

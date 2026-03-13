@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import json
+import zipfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import zipfile
 
 from green2blue.archive.db import CanonicalArchive
-from green2blue.archive.export_android import export_merged_android_zip
 from green2blue.archive.export_android import (
     _build_android_record,
     _iter_merged_winners,
     _load_merged_participants,
     _load_message_parts,
+    export_merged_android_zip,
 )
 from green2blue.archive.report import build_archive_report
 
@@ -151,7 +151,8 @@ def _verify_staged_export(
 
     if actual["records_written"] != expected["records_written"]:
         errors.append(
-            f"Stage ZIP contains {actual['records_written']} records, expected {expected['records_written']}.",
+            f"Stage ZIP contains {actual['records_written']} records,"
+            f" expected {expected['records_written']}.",
         )
 
     if actual["attachment_files_written"] != expected["attachment_files_written"]:
@@ -210,9 +211,13 @@ def _actual_stage_render(output_zip: Path) -> dict[str, object]:
         if "messages.ndjson" not in names:
             return {
                 "records_written": 0,
-                "attachment_files_written": len([name for name in names if name.startswith("data/")]),
+                "attachment_files_written": len(
+                    [name for name in names if name.startswith("data/")]
+                ),
                 "record_signatures": Counter(),
-                "attachment_names": tuple(sorted(name for name in names if name.startswith("data/"))),
+                "attachment_names": tuple(
+                    sorted(name for name in names if name.startswith("data/"))
+                ),
             }
 
         record_signatures: Counter[str] = Counter()
@@ -224,10 +229,7 @@ def _actual_stage_render(output_zip: Path) -> dict[str, object]:
                 record_signatures[_stable_json(json.loads(line))] += 1
 
         attachment_names = tuple(
-            sorted(
-                name for name in names
-                if name.startswith("data/") and not name.endswith("/")
-            )
+            sorted(name for name in names if name.startswith("data/") and not name.endswith("/"))
         )
         return {
             "records_written": sum(record_signatures.values()),

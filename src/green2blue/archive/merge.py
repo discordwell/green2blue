@@ -67,10 +67,12 @@ def merge_archive(
         for message in messages:
             conversation = conversations[message["conversation_id"]]
             merged_key = merged_keys[int(conversation["id"])]
-            merged_conversation_messages[merged_key].append({
-                **message,
-                "attachment_signature": attachments.get(message["id"], ()),
-            })
+            merged_conversation_messages[merged_key].append(
+                {
+                    **message,
+                    "attachment_signature": attachments.get(message["id"], ()),
+                }
+            )
 
         merged_message_count = 0
         duplicate_message_count = 0
@@ -160,11 +162,13 @@ def _load_conversations(conn, participants, country: str) -> dict[int, dict[str,
     conversations: dict[int, dict[str, object]] = {}
     for row in conversation_rows:
         participant_ids = members.get(int(row["id"]), [])
-        identity_keys = sorted({
-            participants[participant_id]["identity"]
-            for participant_id in participant_ids
-            if participant_id in participants
-        })
+        identity_keys = sorted(
+            {
+                participants[participant_id]["identity"]
+                for participant_id in participant_ids
+                if participant_id in participants
+            }
+        )
         title_identity = _normalize_identity_hint(row["title"], country)
         conversations[int(row["id"])] = {
             "id": int(row["id"]),
@@ -240,12 +244,18 @@ def _assign_merged_keys(conversations: dict[int, dict[str, object]]) -> dict[int
             elif conversation["title_identity"]:
                 direct_keys[int(conversation["id"])] = f"direct:{conversation['title_identity']}"
             elif conversation["normalized_title"]:
-                direct_keys[int(conversation["id"])] = f"direct:title:{conversation['normalized_title']}"
+                direct_keys[int(conversation["id"])] = (
+                    f"direct:title:{conversation['normalized_title']}"
+                )
             else:
                 direct_keys[int(conversation["id"])] = f"direct:{conversation['conversation_key']}"
 
     group_conversations = sorted(
-        (conversation for conversation in conversations.values() if conversation["kind"] != "direct"),
+        (
+            conversation
+            for conversation in conversations.values()
+            if conversation["kind"] != "direct"
+        ),
         key=lambda conversation: (
             -len(conversation["identity_keys"]),
             conversation["normalized_title"],
@@ -257,11 +267,13 @@ def _assign_merged_keys(conversations: dict[int, dict[str, object]]) -> dict[int
         match = _best_group_cluster_match(conversation, clusters)
         if match is None:
             key = _new_group_cluster_key(conversation)
-            clusters.append({
-                "merge_key": key,
-                "identity_keys": set(conversation["identity_keys"]),
-                "normalized_title": conversation["normalized_title"],
-            })
+            clusters.append(
+                {
+                    "merge_key": key,
+                    "identity_keys": set(conversation["identity_keys"]),
+                    "normalized_title": conversation["normalized_title"],
+                }
+            )
             group_keys[int(conversation["id"])] = key
             continue
 
@@ -294,7 +306,10 @@ def _group_match_score(
     identities = set(conversation["identity_keys"])
     cluster_identities = set(cluster["identity_keys"])
     if not identities:
-        if conversation["normalized_title"] and conversation["normalized_title"] == cluster["normalized_title"]:
+        if (
+            conversation["normalized_title"]
+            and conversation["normalized_title"] == cluster["normalized_title"]
+        ):
             return (1, 0, 0)
         return None
 
@@ -314,7 +329,11 @@ def _group_match_score(
 
     if identities == cluster_identities:
         return (3, overlap, -size_diff)
-    if is_subsetish and size_diff <= 1 and overlap >= max(2, min(len(identities), len(cluster_identities)) - 1):
+    if (
+        is_subsetish
+        and size_diff <= 1
+        and overlap >= max(2, min(len(identities), len(cluster_identities)) - 1)
+    ):
         return (2 + int(title_match), overlap, -size_diff)
     if title_match and jaccard_numerator * 2 >= jaccard_denominator and overlap >= 2:
         return (2, overlap, -size_diff)
@@ -371,7 +390,9 @@ def _message_fingerprint(message: dict[str, object]) -> str:
         "attachments": list(message["attachment_signature"]),
     }
     return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        ),
     ).hexdigest()
 
 

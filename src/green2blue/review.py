@@ -7,12 +7,12 @@ import io
 import json
 import webbrowser
 import zipfile
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Generator
 from urllib.parse import urlparse
 
 from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
@@ -128,9 +128,7 @@ class ReviewSession:
                     part["cl"] = basename
                     zf.write(source_path, arcname=archive_name)
 
-                ndjson_lines.append(
-                    json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-                )
+                ndjson_lines.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
 
             zf.writestr("messages.ndjson", "\n".join(ndjson_lines) + "\n")
 
@@ -219,7 +217,9 @@ def _make_review_handler(session: ReviewSession):
                 return
 
             selected_ids = payload.get("selected_ids")
-            if not isinstance(selected_ids, list) or not all(isinstance(item, str) for item in selected_ids):
+            if not isinstance(selected_ids, list) or not all(
+                isinstance(item, str) for item in selected_ids
+            ):
                 self._write_bytes(
                     HTTPStatus.BAD_REQUEST,
                     b"selected_ids must be a list of message IDs.",
@@ -358,7 +358,9 @@ def _build_conversations(messages: tuple[ReviewMessage, ...]) -> tuple[ReviewCon
             )
         )
 
-    conversations.sort(key=lambda conversation: (conversation.primary_address, -conversation.latest_timestamp_ms))
+    conversations.sort(
+        key=lambda conversation: (conversation.primary_address, -conversation.latest_timestamp_ms)
+    )
     return tuple(conversations)
 
 
@@ -452,30 +454,57 @@ _REVIEW_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>green2blue Review</title>
   <style>
-    :root { color-scheme: light; --bg:#f5f1e8; --panel:#fffaf0; --line:#d7ccb7; --ink:#1e1c19; --muted:#6b6257; --accent:#2d6a4f; --accent-soft:#d9efe3; }
-    body { margin:0; font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; background:linear-gradient(180deg,#efe7d7,#f8f5ed); color:var(--ink); }
-    header { padding:18px 24px; border-bottom:1px solid var(--line); background:rgba(255,250,240,.92); position:sticky; top:0; backdrop-filter:blur(10px); z-index:3; }
+    :root { color-scheme: light; --bg:#f5f1e8; --panel:#fffaf0;
+      --line:#d7ccb7; --ink:#1e1c19; --muted:#6b6257;
+      --accent:#2d6a4f; --accent-soft:#d9efe3; }
+    body { margin:0; font-family: "Iowan Old Style",
+      "Palatino Linotype", Georgia, serif;
+      background:linear-gradient(180deg,#efe7d7,#f8f5ed);
+      color:var(--ink); }
+    header { padding:18px 24px; border-bottom:1px solid var(--line);
+      background:rgba(255,250,240,.92); position:sticky; top:0;
+      backdrop-filter:blur(10px); z-index:3; }
     h1 { margin:0 0 8px; font-size:24px; }
-    .stats, .controls { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; }
+    .stats, .controls { display:flex; flex-wrap:wrap;
+      gap:10px 16px; align-items:center; }
     .stats span { color:var(--muted); font-size:14px; }
     .controls { margin-top:12px; }
-    input, select, button { font:inherit; border:1px solid var(--line); background:white; border-radius:10px; padding:8px 10px; }
-    button { cursor:pointer; background:var(--accent-soft); border-color:#a5cdb8; }
+    input, select, button { font:inherit;
+      border:1px solid var(--line); background:white;
+      border-radius:10px; padding:8px 10px; }
+    button { cursor:pointer; background:var(--accent-soft);
+      border-color:#a5cdb8; }
     button.primary { background:var(--accent); color:white; border-color:var(--accent); }
     button.ghost { background:white; }
-    main { display:grid; grid-template-columns: minmax(280px, 32%) 1fr; gap:16px; padding:16px; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; overflow:hidden; min-height:70vh; }
-    .panel h2 { margin:0; padding:14px 16px; font-size:18px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.75); }
-    .panel-body { padding:12px; overflow:auto; max-height:calc(100vh - 220px); }
-    .row { display:grid; gap:8px; padding:10px 8px; border-bottom:1px solid #efe7d7; }
+    main { display:grid;
+      grid-template-columns: minmax(280px, 32%) 1fr;
+      gap:16px; padding:16px; }
+    .panel { background:var(--panel);
+      border:1px solid var(--line); border-radius:16px;
+      overflow:hidden; min-height:70vh; }
+    .panel h2 { margin:0; padding:14px 16px; font-size:18px;
+      border-bottom:1px solid var(--line);
+      background:rgba(255,255,255,.75); }
+    .panel-body { padding:12px; overflow:auto;
+      max-height:calc(100vh - 220px); }
+    .row { display:grid; gap:8px; padding:10px 8px;
+      border-bottom:1px solid #efe7d7; }
     .row:last-child { border-bottom:none; }
-    .conversation-row { grid-template-columns:auto 1fr auto; align-items:start; }
-    .message-row { grid-template-columns:auto 160px 110px 1fr auto; align-items:start; }
+    .conversation-row { grid-template-columns:auto 1fr auto;
+      align-items:start; }
+    .message-row {
+      grid-template-columns:auto 160px 110px 1fr auto;
+      align-items:start; }
     .label { font-weight:600; }
     .meta, .preview { color:var(--muted); font-size:13px; }
     .preview { white-space:pre-wrap; }
-    .pill { display:inline-block; font-size:12px; padding:2px 8px; border-radius:999px; background:#efe7d7; color:var(--muted); }
-    .footer { padding:12px 16px; border-top:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:12px; color:var(--muted); font-size:13px; }
+    .pill { display:inline-block; font-size:12px;
+      padding:2px 8px; border-radius:999px;
+      background:#efe7d7; color:var(--muted); }
+    .footer { padding:12px 16px;
+      border-top:1px solid var(--line); display:flex;
+      justify-content:space-between; align-items:center;
+      gap:12px; color:var(--muted); font-size:13px; }
     .empty { padding:20px; color:var(--muted); }
     @media (max-width: 900px) {
       main { grid-template-columns: 1fr; }
@@ -553,9 +582,11 @@ _REVIEW_HTML = """<!doctype html>
         if (state.filters.attachmentsOnly && message.attachment_count === 0) return false;
         if (state.filters.selectedOnly && !state.selectedMessageIds.has(message.id)) return false;
         if (phoneNeedle) {
-          const haystack = [message.primary_address, message.conversation_label, ...(message.addresses || [])]
-            .join(" ")
-            .toLowerCase();
+          const haystack = [
+            message.primary_address,
+            message.conversation_label,
+            ...(message.addresses || []),
+          ].join(" ").toLowerCase();
           if (!haystack.includes(phoneNeedle)) return false;
         }
         if (textNeedle) {
@@ -569,19 +600,24 @@ _REVIEW_HTML = """<!doctype html>
     function visibleConversations() {
       if (!state.data) return [];
       const visibleIds = new Set(visibleMessages().map((message) => message.conversation_id));
-      const conversations = state.data.conversations.filter((conversation) => visibleIds.has(conversation.id));
+      const conversations = state.data.conversations
+        .filter((c) => visibleIds.has(c.id));
       const sort = state.filters.conversationSort;
       conversations.sort((a, b) => {
         if (sort === "phone_desc") return b.primary_address.localeCompare(a.primary_address);
         if (sort === "latest_desc") return b.latest_timestamp_ms - a.latest_timestamp_ms;
-        if (sort === "count_desc") return b.message_count - a.message_count || a.primary_address.localeCompare(b.primary_address);
+        if (sort === "count_desc") return (
+          b.message_count - a.message_count
+          || a.primary_address.localeCompare(b.primary_address));
         return a.primary_address.localeCompare(b.primary_address);
       });
       return conversations;
     }
 
     function conversationSelectionState(conversationId) {
-      const ids = state.data.messages.filter((message) => message.conversation_id === conversationId).map((message) => message.id);
+      const ids = state.data.messages
+        .filter((m) => m.conversation_id === conversationId)
+        .map((m) => m.id);
       const selected = ids.filter((id) => state.selectedMessageIds.has(id)).length;
       if (selected === 0) return "none";
       if (selected === ids.length) return "all";
@@ -643,8 +679,11 @@ _REVIEW_HTML = """<!doctype html>
           });
 
           const body = document.createElement("div");
+          const metaText = `${conversation.message_count} messages`
+            + ` · ${conversation.attachment_count} attachments`
+            + ` · ${fmtTime(conversation.latest_timestamp_ms)}`;
           body.innerHTML = `<div class="label">${conversation.label}</div>
-            <div class="meta">${conversation.message_count} messages · ${conversation.attachment_count} attachments · ${fmtTime(conversation.latest_timestamp_ms)}</div>`;
+            <div class="meta">${metaText}</div>`;
 
           const badge = document.createElement("span");
           badge.className = "pill";
@@ -662,7 +701,9 @@ _REVIEW_HTML = """<!doctype html>
     function renderMessages() {
       const list = document.getElementById("messageList");
       const footer = document.getElementById("messageFooter");
-      const messages = visibleMessages().slice().sort((a, b) => b.timestamp_ms - a.timestamp_ms || a.primary_address.localeCompare(b.primary_address));
+      const messages = visibleMessages().slice().sort((a, b) =>
+        b.timestamp_ms - a.timestamp_ms
+        || a.primary_address.localeCompare(b.primary_address));
       list.innerHTML = "";
       if (!messages.length) {
         list.innerHTML = '<div class="empty">No messages match the current filters.</div>';
@@ -685,7 +726,9 @@ _REVIEW_HTML = """<!doctype html>
           when.textContent = fmtTime(message.timestamp_ms);
 
           const direction = document.createElement("div");
-          direction.innerHTML = `<span class="pill">${message.kind.toUpperCase()} · ${message.direction}</span>`;
+          direction.innerHTML = `<span class="pill">`
+            + `${message.kind.toUpperCase()}`
+            + ` · ${message.direction}</span>`;
 
           const body = document.createElement("div");
           const preview = message.body_text || message.subject || "(attachment only)";
@@ -694,7 +737,8 @@ _REVIEW_HTML = """<!doctype html>
 
           const attach = document.createElement("div");
           attach.className = "meta";
-          attach.textContent = message.attachment_count ? `${message.attachment_count} attachment(s)` : "";
+          attach.textContent = message.attachment_count
+            ? `${message.attachment_count} attachment(s)` : "";
 
           row.appendChild(checkbox);
           row.appendChild(when);

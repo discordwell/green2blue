@@ -98,9 +98,7 @@ class TestListDevices:
         mock_mux_device.serial = "unpaired123"
 
         mocks["pymobiledevice3.usbmux"].list_devices.return_value = [mock_mux_device]
-        mocks["pymobiledevice3.lockdown"].create_using_usbmux.side_effect = Exception(
-            "Not paired"
-        )
+        mocks["pymobiledevice3.lockdown"].create_using_usbmux.side_effect = Exception("Not paired")
 
         with patch.dict(sys.modules, mocks):
             devices = list_devices()
@@ -170,7 +168,10 @@ class TestCreateBackup:
         # Mock _get_lockdown to return our mock lockdown
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
         ):
             result = create_backup(backup_dir=tmp_path, udid="test-udid")
 
@@ -194,14 +195,17 @@ class TestCreateBackup:
         mock_lockdown.display_name = "Test iPhone"
 
         mock_service = MagicMock()
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
         progress_fn = MagicMock()
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
         ):
             create_backup(backup_dir=tmp_path, udid="test-udid", progress_cb=progress_fn)
 
@@ -220,13 +224,16 @@ class TestCreateBackup:
 
         mock_service = MagicMock()
         mock_service.backup.side_effect = Exception("PasswordProtected")
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
             pytest.raises(DevicePairingError, match="Backup failed"),
         ):
             create_backup(backup_dir=tmp_path, udid="test-udid")
@@ -241,13 +248,16 @@ class TestCreateBackup:
 
         mock_service = MagicMock()
         mock_service.backup.side_effect = Exception("Device locked (MBErrorDomain/208)")
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
             pytest.raises(DevicePairingError) as exc_info,
         ):
             create_backup(backup_dir=tmp_path, udid="test-udid")
@@ -266,13 +276,16 @@ class TestCreateBackup:
         mock_service.backup.side_effect = Exception(
             "SSL handshake is taking longer than 10 seconds: aborting the connection"
         )
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
             pytest.raises(DevicePairingError) as exc_info,
         ):
             create_backup(backup_dir=tmp_path, udid="test-udid")
@@ -292,13 +305,16 @@ class TestCreateBackup:
             Exception("Could not perform backup protocol version exchange, error code -1"),
             None,
         ]
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
         ):
             result = create_backup(backup_dir=tmp_path, udid="test-udid")
 
@@ -321,13 +337,16 @@ class TestCreateBackup:
             raise Exception("Could not perform backup protocol version exchange, error code -1")
 
         mock_service.backup.side_effect = _fail_after_progress
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
             pytest.raises(DeviceError, match="Backup failed"),
         ):
             create_backup(backup_dir=tmp_path, udid="test-udid")
@@ -348,13 +367,16 @@ class TestRestoreBackup:
         mock_lockdown.display_name = "Test iPhone"
 
         mock_service = MagicMock()
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
         ):
             restore_backup(backup_dir=tmp_path)
 
@@ -375,13 +397,16 @@ class TestRestoreBackup:
         mock_lockdown.display_name = "Test iPhone"
 
         mock_service = MagicMock()
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
         ):
             restore_backup(backup_dir=tmp_path)
 
@@ -396,13 +421,16 @@ class TestRestoreBackup:
         mock_lockdown.display_name = "Test iPhone"
 
         mock_service = MagicMock()
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
         ):
             restore_backup(backup_dir=tmp_path, password="secret")
 
@@ -421,13 +449,16 @@ class TestRestoreBackup:
             Exception("Could not perform backup protocol version exchange, error code -1"),
             None,
         ]
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
         ):
             restore_backup(backup_dir=tmp_path)
 
@@ -462,7 +493,9 @@ class TestDeviceRecoveryPlan:
     def test_backup_authorization_failure_is_retryable(self):
         plan = build_device_recovery_plan(
             "backup",
-            "DevicePairingError: Backup failed: SSL handshake is taking longer than 10 seconds: aborting the connection",
+            "DevicePairingError: Backup failed: SSL handshake"
+            " is taking longer than 10 seconds:"
+            " aborting the connection",
             progress_seen=False,
         )
 
@@ -484,13 +517,16 @@ class TestPushSyntheticBackup:
         mock_lockdown.display_name = "Test iPhone"
 
         mock_service = MagicMock()
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
-        )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with (
             patch.dict(sys.modules, mocks),
-            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            patch(
+                "green2blue.ios.device._get_lockdown_async",
+                new=AsyncMock(return_value=mock_lockdown),
+            ),
         ):
             push_synthetic_backup(backup_dir=tmp_path)
 
@@ -522,7 +558,9 @@ class TestDoctorDevice:
 
         mock_lockdown.get_value = AsyncMock(side_effect=get_value)
         mocks["pymobiledevice3.usbmux"].list_devices.return_value = [mock_mux_device]
-        mocks["pymobiledevice3.lockdown"].create_using_usbmux = AsyncMock(return_value=mock_lockdown)
+        mocks["pymobiledevice3.lockdown"].create_using_usbmux = AsyncMock(
+            return_value=mock_lockdown
+        )
 
         with patch.dict(sys.modules, mocks):
             report = doctor_device("abc123")
@@ -550,10 +588,12 @@ class TestDoctorDevice:
 
         mock_lockdown.get_value = AsyncMock(side_effect=get_value)
         mocks["pymobiledevice3.usbmux"].list_devices.return_value = [mock_mux_device]
-        mocks["pymobiledevice3.lockdown"].create_using_usbmux = AsyncMock(return_value=mock_lockdown)
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.side_effect = Exception(
-            "PasswordProtected"
+        mocks["pymobiledevice3.lockdown"].create_using_usbmux = AsyncMock(
+            return_value=mock_lockdown
         )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.side_effect = Exception("PasswordProtected")
 
         with patch.dict(sys.modules, mocks):
             report = doctor_device("abc123")
@@ -583,10 +623,12 @@ class TestDoctorDevice:
         mock_service.connect.side_effect = Exception("InvalidService")
 
         mocks["pymobiledevice3.usbmux"].list_devices.return_value = [mock_mux_device]
-        mocks["pymobiledevice3.lockdown"].create_using_usbmux = AsyncMock(return_value=mock_lockdown)
-        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
-            mock_service
+        mocks["pymobiledevice3.lockdown"].create_using_usbmux = AsyncMock(
+            return_value=mock_lockdown
         )
+        mocks[
+            "pymobiledevice3.services.mobilebackup2"
+        ].Mobilebackup2Service.return_value = mock_service
 
         with patch.dict(sys.modules, mocks):
             report = doctor_device("abc123")

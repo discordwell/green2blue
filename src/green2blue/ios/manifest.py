@@ -51,9 +51,7 @@ class ManifestDB:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def update_sms_db_entry(
-        self, new_size: int, new_digest: bytes | None = None
-    ) -> str:
+    def update_sms_db_entry(self, new_size: int, new_digest: bytes | None = None) -> str:
         """Update the sms.db entry in Manifest.db with new size and digest.
 
         Args:
@@ -179,7 +177,8 @@ class ManifestDB:
 
             # Check if entry already exists
             cursor.execute(
-                "SELECT 1 FROM Files WHERE fileID = ?", (dir_file_id,),
+                "SELECT 1 FROM Files WHERE fileID = ?",
+                (dir_file_id,),
             )
             if cursor.fetchone() is not None:
                 continue
@@ -204,7 +203,9 @@ class ManifestDB:
             logger.debug("Created directory entry: %s/%s", domain, parent_str)
 
     def _get_attachment_template_blob(
-        self, domain: str, flags: int,
+        self,
+        domain: str,
+        flags: int,
     ) -> bytes | None:
         """Return a real SMS attachment MBFile blob to clone from, if present."""
         cursor = self.conn.cursor()

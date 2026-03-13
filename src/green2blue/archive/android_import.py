@@ -71,11 +71,13 @@ def import_android_export(
 
         with open_export_zip(export_zip) as export:
             for msg in parse_ndjson(export.ndjson_path):
-                imported, attachment_count, conversation_id, participant_ids, blob_ids = _import_message(
-                    archive,
-                    export,
-                    import_run_id,
-                    msg,
+                imported, attachment_count, conversation_id, participant_ids, blob_ids = (
+                    _import_message(
+                        archive,
+                        export,
+                        import_run_id,
+                        msg,
+                    )
                 )
                 if imported:
                     messages_imported += 1
@@ -140,7 +142,7 @@ def _import_sms(
         sort_order=0,
     )
     raw_json = json_dumps_stable(asdict(msg))
-    source_uid = hashlib.sha256(f"sms:{raw_json}".encode("utf-8")).hexdigest()
+    source_uid = hashlib.sha256(f"sms:{raw_json}".encode()).hexdigest()
     message_id, inserted = archive.insert_message(
         source_uid=source_uid,
         source_type="android.sms",
@@ -194,12 +196,9 @@ def _import_mms(
         )
         participant_ids.add(participant_id)
 
-    body_text = "\n".join(
-        part.text for part in msg.parts
-        if part.text
-    ) or None
+    body_text = "\n".join(part.text for part in msg.parts if part.text) or None
     raw_json = json_dumps_stable(asdict(msg))
-    source_uid = hashlib.sha256(f"mms:{raw_json}".encode("utf-8")).hexdigest()
+    source_uid = hashlib.sha256(f"mms:{raw_json}".encode()).hexdigest()
     has_url = bool(body_text and ("http://" in body_text or "https://" in body_text))
     message_id, inserted = archive.insert_message(
         source_uid=source_uid,

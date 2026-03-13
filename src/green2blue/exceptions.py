@@ -81,8 +81,7 @@ class InvalidBackupError(BackupError):
     """The backup directory is missing critical files."""
 
     hint = (
-        "The backup appears incomplete or corrupted. "
-        "Try creating a fresh backup from your iPhone."
+        "The backup appears incomplete or corrupted. Try creating a fresh backup from your iPhone."
     )
 
 

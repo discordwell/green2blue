@@ -240,11 +240,9 @@ def _apply_ck_strategy(msg: iOSMessage, strategy: CKStrategy) -> iOSMessage:
         return msg
     record_id = generate_ck_record_id(msg.guid)
     if strategy == CKStrategy.FAKE_SYNCED:
-        return replace(msg, ck_sync_state=1, ck_record_id=record_id,
-                       ck_record_change_tag="1")
+        return replace(msg, ck_sync_state=1, ck_record_id=record_id, ck_record_change_tag="1")
     elif strategy == CKStrategy.PENDING_UPLOAD:
-        return replace(msg, ck_sync_state=0, ck_record_id=record_id,
-                       ck_record_change_tag="")
+        return replace(msg, ck_sync_state=0, ck_record_id=record_id, ck_record_change_tag="")
     return msg
 
 
@@ -287,7 +285,7 @@ def _convert_sms(sms: AndroidSMS, country: str, service: str = "SMS") -> iOSMess
         is_from_me=is_from_me,
         is_sent=is_sent,
         is_read=False if is_from_me else bool(sms.read),
-        is_delivered=False if is_from_me and service == "SMS" else True,
+        is_delivered=not (is_from_me and service == "SMS"),
         service=service,
         chat_identifier=phone,
     )
@@ -335,10 +333,7 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
     group_members = tuple(unique_phones) if is_group else ()
 
     # Group chats use opaque chat identifiers on modern iOS.
-    chat_identifier = (
-        compute_group_chat_identifier(group_members)
-        if is_group else handle_phone
-    )
+    chat_identifier = compute_group_chat_identifier(group_members) if is_group else handle_phone
 
     # MMS dates are in seconds
     date_ns = unix_s_to_ios_ns(mms.date)
@@ -379,24 +374,23 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
 
         # iOS attachment path: two hex-byte subdirs, then the attachment GUID dir.
         att_hash = hashlib.sha256(att_guid.encode()).hexdigest()
-        ios_path = (
-            f"~/Library/SMS/Attachments/{att_hash[:2]}/{att_hash[2:4]}"
-            f"/{att_guid}/{filename}"
-        )
+        ios_path = f"~/Library/SMS/Attachments/{att_hash[:2]}/{att_hash[2:4]}/{att_guid}/{filename}"
 
         # created_date is in Apple epoch seconds (not nanoseconds like message.date)
         att_created_date_s = date_ns // 1_000_000_000
 
-        attachments.append(iOSAttachment(
-            guid=att_guid,
-            filename=ios_path,
-            mime_type=part.content_type,
-            uti=uti,
-            transfer_name=filename,
-            total_bytes=0,  # Updated during pipeline when file is copied
-            source_data_path=part.data_path,
-            created_date=att_created_date_s,
-        ))
+        attachments.append(
+            iOSAttachment(
+                guid=att_guid,
+                filename=ios_path,
+                mime_type=part.content_type,
+                uti=uti,
+                transfer_name=filename,
+                total_bytes=0,  # Updated during pipeline when file is copied
+                source_data_path=part.data_path,
+                created_date=att_created_date_s,
+            )
+        )
         attachment_index += 1
 
     msg_guid = f"green2blue:{uuid.uuid4()}"
@@ -413,7 +407,7 @@ def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMess
         is_from_me=is_from_me,
         is_sent=is_from_me,
         is_read=False if is_from_me else bool(mms.read),
-        is_delivered=False if is_from_me and service == "SMS" else True,
+        is_delivered=not (is_from_me and service == "SMS"),
         service=service,
         attachments=tuple(attachments),
         chat_identifier=chat_identifier,

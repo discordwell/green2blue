@@ -207,8 +207,7 @@ class TestRealSMSIEFormat:
         assert len(image_parts) == 1
         # Full Android path should be stored as data_path
         assert image_parts[0].data_path == (
-            "/data/user/0/com.android.providers.telephony/app_parts/"
-            "PART_1700000002_image.jpg"
+            "/data/user/0/com.android.providers.telephony/app_parts/PART_1700000002_image.jpg"
         )
         # cl field should be stored as filename
         assert image_parts[0].filename == "photo.jpg"
@@ -249,9 +248,7 @@ class TestRCSDetection:
 
     def test_rcs_count(self, tmp_dir):
         """count_messages should detect RCS messages."""
-        path = _write_ndjson(
-            tmp_dir, SAMPLE_SMS_RECEIVED, SAMPLE_RCS_SMS, SAMPLE_RCS_MMS
-        )
+        path = _write_ndjson(tmp_dir, SAMPLE_SMS_RECEIVED, SAMPLE_RCS_SMS, SAMPLE_RCS_MMS)
         counts = count_messages(path)
         assert counts["sms"] == 2  # regular SMS + RCS SMS
         assert counts["mms"] == 1  # RCS MMS
@@ -261,9 +258,7 @@ class TestRCSDetection:
 
 class TestCountMessages:
     def test_count_mixed(self, tmp_dir):
-        path = _write_ndjson(
-            tmp_dir, SAMPLE_SMS_RECEIVED, SAMPLE_SMS_SENT, SAMPLE_MMS
-        )
+        path = _write_ndjson(tmp_dir, SAMPLE_SMS_RECEIVED, SAMPLE_SMS_SENT, SAMPLE_MMS)
         counts = count_messages(path)
         assert counts["sms"] == 2
         assert counts["mms"] == 1

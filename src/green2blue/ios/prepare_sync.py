@@ -107,7 +107,8 @@ def prepare_sync(
         cursor = conn.cursor()
         msg_selector, msg_params = _selector_clause(message_rowids, "green2blue:%")
         att_selector, att_params = _selector_clause(
-            attachment_rowids, "green2blue-att:%",
+            attachment_rowids,
+            "green2blue-att:%",
         )
         msg_selector_alias = _qualify_selector(msg_selector, "m")
 
@@ -209,9 +210,9 @@ def prepare_sync(
                 result.chats_preserved += 1
             else:
                 # Pure-injected chat: safe to reset CK state entirely
-                if (chat["ck_sync_state"] != 0
-                        or (chat["cloudkit_record_id"] is not None
-                            and chat["cloudkit_record_id"] != "")):
+                if chat["ck_sync_state"] != 0 or (
+                    chat["cloudkit_record_id"] is not None and chat["cloudkit_record_id"] != ""
+                ):
                     cursor.execute(
                         "UPDATE chat SET ck_sync_state = 0, "
                         "cloudkit_record_id = '' WHERE ROWID = ?",

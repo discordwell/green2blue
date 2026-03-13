@@ -19,17 +19,17 @@ from green2blue.cli import (
     _capture_mobiledevice_logs,
     _cmd_device_doctor,
     _cmd_device_restore,
-    _ProgressReporter,
     _confirm_backup,
     _device_run_session,
     _format_progress_heartbeat,
+    _ProgressReporter,
     _show_backup_list,
     main,
 )
 from green2blue.ios.backup import BackupInfo, get_sms_db_hash
+from green2blue.ios.device import DeviceCheckResult, DeviceHealthReport, DeviceInfo
 from green2blue.ios.manifest import compute_file_id
 from green2blue.models import ATTACHMENT_PLACEHOLDER
-from green2blue.ios.device import DeviceCheckResult, DeviceHealthReport, DeviceInfo
 
 
 def _create_backup(root: Path, udid: str, device_name: str = "Test iPhone") -> Path:
@@ -37,20 +37,32 @@ def _create_backup(root: Path, udid: str, device_name: str = "Test iPhone") -> P
     backup_dir = root / udid
     backup_dir.mkdir(parents=True, exist_ok=True)
 
-    (backup_dir / "Info.plist").write_bytes(plistlib.dumps({
-        "Device Name": device_name,
-        "Product Version": "17.4",
-        "Unique Identifier": udid,
-    }))
-    (backup_dir / "Manifest.plist").write_bytes(plistlib.dumps({
-        "IsEncrypted": False,
-        "Version": "3.3",
-    }))
-    (backup_dir / "Status.plist").write_bytes(plistlib.dumps({
-        "IsFullBackup": True,
-        "Version": "3.3",
-        "Date": "2026-02-28T00:00:00Z",
-    }))
+    (backup_dir / "Info.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "Device Name": device_name,
+                "Product Version": "17.4",
+                "Unique Identifier": udid,
+            }
+        )
+    )
+    (backup_dir / "Manifest.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "IsEncrypted": False,
+                "Version": "3.3",
+            }
+        )
+    )
+    (backup_dir / "Status.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "IsFullBackup": True,
+                "Version": "3.3",
+                "Date": "2026-02-28T00:00:00Z",
+            }
+        )
+    )
 
     sms_hash = get_sms_db_hash()
     sms_dir = backup_dir / sms_hash[:2]
@@ -131,8 +143,12 @@ def _populate_backup_with_messages(backup_dir: Path) -> None:
         "VALUES (2, 'msg-2', ?, 1, 'SMS', 2, 0, 0, 0, 0, 1, 1, 2)",
         (ATTACHMENT_PLACEHOLDER + "CLI caption",),
     )
-    conn.execute("INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 1, 1)")
-    conn.execute("INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 2, 2)")
+    conn.execute(
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 1, 1)"
+    )
+    conn.execute(
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 2, 2)"
+    )
     conn.execute(
         "INSERT INTO attachment (ROWID, guid, filename, mime_type, transfer_name, total_bytes) "
         "VALUES (1, 'att-1', ?, 'image/jpeg', 'image000000.jpg', 9)",
@@ -187,8 +203,12 @@ class TestConfirmBackup:
         root.mkdir()
         path = _create_backup(root, "TEST-UDID")
         info = BackupInfo(
-            path=path, udid="TEST-UDID", device_name="Test iPhone",
-            product_version="17.4", is_encrypted=False, date="2026-02-28",
+            path=path,
+            udid="TEST-UDID",
+            device_name="Test iPhone",
+            product_version="17.4",
+            is_encrypted=False,
+            date="2026-02-28",
         )
         with patch("builtins.input", return_value="y"):
             result = _confirm_backup(info)
@@ -200,8 +220,11 @@ class TestConfirmBackup:
         root.mkdir()
         path = _create_backup(root, "TEST-UDID")
         info = BackupInfo(
-            path=path, udid="TEST-UDID", device_name="Test iPhone",
-            product_version="17.4", is_encrypted=False,
+            path=path,
+            udid="TEST-UDID",
+            device_name="Test iPhone",
+            product_version="17.4",
+            is_encrypted=False,
         )
         with patch("builtins.input", return_value=""):
             result = _confirm_backup(info)
@@ -213,8 +236,11 @@ class TestConfirmBackup:
         root.mkdir()
         path = _create_backup(root, "TEST-UDID")
         info = BackupInfo(
-            path=path, udid="TEST-UDID", device_name="Test iPhone",
-            product_version="17.4", is_encrypted=False,
+            path=path,
+            udid="TEST-UDID",
+            device_name="Test iPhone",
+            product_version="17.4",
+            is_encrypted=False,
         )
         with patch("builtins.input", return_value="n"):
             result = _confirm_backup(info)
@@ -226,8 +252,11 @@ class TestConfirmBackup:
         root.mkdir()
         path = _create_backup(root, "TEST-UDID")
         info = BackupInfo(
-            path=path, udid="TEST-UDID", device_name="Test iPhone",
-            product_version="17.4", is_encrypted=False,
+            path=path,
+            udid="TEST-UDID",
+            device_name="Test iPhone",
+            product_version="17.4",
+            is_encrypted=False,
         )
         with patch("builtins.input", side_effect=EOFError):
             result = _confirm_backup(info)
@@ -272,11 +301,15 @@ class TestYesFlag:
         _create_backup(root, "SINGLE")
         zip_path = _create_export_zip(tmp_dir)
 
-        ret = main([
-            "inject", str(zip_path),
-            "--backup-root", str(root),
-            "--yes",
-        ])
+        ret = main(
+            [
+                "inject",
+                str(zip_path),
+                "--backup-root",
+                str(root),
+                "--yes",
+            ]
+        )
         assert ret == 0
 
     def test_explicit_backup_skips_prompt(self, tmp_dir):
@@ -286,10 +319,14 @@ class TestYesFlag:
         backup_path = _create_backup(root, "EXPLICIT")
         zip_path = _create_export_zip(tmp_dir)
 
-        ret = main([
-            "inject", str(zip_path),
-            "--backup", str(backup_path),
-        ])
+        ret = main(
+            [
+                "inject",
+                str(zip_path),
+                "--backup",
+                str(backup_path),
+            ]
+        )
         assert ret == 0
 
 
@@ -413,9 +450,9 @@ class TestDeviceRunArtifacts:
         with (
             patch("green2blue.cli._default_device_run_root", return_value=run_root),
             patch("green2blue.cli._capture_mobiledevice_logs", side_effect=fake_capture),
+            _device_run_session("restore", {"device_udid": "abc123"}) as artifacts,
         ):
-            with _device_run_session("restore", {"device_udid": "abc123"}) as artifacts:
-                logging.getLogger("green2blue.tests").warning("session works")
+            logging.getLogger("green2blue.tests").warning("session works")
 
         assert artifacts.run_dir.exists()
         assert artifacts.metadata_path.exists()
@@ -431,12 +468,14 @@ class TestDeviceRunArtifacts:
         with (
             patch("green2blue.cli._default_device_run_root", return_value=run_root),
             patch("green2blue.cli._capture_mobiledevice_logs", side_effect=fake_capture),
+            _device_run_session("restore", {"device_udid": "abc123"}) as artifacts,
         ):
-            with _device_run_session("restore", {"device_udid": "abc123"}) as artifacts:
-                progress = _ProgressReporter("Restore", heartbeat_seconds=60.0, progress_path=artifacts.progress_path)
-                progress.start()
-                progress.callback(12.5)
-                progress.finish()
+            progress = _ProgressReporter(
+                "Restore", heartbeat_seconds=60.0, progress_path=artifacts.progress_path
+            )
+            progress.start()
+            progress.callback(12.5)
+            progress.finish()
 
         payload = json.loads(artifacts.progress_path.read_text())
         assert payload["label"] == "Restore"
@@ -453,16 +492,21 @@ class TestDeviceRunArtifacts:
             patch("green2blue.cli._default_device_run_root", return_value=run_root),
             patch("green2blue.cli._capture_mobiledevice_logs", side_effect=fake_capture),
             pytest.raises(RuntimeError, match="restore broke"),
+            _device_run_session(
+                "device_restore",
+                {
+                    "device_udid": "abc123",
+                    "device_phase": "restore",
+                },
+            ) as artifacts,
         ):
-            with _device_run_session("device_restore", {
-                "device_udid": "abc123",
-                "device_phase": "restore",
-            }) as artifacts:
-                progress = _ProgressReporter("Restore", heartbeat_seconds=60.0, progress_path=artifacts.progress_path)
-                progress.start()
-                progress.callback(44.9)
-                progress.finish()
-                raise RuntimeError("restore broke")
+            progress = _ProgressReporter(
+                "Restore", heartbeat_seconds=60.0, progress_path=artifacts.progress_path
+            )
+            progress.start()
+            progress.callback(44.9)
+            progress.finish()
+            raise RuntimeError("restore broke")
 
         payload = json.loads(artifacts.recovery_path.read_text())
         assert payload["classification"] == "partial_restore_state"
@@ -471,29 +515,45 @@ class TestDeviceRunArtifacts:
     def test_device_run_status_prints_recovery_guidance(self, tmp_dir, capsys):
         run_dir = tmp_dir / "run"
         run_dir.mkdir()
-        (run_dir / "metadata.json").write_text(json.dumps({
-            "command": "device_restore",
-            "status": "failed",
-            "device_udid": "abc123",
-            "device_name": "Test iPhone",
-            "device_phase": "restore",
-            "started_at": "2026-03-12T00:00:00-07:00",
-            "finished_at": "2026-03-12T00:05:00-07:00",
-        }))
-        (run_dir / "progress.json").write_text(json.dumps({
-            "event": "progress",
-            "last_progress": 44.9,
-        }))
-        (run_dir / "recovery.json").write_text(json.dumps({
-            "classification": "partial_restore_state",
-            "device_phase": "restore",
-            "safe_to_retry": False,
-            "summary": "The restore started transferring data after reaching 44.9% and failed during apply/reboot.",
-            "hint": "Treat the phone as partially restored.",
-            "next_steps": [
-                "Erase the test phone before retrying.",
-            ],
-        }))
+        (run_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "command": "device_restore",
+                    "status": "failed",
+                    "device_udid": "abc123",
+                    "device_name": "Test iPhone",
+                    "device_phase": "restore",
+                    "started_at": "2026-03-12T00:00:00-07:00",
+                    "finished_at": "2026-03-12T00:05:00-07:00",
+                }
+            )
+        )
+        (run_dir / "progress.json").write_text(
+            json.dumps(
+                {
+                    "event": "progress",
+                    "last_progress": 44.9,
+                }
+            )
+        )
+        (run_dir / "recovery.json").write_text(
+            json.dumps(
+                {
+                    "classification": "partial_restore_state",
+                    "device_phase": "restore",
+                    "safe_to_retry": False,
+                    "summary": (
+                        "The restore started transferring data"
+                        " after reaching 44.9% and failed"
+                        " during apply/reboot."
+                    ),
+                    "hint": "Treat the phone as partially restored.",
+                    "next_steps": [
+                        "Erase the test phone before retrying.",
+                    ],
+                }
+            )
+        )
 
         ret = main(["device", "run-status", str(run_dir)])
 
@@ -508,21 +568,25 @@ class TestArchiveCLI:
         zip_path = _create_export_zip(tmp_dir)
         archive_path = tmp_dir / "archive.g2b.sqlite"
 
-        first = main([
-            "archive",
-            "import-android",
-            str(zip_path),
-            str(archive_path),
-        ])
+        first = main(
+            [
+                "archive",
+                "import-android",
+                str(zip_path),
+                str(archive_path),
+            ]
+        )
         assert first == 0
         capsys.readouterr()
 
-        second = main([
-            "archive",
-            "import-android",
-            str(zip_path),
-            str(archive_path),
-        ])
+        second = main(
+            [
+                "archive",
+                "import-android",
+                str(zip_path),
+                str(archive_path),
+            ]
+        )
         assert second == 0
         output = capsys.readouterr().out
         assert "Reused existing:      yes" in output
@@ -538,11 +602,13 @@ class TestArchiveCLI:
         report = build_archive_report(archive_path)
         assert report.import_run_summaries
 
-        ret = main([
-            "archive",
-            "report",
-            str(archive_path),
-        ])
+        ret = main(
+            [
+                "archive",
+                "report",
+                str(archive_path),
+            ]
+        )
         assert ret == 0
         output = capsys.readouterr().out
         assert "Import runs:" in output
@@ -552,22 +618,26 @@ class TestArchiveCLI:
         zip_path = _create_export_zip(tmp_dir)
         archive_path = tmp_dir / "archive.g2b.sqlite"
 
-        main([
-            "archive",
-            "import-android",
-            str(zip_path),
-            str(archive_path),
-        ])
+        main(
+            [
+                "archive",
+                "import-android",
+                str(zip_path),
+                str(archive_path),
+            ]
+        )
         conn = sqlite3.connect(archive_path)
         conn.execute("UPDATE import_runs SET message_count = 77")
         conn.commit()
         conn.close()
 
-        ret = main([
-            "archive",
-            "verify",
-            str(archive_path),
-        ])
+        ret = main(
+            [
+                "archive",
+                "verify",
+                str(archive_path),
+            ]
+        )
         output = capsys.readouterr().out
         assert ret == 1
         assert "Archive verify: FAILED" in output
@@ -581,27 +651,36 @@ class TestArchiveCLI:
         archive_path = tmp_dir / "stage.g2b.sqlite"
         stage_dir = tmp_dir / "stage_dir"
 
-        main([
-            "archive", "import-ios",
-            str(backup_dir),
-            str(archive_path),
-        ])
+        main(
+            [
+                "archive",
+                "import-ios",
+                str(backup_dir),
+                str(archive_path),
+            ]
+        )
 
-        first = main([
-            "archive", "stage-ios",
-            str(archive_path),
-            str(stage_dir),
-        ])
+        first = main(
+            [
+                "archive",
+                "stage-ios",
+                str(archive_path),
+                str(stage_dir),
+            ]
+        )
         assert first == 0
         first_output = capsys.readouterr().out
         assert "Reused existing:      no" in first_output
         assert "Stage verify:         PASSED" in first_output
 
-        second = main([
-            "archive", "stage-ios",
-            str(archive_path),
-            str(stage_dir),
-        ])
+        second = main(
+            [
+                "archive",
+                "stage-ios",
+                str(archive_path),
+                str(stage_dir),
+            ]
+        )
         assert second == 0
         second_output = capsys.readouterr().out
         assert "Reused existing:      yes" in second_output
@@ -671,15 +750,17 @@ class TestQuickstartCommand:
 class TestArchiveCommands:
     def test_review_command_launches_local_review_ui(self, sample_export_zip):
         with patch("green2blue.review.serve_review_app") as mock_review:
-            ret = main([
-                "review",
-                str(sample_export_zip),
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "8080",
-                "--no-open-browser",
-            ])
+            ret = main(
+                [
+                    "review",
+                    str(sample_export_zip),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8080",
+                    "--no-open-browser",
+                ]
+            )
 
         assert ret == 0
         mock_review.assert_called_once_with(
@@ -692,22 +773,28 @@ class TestArchiveCommands:
     def test_archive_import_android_creates_archive(self, sample_export_zip, tmp_dir):
         archive_path = tmp_dir / "sample.g2b.sqlite"
 
-        ret = main([
-            "archive", "import-android",
-            str(sample_export_zip),
-            str(archive_path),
-        ])
+        ret = main(
+            [
+                "archive",
+                "import-android",
+                str(sample_export_zip),
+                str(archive_path),
+            ]
+        )
 
         assert ret == 0
         assert archive_path.exists()
 
     def test_archive_inspect_prints_summary(self, sample_export_zip, tmp_dir, capsys):
         archive_path = tmp_dir / "sample.g2b.sqlite"
-        main([
-            "archive", "import-android",
-            str(sample_export_zip),
-            str(archive_path),
-        ])
+        main(
+            [
+                "archive",
+                "import-android",
+                str(sample_export_zip),
+                str(archive_path),
+            ]
+        )
 
         ret = main(["archive", "inspect", str(archive_path)])
         captured = capsys.readouterr()
@@ -723,11 +810,14 @@ class TestArchiveCommands:
         _populate_backup_with_messages(backup_dir)
         archive_path = tmp_dir / "ios.g2b.sqlite"
 
-        ret = main([
-            "archive", "import-ios",
-            str(backup_dir),
-            str(archive_path),
-        ])
+        ret = main(
+            [
+                "archive",
+                "import-ios",
+                str(backup_dir),
+                str(archive_path),
+            ]
+        )
 
         assert ret == 0
         assert archive_path.exists()
@@ -739,12 +829,15 @@ class TestArchiveCommands:
         export_zip = _create_export_zip(tmp_dir)
         workflow_dir = tmp_dir / "workflow"
 
-        ret = main([
-            "archive", "prepare-ios",
-            str(export_zip),
-            str(backup_dir),
-            str(workflow_dir),
-        ])
+        ret = main(
+            [
+                "archive",
+                "prepare-ios",
+                str(export_zip),
+                str(backup_dir),
+                str(workflow_dir),
+            ]
+        )
 
         assert ret == 0
         assert (workflow_dir / "workflow_state.json").exists()
@@ -758,17 +851,23 @@ class TestArchiveCommands:
         export_zip = _create_export_zip(tmp_dir)
         workflow_dir = tmp_dir / "workflow"
 
-        main([
-            "archive", "prepare-ios",
-            str(export_zip),
-            str(backup_dir),
-            str(workflow_dir),
-        ])
+        main(
+            [
+                "archive",
+                "prepare-ios",
+                str(export_zip),
+                str(backup_dir),
+                str(workflow_dir),
+            ]
+        )
 
-        ret = main([
-            "archive", "workflow-status",
-            str(workflow_dir),
-        ])
+        ret = main(
+            [
+                "archive",
+                "workflow-status",
+                str(workflow_dir),
+            ]
+        )
 
         assert ret == 0
         captured = capsys.readouterr()
@@ -783,18 +882,24 @@ class TestArchiveCommands:
         export_zip = _create_export_zip(tmp_dir)
         workflow_dir = tmp_dir / "workflow"
 
-        ret = main([
-            "archive", "prepare-ios",
-            str(export_zip),
-            str(backup_dir),
-            str(workflow_dir),
-        ])
+        ret = main(
+            [
+                "archive",
+                "prepare-ios",
+                str(export_zip),
+                str(backup_dir),
+                str(workflow_dir),
+            ]
+        )
         assert ret == 0
 
-        ret = main([
-            "archive", "run-ios",
-            str(workflow_dir),
-        ])
+        ret = main(
+            [
+                "archive",
+                "run-ios",
+                str(workflow_dir),
+            ]
+        )
 
         assert ret == 0
         captured = capsys.readouterr()
@@ -802,7 +907,10 @@ class TestArchiveCommands:
         assert "Rendered target:   PASSED" in captured.out
 
     def test_archive_report_prints_warning_for_multi_source(
-        self, sample_export_zip, tmp_dir, capsys,
+        self,
+        sample_export_zip,
+        tmp_dir,
+        capsys,
     ):
         backup_root = tmp_dir / "backups"
         backup_root.mkdir()
@@ -810,16 +918,22 @@ class TestArchiveCommands:
         _populate_backup_with_messages(backup_dir)
         archive_path = tmp_dir / "merged.g2b.sqlite"
 
-        main([
-            "archive", "import-android",
-            str(sample_export_zip),
-            str(archive_path),
-        ])
-        main([
-            "archive", "import-ios",
-            str(backup_dir),
-            str(archive_path),
-        ])
+        main(
+            [
+                "archive",
+                "import-android",
+                str(sample_export_zip),
+                str(archive_path),
+            ]
+        )
+        main(
+            [
+                "archive",
+                "import-ios",
+                str(backup_dir),
+                str(archive_path),
+            ]
+        )
 
         ret = main(["archive", "report", str(archive_path)])
         captured = capsys.readouterr()
@@ -838,19 +952,26 @@ class TestArchiveCommands:
         with zipfile.ZipFile(matching_zip, "w") as zf:
             zf.writestr(
                 "messages.ndjson",
-                '{"address":"+12025550101","body":"CLI backup message","date":"1","type":"1","read":"1"}\n',
+                '{"address":"+12025550101","body":"CLI backup message",'
+                '"date":"1","type":"1","read":"1"}\n',
             )
 
-        main([
-            "archive", "import-android",
-            str(matching_zip),
-            str(archive_path),
-        ])
-        main([
-            "archive", "import-ios",
-            str(backup_dir),
-            str(archive_path),
-        ])
+        main(
+            [
+                "archive",
+                "import-android",
+                str(matching_zip),
+                str(archive_path),
+            ]
+        )
+        main(
+            [
+                "archive",
+                "import-ios",
+                str(backup_dir),
+                str(archive_path),
+            ]
+        )
 
         ret = main(["archive", "merge", str(archive_path)])
         captured = capsys.readouterr()
@@ -867,17 +988,23 @@ class TestArchiveCommands:
         archive_path = tmp_dir / "merged.g2b.sqlite"
         output_zip = tmp_dir / "merged_export.zip"
 
-        main([
-            "archive", "import-ios",
-            str(backup_dir),
-            str(archive_path),
-        ])
+        main(
+            [
+                "archive",
+                "import-ios",
+                str(backup_dir),
+                str(archive_path),
+            ]
+        )
 
-        ret = main([
-            "archive", "export-android",
-            str(archive_path),
-            str(output_zip),
-        ])
+        ret = main(
+            [
+                "archive",
+                "export-android",
+                str(archive_path),
+                str(output_zip),
+            ]
+        )
 
         assert ret == 0
         assert output_zip.exists()
@@ -889,20 +1016,27 @@ class TestArchiveCommands:
         _populate_backup_with_messages(backup_dir)
         archive_path = tmp_dir / "merged.g2b.sqlite"
 
-        ret = main([
-            "archive", "import-ios",
-            str(backup_dir),
-            str(archive_path),
-        ])
+        ret = main(
+            [
+                "archive",
+                "import-ios",
+                str(backup_dir),
+                str(archive_path),
+            ]
+        )
         assert ret == 0
 
-        ret = main([
-            "archive", "inject-ios",
-            str(archive_path),
-            "--backup", str(backup_dir),
-            "--dry-run",
-            "--yes",
-        ])
+        ret = main(
+            [
+                "archive",
+                "inject-ios",
+                str(archive_path),
+                "--backup",
+                str(backup_dir),
+                "--dry-run",
+                "--yes",
+            ]
+        )
 
         assert ret == 0
 
@@ -952,13 +1086,18 @@ class TestArchiveCommands:
                 warnings=(),
             )
 
-            ret = main([
-                "archive", "inject-ios",
-                str(archive_path),
-                "--backup", str(backup_dir),
-                "--stage-dir", str(stage_dir),
-                "--yes",
-            ])
+            ret = main(
+                [
+                    "archive",
+                    "inject-ios",
+                    str(archive_path),
+                    "--backup",
+                    str(backup_dir),
+                    "--stage-dir",
+                    str(stage_dir),
+                    "--yes",
+                ]
+            )
 
         assert ret == 0
         assert mock_render_verify.called
@@ -1014,13 +1153,18 @@ class TestArchiveCommands:
                 warnings=(),
             )
 
-            ret = main([
-                "archive", "inject-ios",
-                str(archive_path),
-                "--backup", str(backup_dir),
-                "--stage-dir", str(stage_dir),
-                "--yes",
-            ])
+            ret = main(
+                [
+                    "archive",
+                    "inject-ios",
+                    str(archive_path),
+                    "--backup",
+                    str(backup_dir),
+                    "--stage-dir",
+                    str(stage_dir),
+                    "--yes",
+                ]
+            )
 
         assert ret == 3
         captured = capsys.readouterr()
@@ -1032,11 +1176,14 @@ class TestCorpusCommands:
     def test_corpus_capture_creates_zip(self, sample_export_zip, tmp_dir):
         output_zip = tmp_dir / "corpus.zip"
 
-        ret = main([
-            "corpus", "capture",
-            str(sample_export_zip),
-            str(output_zip),
-        ])
+        ret = main(
+            [
+                "corpus",
+                "capture",
+                str(sample_export_zip),
+                str(output_zip),
+            ]
+        )
 
         assert ret == 0
         assert output_zip.exists()

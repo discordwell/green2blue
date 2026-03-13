@@ -6,10 +6,10 @@ or explicitly via ``green2blue wizard``.
 
 from __future__ import annotations
 
-from datetime import datetime
 import getpass
 import platform
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +43,7 @@ def run_wizard() -> int:
 # Step 1: Welcome
 # ---------------------------------------------------------------------------
 
+
 def _step_welcome() -> None:
     print()
     print(f"  green2blue v{__version__}")
@@ -56,6 +57,7 @@ def _step_welcome() -> None:
 # Step 2: Workflow choice
 # ---------------------------------------------------------------------------
 
+
 def _step_workflow_choice() -> tuple[str, str | None]:
     """Choose between the direct and merged workflows.
 
@@ -68,10 +70,7 @@ def _step_workflow_choice() -> tuple[str, str | None]:
     print()
 
     while True:
-        raw = input(
-            "  Choose workflow [1/2] "
-            "(or drag a ZIP now for quick import): "
-        ).strip()
+        raw = input("  Choose workflow [1/2] (or drag a ZIP now for quick import): ").strip()
         if raw in ("", "1"):
             print()
             return "classic", None
@@ -95,6 +94,7 @@ def _looks_like_path(raw: str) -> bool:
 # ---------------------------------------------------------------------------
 # Step 3: Export ZIP
 # ---------------------------------------------------------------------------
+
 
 def _step_export_zip(initial_raw: str | None = None) -> Path:
     while True:
@@ -154,6 +154,7 @@ def _clean_path(raw: str) -> str:
 # Step 4: Inspect
 # ---------------------------------------------------------------------------
 
+
 def _step_inspect(export_path: Path) -> tuple[int, int, bool]:
     """Inspect the export ZIP and print a summary.
 
@@ -193,6 +194,7 @@ def _step_inspect(export_path: Path) -> tuple[int, int, bool]:
 # ---------------------------------------------------------------------------
 # Step 5: Country detection
 # ---------------------------------------------------------------------------
+
 
 def _step_country_detection(export_path: Path) -> str:
     """Detect country from phone numbers in the export.
@@ -277,6 +279,7 @@ def _us_numbers_pass(export_path: Path) -> bool:
 # Step 6: Backup selection
 # ---------------------------------------------------------------------------
 
+
 def _step_backup_selection() -> BackupInfo:
     """Find and select an iPhone backup. Returns BackupInfo."""
     from green2blue.ios.backup import list_backups
@@ -356,6 +359,7 @@ def _print_no_backups_help() -> None:
 # Step 7: Encryption
 # ---------------------------------------------------------------------------
 
+
 def _step_encryption(backup_info: BackupInfo) -> str | None:
     """Handle encrypted backups. Returns password or None."""
     if not backup_info.is_encrypted:
@@ -411,6 +415,7 @@ def _validate_password(backup_info: BackupInfo, password: str) -> bool:
 # Step 8: Classic/merge flow runners
 # ---------------------------------------------------------------------------
 
+
 def _run_classic_wizard(initial_export_raw: str | None = None) -> None:
     export_path = _step_export_zip(initial_export_raw)
     sms_count, mms_count, has_attachments = _step_inspect(export_path)
@@ -418,8 +423,13 @@ def _run_classic_wizard(initial_export_raw: str | None = None) -> None:
     backup_info = _step_backup_selection()
     password = _step_encryption(backup_info)
     _step_confirm_and_inject(
-        export_path, backup_info, password, country,
-        sms_count, mms_count, has_attachments,
+        export_path,
+        backup_info,
+        password,
+        country,
+        sms_count,
+        mms_count,
+        has_attachments,
     )
 
 
@@ -430,14 +440,20 @@ def _run_merge_wizard() -> None:
     backup_info = _step_backup_selection()
     password = _step_encryption(backup_info)
     _step_confirm_and_merge(
-        export_path, backup_info, password, country,
-        sms_count, mms_count, has_attachments,
+        export_path,
+        backup_info,
+        password,
+        country,
+        sms_count,
+        mms_count,
+        has_attachments,
     )
 
 
 # ---------------------------------------------------------------------------
 # Step 9: Confirm and inject
 # ---------------------------------------------------------------------------
+
 
 def _step_confirm_and_inject(
     export_path: Path,
@@ -456,8 +472,10 @@ def _step_confirm_and_inject(
     encrypted = " (encrypted)" if backup_info.is_encrypted else ""
 
     print("  Ready to inject:")
-    print(f"    {total:,} messages -> \"{backup_info.device_name}\" "
-          f"(iOS {backup_info.product_version}{encrypted})")
+    print(
+        f'    {total:,} messages -> "{backup_info.device_name}" '
+        f"(iOS {backup_info.product_version}{encrypted})"
+    )
     print("    A safety copy will be created first.")
     print()
 
@@ -514,8 +532,10 @@ def _step_confirm_and_merge(
 
     print("  Ready to build a merged archive:")
     print(f"    Android export:      {total:,} messages")
-    print(f"    iPhone backup:       \"{backup_info.device_name}\" "
-          f"(iOS {backup_info.product_version}{encrypted})")
+    print(
+        f'    iPhone backup:       "{backup_info.device_name}" '
+        f"(iOS {backup_info.product_version}{encrypted})"
+    )
     print("    The merged archive will be imported, merged, reported,")
     print("    and then injected back into this iPhone backup.")
     print()
@@ -538,7 +558,6 @@ def _step_confirm_and_merge(
         country=country,
         resume=True,
     )
-    archive_path = workflow_result.archive_path
     merge_result = workflow_result.merge
     report = workflow_result.report
 
@@ -556,8 +575,10 @@ def _step_confirm_and_merge(
 
     verify_result = workflow_result.archive_verification
     verify_status = "PASSED" if verify_result.passed else "FAILED"
-    print(f"  Archive verification: {verify_status} "
-          f"({verify_result.checks_passed}/{verify_result.checks_run})")
+    print(
+        f"  Archive verification: {verify_status} "
+        f"({verify_result.checks_passed}/{verify_result.checks_run})"
+    )
     for warning in verify_result.warnings:
         print(f"    WARNING: {warning}")
     for error in verify_result.errors:
@@ -670,6 +691,7 @@ def _default_workflow_dir(backup_info: BackupInfo) -> Path:
 # Step 10: Results + next steps
 # ---------------------------------------------------------------------------
 
+
 def _step_results(
     result: PipelineResult,
     has_attachments: bool,
@@ -713,7 +735,9 @@ def _step_results(
         print(f"\n    Safety copy at: {result.safety_copy_path}")
 
     if not render_target_passed:
-        print("\n  Automatic device restore is disabled because rendered target verification failed.")
+        print(
+            "\n  Automatic device restore is disabled because rendered target verification failed."
+        )
         for error in render_target_errors:
             print(f"    - {error}")
         _print_manual_restore_instructions()
@@ -741,11 +765,11 @@ def _step_offer_device_restore(
         return
 
     from green2blue.cli import (
-        _ProgressReporter,
         _device_run_session,
-        _print_device_run_failure,
         _print_device_health_report,
+        _print_device_run_failure,
         _print_post_restore_instructions,
+        _ProgressReporter,
     )
     from green2blue.ios.device import (
         create_backup,

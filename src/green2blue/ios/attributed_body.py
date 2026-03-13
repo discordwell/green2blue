@@ -124,43 +124,37 @@ _SUFFIX = bytes.fromhex(
 _FILE_TRANSFER_KEY = "__kIMFileTransferGUIDAttributeName"
 _MESSAGE_PART_KEY = "__kIMMessagePartAttributeName"
 _STRING_OBJECT_PREFIX = bytes.fromhex("92849696")
-_FIRST_DICT_PREFIX = bytes.fromhex(
-    "92"
-    "8484840c4e5344696374696f6e61727900"
-    "94"
-    "840169"
-)
+_FIRST_DICT_PREFIX = bytes.fromhex("928484840c4e5344696374696f6e6172790094840169")
 _NEXT_DICT_PREFIX = bytes.fromhex("92849899")
 _FIRST_NUMBER_PREFIX = bytes.fromhex(
-    "92"
-    "848484084e534e756d62657200"
-    "8484074e5356616c756500"
-    "94"
-    "84012a"
-    "84"
-    "9999"
+    "92848484084e534e756d626572008484074e5356616c7565009484012a849999"
 )
 _NEXT_NUMBER_PREFIX = bytes.fromhex("92849d9c9f99")
 _NEXT_FILE_TRANSFER_KEY_REF = bytes.fromhex("9299")
 _NEXT_MESSAGE_PART_KEY_REF = bytes.fromhex("929b")
 _URL_RE = re.compile(r"https?://\S+")
-_URL_HELPER_SOURCE = """import Foundation
-let text = CommandLine.arguments[1]
-let pattern = #"https?://\\S+"#
-let regex = try! NSRegularExpression(pattern: pattern)
-let nsText = text as NSString
-let full = NSRange(location: 0, length: nsText.length)
-let s = NSMutableAttributedString(string: text)
-s.addAttribute(NSAttributedString.Key(rawValue: "__kIMMessagePartAttributeName"), value: NSNumber(value: 0), range: full)
-for match in regex.matches(in: text, range: full) {
-    let urlString = nsText.substring(with: match.range)
-    if let url = URL(string: urlString) {
-        s.addAttribute(NSAttributedString.Key(rawValue: "__kIMLinkAttributeName"), value: url, range: match.range)
-    }
-}
-let data = NSArchiver.archivedData(withRootObject: s)
-print(data.map { String(format: "%02X", $0) }.joined())
-"""
+_URL_HELPER_SOURCE = (
+    "import Foundation\n"
+    "let text = CommandLine.arguments[1]\n"
+    'let pattern = #"https?://\\\\S+"#\n'
+    "let regex = try! NSRegularExpression(pattern: pattern)\n"
+    "let nsText = text as NSString\n"
+    "let full = NSRange(location: 0, length: nsText.length)\n"
+    "let s = NSMutableAttributedString(string: text)\n"
+    "s.addAttribute(\n"
+    '    NSAttributedString.Key(rawValue: "__kIMMessagePartAttributeName"),\n'
+    "    value: NSNumber(value: 0), range: full)\n"
+    "for match in regex.matches(in: text, range: full) {\n"
+    "    let urlString = nsText.substring(with: match.range)\n"
+    "    if let url = URL(string: urlString) {\n"
+    "        s.addAttribute(\n"
+    '            NSAttributedString.Key(rawValue: "__kIMLinkAttributeName"),\n'
+    "            value: url, range: match.range)\n"
+    "    }\n"
+    "}\n"
+    "let data = NSArchiver.archivedData(withRootObject: s)\n"
+    'print(data.map { String(format: "%02X", $0) }.joined())\n'
+)
 
 
 def _swift_path() -> str | None:
@@ -241,7 +235,7 @@ def _build_multipart_attributed_body(
     attachment_guids: tuple[str, ...],
 ) -> bytes:
     text_bytes = text.encode("utf-8")
-    caption_text = text[len(attachment_guids):]
+    caption_text = text[len(attachment_guids) :]
     runs: list[tuple[int, str | None, int]] = [
         (1, guid, idx) for idx, guid in enumerate(attachment_guids)
     ]

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import json
 import plistlib
 import sqlite3
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,34 +20,48 @@ from green2blue.wizard import (
     _pick_backup,
     _print_no_backups_help,
     _step_results,
-    _step_workflow_choice,
     _step_welcome,
+    _step_workflow_choice,
     _us_numbers_pass,
     run_wizard,
 )
 
 # -- Helpers --
 
-def _create_backup(root: Path, udid: str, device_name: str = "Test iPhone",
-                   encrypted: bool = False) -> Path:
+
+def _create_backup(
+    root: Path, udid: str, device_name: str = "Test iPhone", encrypted: bool = False
+) -> Path:
     """Create a minimal synthetic backup for wizard testing."""
     backup_dir = root / udid
     backup_dir.mkdir(parents=True, exist_ok=True)
 
-    (backup_dir / "Info.plist").write_bytes(plistlib.dumps({
-        "Device Name": device_name,
-        "Product Version": "17.4",
-        "Unique Identifier": udid,
-    }))
-    (backup_dir / "Manifest.plist").write_bytes(plistlib.dumps({
-        "IsEncrypted": encrypted,
-        "Version": "3.3",
-    }))
-    (backup_dir / "Status.plist").write_bytes(plistlib.dumps({
-        "IsFullBackup": True,
-        "Version": "3.3",
-        "Date": "2026-02-28T00:00:00Z",
-    }))
+    (backup_dir / "Info.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "Device Name": device_name,
+                "Product Version": "17.4",
+                "Unique Identifier": udid,
+            }
+        )
+    )
+    (backup_dir / "Manifest.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "IsEncrypted": encrypted,
+                "Version": "3.3",
+            }
+        )
+    )
+    (backup_dir / "Status.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "IsFullBackup": True,
+                "Version": "3.3",
+                "Date": "2026-02-28T00:00:00Z",
+            }
+        )
+    )
 
     sms_hash = get_sms_db_hash()
     sms_dir = backup_dir / sms_hash[:2]
@@ -82,13 +96,15 @@ def _create_export_zip(root: Path, num_messages: int = 5) -> Path:
     zip_path = root / "export.zip"
     records = []
     for i in range(num_messages):
-        records.append({
-            "address": f"+1202555{1000 + i}",
-            "body": f"Test message {i}",
-            "date": str(1700000000000 + i * 1000),
-            "type": "1",
-            "read": "1",
-        })
+        records.append(
+            {
+                "address": f"+1202555{1000 + i}",
+                "body": f"Test message {i}",
+                "date": str(1700000000000 + i * 1000),
+                "type": "1",
+                "read": "1",
+            }
+        )
     content = "\n".join(json.dumps(r) for r in records) + "\n"
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("messages.ndjson", content)
@@ -101,13 +117,15 @@ def _create_non_us_export_zip(root: Path) -> Path:
     records = []
     # UK numbers without + prefix — these should fail US normalization
     for i in range(20):
-        records.append({
-            "address": f"0778800{1000 + i}",
-            "body": f"UK message {i}",
-            "date": str(1700000000000 + i * 1000),
-            "type": "1",
-            "read": "1",
-        })
+        records.append(
+            {
+                "address": f"0778800{1000 + i}",
+                "body": f"UK message {i}",
+                "date": str(1700000000000 + i * 1000),
+                "type": "1",
+                "read": "1",
+            }
+        )
     content = "\n".join(json.dumps(r) for r in records) + "\n"
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("messages.ndjson", content)
@@ -115,6 +133,7 @@ def _create_non_us_export_zip(root: Path) -> Path:
 
 
 # -- Tests --
+
 
 class TestCleanPath:
     def test_strips_whitespace(self):
@@ -201,10 +220,20 @@ class TestPickBackup:
         path_b = _create_backup(root, "BBBB", "iPhone B")
 
         backups = [
-            BackupInfo(path=root / "AAAA", udid="AAAA", device_name="iPhone A",
-                       product_version="17.4", is_encrypted=False),
-            BackupInfo(path=path_b, udid="BBBB", device_name="iPhone B",
-                       product_version="17.4", is_encrypted=False),
+            BackupInfo(
+                path=root / "AAAA",
+                udid="AAAA",
+                device_name="iPhone A",
+                product_version="17.4",
+                is_encrypted=False,
+            ),
+            BackupInfo(
+                path=path_b,
+                udid="BBBB",
+                device_name="iPhone B",
+                product_version="17.4",
+                is_encrypted=False,
+            ),
         ]
 
         with patch("builtins.input", return_value="2"):
@@ -221,8 +250,11 @@ class TestWizardHappyPath:
         zip_path = _create_export_zip(tmp_dir, num_messages=3)
 
         backup_info = BackupInfo(
-            path=backup_path, udid="WIZARD-TEST", device_name="Test iPhone",
-            product_version="17.4", is_encrypted=False,
+            path=backup_path,
+            udid="WIZARD-TEST",
+            device_name="Test iPhone",
+            product_version="17.4",
+            is_encrypted=False,
         )
 
         # Mock the input sequence:
@@ -239,7 +271,8 @@ class TestWizardHappyPath:
         ):
             mock_result = MagicMock()
             mock_result.injection_stats = MagicMock(
-                messages_inserted=3, messages_skipped=0,
+                messages_inserted=3,
+                messages_skipped=0,
             )
             mock_result.clone_stats = None
             mock_result.overwrite_stats = None
@@ -261,18 +294,23 @@ class TestWizardHappyPath:
         zip_path = _create_export_zip(tmp_dir, num_messages=4)
 
         backup_info = BackupInfo(
-            path=backup_path, udid="MERGE-WIZARD", device_name="Merge iPhone",
-            product_version="17.4", is_encrypted=False,
+            path=backup_path,
+            udid="MERGE-WIZARD",
+            device_name="Merge iPhone",
+            product_version="17.4",
+            is_encrypted=False,
         )
 
-        inputs = iter([
-            "2",            # choose merge workflow
-            str(zip_path),  # export zip
-            "y",            # confirm backup
-            "y",            # build merged archive
-            "y",            # proceed with merged injection
-            "n",            # decline automatic device restore
-        ])
+        inputs = iter(
+            [
+                "2",  # choose merge workflow
+                str(zip_path),  # export zip
+                "y",  # confirm backup
+                "y",  # build merged archive
+                "y",  # proceed with merged injection
+                "n",  # decline automatic device restore
+            ]
+        )
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
@@ -310,7 +348,8 @@ class TestWizardHappyPath:
 
             mock_result = MagicMock()
             mock_result.injection_stats = MagicMock(
-                messages_inserted=3, messages_skipped=0,
+                messages_inserted=3,
+                messages_skipped=0,
             )
             mock_result.clone_stats = None
             mock_result.overwrite_stats = None
@@ -342,8 +381,11 @@ class TestWizardHappyPath:
         zip_path = _create_export_zip(tmp_dir, num_messages=2)
 
         backup_info = BackupInfo(
-            path=backup_path, udid="LIVE-TEST", device_name="Live iPhone",
-            product_version="17.4", is_encrypted=False,
+            path=backup_path,
+            udid="LIVE-TEST",
+            device_name="Live iPhone",
+            product_version="17.4",
+            is_encrypted=False,
         )
 
         report = DeviceHealthReport(
@@ -378,14 +420,16 @@ class TestWizardHappyPath:
             def callback(self, pct):
                 return None
 
-        inputs = iter([
-            str(zip_path),  # export zip
-            "y",            # use backup
-            "y",            # proceed with injection
-            "y",            # use live device restore
-            "y",            # create rollback backup
-            "y",            # restore modified backup now
-        ])
+        inputs = iter(
+            [
+                str(zip_path),  # export zip
+                "y",  # use backup
+                "y",  # proceed with injection
+                "y",  # use live device restore
+                "y",  # create rollback backup
+                "y",  # restore modified backup now
+            ]
+        )
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
@@ -403,7 +447,8 @@ class TestWizardHappyPath:
         ):
             mock_result = MagicMock()
             mock_result.injection_stats = MagicMock(
-                messages_inserted=2, messages_skipped=0,
+                messages_inserted=2,
+                messages_skipped=0,
             )
             mock_result.clone_stats = None
             mock_result.overwrite_stats = None
@@ -422,7 +467,9 @@ class TestWizardHappyPath:
         assert mock_restore_backup.call_args.kwargs["backup_dir"] == backup_path.parent
         assert mock_restore_backup.call_args.kwargs["udid"] == "LIVE-TEST"
 
-    def test_step_results_blocks_live_restore_when_rendered_target_verification_fails(self, tmp_dir):
+    def test_step_results_blocks_live_restore_when_rendered_target_verification_fails(
+        self, tmp_dir
+    ):
         backup_info = BackupInfo(
             path=tmp_dir / "backup",
             udid="RENDER-FAIL",
@@ -476,18 +523,23 @@ class TestWizardHappyPath:
         good_zip = _create_export_zip(tmp_dir)
 
         backup_info = BackupInfo(
-            path=tmp_dir / "backup", udid="TEST", device_name="iPhone",
-            product_version="17.4", is_encrypted=False,
+            path=tmp_dir / "backup",
+            udid="TEST",
+            device_name="iPhone",
+            product_version="17.4",
+            is_encrypted=False,
         )
 
         # First try bad path (not a ZIP), then good path
-        inputs = iter([
-            str(bad_zip),      # bad file (not a valid ZIP)
-            str(good_zip),     # good file
-            "y",               # confirm backup
-            "y",               # confirm inject
-            "n",               # decline automatic device restore
-        ])
+        inputs = iter(
+            [
+                str(bad_zip),  # bad file (not a valid ZIP)
+                str(good_zip),  # good file
+                "y",  # confirm backup
+                "y",  # confirm inject
+                "n",  # decline automatic device restore
+            ]
+        )
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
@@ -496,7 +548,8 @@ class TestWizardHappyPath:
         ):
             mock_result = MagicMock()
             mock_result.injection_stats = MagicMock(
-                messages_inserted=1, messages_skipped=0,
+                messages_inserted=1,
+                messages_skipped=0,
             )
             mock_result.clone_stats = None
             mock_result.overwrite_stats = None
@@ -524,8 +577,10 @@ class TestWizardEncryptedBackup:
         zip_path = _create_export_zip(tmp_dir)
 
         backup_info = BackupInfo(
-            path=root / "ENC-TEST", udid="ENC-TEST",
-            device_name="Encrypted iPhone", product_version="17.4",
+            path=root / "ENC-TEST",
+            udid="ENC-TEST",
+            device_name="Encrypted iPhone",
+            product_version="17.4",
             is_encrypted=True,
         )
 
@@ -541,7 +596,8 @@ class TestWizardEncryptedBackup:
         ):
             mock_result = MagicMock()
             mock_result.injection_stats = MagicMock(
-                messages_inserted=5, messages_skipped=0,
+                messages_inserted=5,
+                messages_skipped=0,
             )
             mock_result.clone_stats = None
             mock_result.overwrite_stats = None
@@ -555,16 +611,20 @@ class TestWizardEncryptedBackup:
         assert ret == 0
         # Verify pipeline was called with the password
         call_kwargs = mock_pipeline.call_args
-        assert call_kwargs.kwargs.get("password") == "secret123" or \
-               call_kwargs[1].get("password") == "secret123"
+        assert (
+            call_kwargs.kwargs.get("password") == "secret123"
+            or call_kwargs[1].get("password") == "secret123"
+        )
 
     def test_encrypted_backup_wrong_password_retries(self, tmp_dir):
         """Wizard retries on wrong password up to 3 times then exits."""
         zip_path = _create_export_zip(tmp_dir)
 
         backup_info = BackupInfo(
-            path=tmp_dir / "ENC-TEST", udid="ENC-TEST",
-            device_name="Encrypted iPhone", product_version="17.4",
+            path=tmp_dir / "ENC-TEST",
+            udid="ENC-TEST",
+            device_name="Encrypted iPhone",
+            product_version="17.4",
             is_encrypted=True,
         )
 

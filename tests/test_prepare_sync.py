@@ -45,12 +45,10 @@ def sms_db_with_injected(empty_sms_db: Path) -> Path:
 
     # Link messages to chat
     conn.execute(
-        "INSERT INTO chat_message_join (chat_id, message_id, "
-        "message_date) VALUES (1, 1, 1000000)"
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 1, 1000000)"
     )
     conn.execute(
-        "INSERT INTO chat_message_join (chat_id, message_id, "
-        "message_date) VALUES (1, 2, 1000001)"
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 2, 1000001)"
     )
 
     # Link handle to chat
@@ -151,9 +149,7 @@ class TestPrepareSyncMessages:
             "VALUES (1, 'any;-;+12025551234', 45, '+12025551234', "
             "'SMS', 1, 'real-chat-ck-id', 'change-token')"
         )
-        conn.execute(
-            "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1)"
-        )
+        conn.execute("INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1)")
         conn.execute(
             "INSERT INTO message (ROWID, guid, text, handle_id, service, date, "
             "ck_sync_state, ck_record_id, ck_record_change_tag) "
@@ -187,12 +183,10 @@ class TestPrepareSyncMessages:
         conn = sqlite3.connect(empty_sms_db)
         conn.row_factory = sqlite3.Row
         target = conn.execute(
-            "SELECT ck_sync_state, ck_record_id, ck_record_change_tag "
-            "FROM message WHERE ROWID = 1"
+            "SELECT ck_sync_state, ck_record_id, ck_record_change_tag FROM message WHERE ROWID = 1"
         ).fetchone()
         untouched = conn.execute(
-            "SELECT ck_sync_state, ck_record_id, ck_record_change_tag "
-            "FROM message WHERE ROWID = 2"
+            "SELECT ck_sync_state, ck_record_id, ck_record_change_tag FROM message WHERE ROWID = 2"
         ).fetchone()
         chat = conn.execute(
             "SELECT ck_sync_state, cloudkit_record_id, server_change_token "
@@ -214,9 +208,7 @@ class TestPrepareSyncMessages:
 class TestPrepareSyncChats:
     """Tests for chat CK state handling."""
 
-    def test_clears_server_change_token_on_affected_chats(
-        self, sms_db_with_injected: Path
-    ) -> None:
+    def test_clears_server_change_token_on_affected_chats(self, sms_db_with_injected: Path) -> None:
         """server_change_token is cleared on chats with injected messages."""
         result = prepare_sync(sms_db_with_injected)
 
@@ -224,16 +216,12 @@ class TestPrepareSyncChats:
 
         conn = sqlite3.connect(sms_db_with_injected)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT server_change_token FROM chat WHERE ROWID = 1"
-        ).fetchone()
+        row = conn.execute("SELECT server_change_token FROM chat WHERE ROWID = 1").fetchone()
         conn.close()
 
         assert row["server_change_token"] == ""
 
-    def test_does_not_clear_token_on_unaffected_chats(
-        self, sms_db_with_injected: Path
-    ) -> None:
+    def test_does_not_clear_token_on_unaffected_chats(self, sms_db_with_injected: Path) -> None:
         """Chats without injected messages keep their server_change_token."""
         conn = sqlite3.connect(sms_db_with_injected)
         conn.execute(
@@ -248,16 +236,12 @@ class TestPrepareSyncChats:
 
         conn = sqlite3.connect(sms_db_with_injected)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT server_change_token FROM chat WHERE ROWID = 99"
-        ).fetchone()
+        row = conn.execute("SELECT server_change_token FROM chat WHERE ROWID = 99").fetchone()
         conn.close()
 
         assert row["server_change_token"] == "keep-this-token"
 
-    def test_resets_ck_on_pure_injected_chats(
-        self, sms_db_with_injected: Path
-    ) -> None:
+    def test_resets_ck_on_pure_injected_chats(self, sms_db_with_injected: Path) -> None:
         """Pure-injected chats (only green2blue messages) get full CK reset."""
         result = prepare_sync(sms_db_with_injected)
 

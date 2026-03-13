@@ -213,7 +213,9 @@ def run_pipeline(
                 hint="Provide --password <your-backup-password>.",
             )
         return _run_encrypted_pipeline(
-            export_path, backup_info, password,
+            export_path,
+            backup_info,
+            password,
             skip_duplicates=skip_duplicates,
             include_attachments=include_attachments,
             dry_run=dry_run,
@@ -243,8 +245,11 @@ def run_pipeline(
         # Step 4: Convert to iOS format
         logger.info("Converting messages...")
         conversion = convert_messages(
-            android_messages, country, skip_duplicates,
-            ck_strategy=ck_strategy, service=service,
+            android_messages,
+            country,
+            skip_duplicates,
+            ck_strategy=ck_strategy,
+            service=service,
         )
         result.conversion_warnings = conversion.warnings
         result.skipped_count = conversion.skipped_count
@@ -296,7 +301,8 @@ def run_pipeline(
                 logger.info("Overwriting sacrifice messages in sms.db...")
                 with SMSDatabase(sms_db_file) as db:
                     result.overwrite_stats = db.overwrite(
-                        conversion, sacrifice_chats or [],
+                        conversion,
+                        sacrifice_chats or [],
                     )
                 logger.info("Overwrite complete: %s", result.overwrite_stats)
                 _emit_progress(
@@ -371,7 +377,10 @@ def run_pipeline(
                             _emit_progress(
                                 progress_callback,
                                 phase="attachment_processed",
-                                message=f"Processed attachment {attachments_processed}/{result.total_attachments_expected}.",
+                                message=(
+                                    f"Processed attachment {attachments_processed}"
+                                    f"/{result.total_attachments_expected}."
+                                ),
                                 backup_path=backup_info.path,
                                 attachments_total=result.total_attachments_expected,
                                 attachments_processed=attachments_processed,
@@ -412,9 +421,11 @@ def run_pipeline(
             )
 
             if result.verification.passed:
-                logger.info("Verification PASSED (%d/%d checks)",
-                            result.verification.checks_passed,
-                            result.verification.checks_run)
+                logger.info(
+                    "Verification PASSED (%d/%d checks)",
+                    result.verification.checks_passed,
+                    result.verification.checks_run,
+                )
             else:
                 logger.warning("Verification FAILED: %s", result.verification.errors)
             _emit_progress(
@@ -440,8 +451,8 @@ def run_pipeline(
 
         except Exception:
             logger.error(
-                "Pipeline failed after modifying backup. "
-                "Restore from safety copy: %s", result.safety_copy_path,
+                "Pipeline failed after modifying backup. Restore from safety copy: %s",
+                result.safety_copy_path,
             )
             raise
 
@@ -493,7 +504,11 @@ def _copy_message_attachment(
 
     ios_relative = att.filename.removeprefix("~/")
     file_size = copy_attachment_to_backup(
-        source, ios_relative, backup_path, manifest, domain,
+        source,
+        ios_relative,
+        backup_path,
+        manifest,
+        domain,
         encrypted_backup=encrypted_backup,
         protection_class=protection_class,
     )
@@ -532,8 +547,8 @@ def _disable_icloud_sync(
     file_on_disk = backup_path / file_id[:2] / file_id
     if not file_on_disk.exists():
         logger.warning(
-            "com.apple.madrid.plist not found in backup (fileID=%s) — "
-            "iCloud sync disable skipped", file_id,
+            "com.apple.madrid.plist not found in backup (fileID=%s) — iCloud sync disable skipped",
+            file_id,
         )
         return
 
@@ -567,7 +582,8 @@ def _disable_icloud_sync(
     with ManifestDB(manifest_path) as manifest:
         cursor = manifest.conn.cursor()
         row = cursor.execute(
-            "SELECT file FROM Files WHERE fileID = ?", (file_id,),
+            "SELECT file FROM Files WHERE fileID = ?",
+            (file_id,),
         ).fetchone()
         if row and row["file"]:
             from green2blue.ios.plist_utils import patch_mbfile_blob
@@ -660,8 +676,11 @@ def _run_encrypted_pipeline(
             # Step 6: Convert to iOS format
             logger.info("Converting messages...")
             conversion = convert_messages(
-                android_messages, country, skip_duplicates,
-                ck_strategy=ck_strategy, service=service,
+                android_messages,
+                country,
+                skip_duplicates,
+                ck_strategy=ck_strategy,
+                service=service,
             )
             result.conversion_warnings = conversion.warnings
             result.skipped_count = conversion.skipped_count
@@ -710,7 +729,8 @@ def _run_encrypted_pipeline(
                 logger.info("Overwriting sacrifice messages in decrypted sms.db...")
                 with SMSDatabase(temp_sms_path) as db:
                     result.overwrite_stats = db.overwrite(
-                        conversion, sacrifice_chats or [],
+                        conversion,
+                        sacrifice_chats or [],
                     )
                 logger.info("Overwrite complete: %s", result.overwrite_stats)
                 _emit_progress(
@@ -775,7 +795,12 @@ def _run_encrypted_pipeline(
                     for msg in conversion.messages:
                         for att in msg.attachments:
                             file_size = _copy_message_attachment(
-                                att, msg, export, backup_info.path, manifest, domain,
+                                att,
+                                msg,
+                                export,
+                                backup_info.path,
+                                manifest,
+                                domain,
                                 encrypted_backup=encrypted_backup,
                                 protection_class=sms_prot_class,
                             )
@@ -786,7 +811,10 @@ def _run_encrypted_pipeline(
                             _emit_progress(
                                 progress_callback,
                                 phase="attachment_processed",
-                                message=f"Processed attachment {attachments_processed}/{result.total_attachments_expected}.",
+                                message=(
+                                    f"Processed attachment {attachments_processed}"
+                                    f"/{result.total_attachments_expected}."
+                                ),
                                 backup_path=backup_info.path,
                                 attachments_total=result.total_attachments_expected,
                                 attachments_processed=attachments_processed,
@@ -818,7 +846,8 @@ def _run_encrypted_pipeline(
             # Disable iCloud Messages sync if requested
             if disable_icloud_sync:
                 _disable_icloud_sync(
-                    backup_info.path, temp_manifest_path,
+                    backup_info.path,
+                    temp_manifest_path,
                     encrypted_backup=encrypted_backup,
                     protection_class=sms_prot_class,
                 )

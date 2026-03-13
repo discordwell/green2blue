@@ -80,7 +80,8 @@ def verify_archive(archive_path: Path | str) -> ArchiveVerificationResult:
         )
         if bad_attachment_flag_count:
             errors.append(
-                f"{bad_attachment_flag_count} messages are flagged with attachments but have no attachment parts.",
+                f"{bad_attachment_flag_count} messages are flagged with"
+                " attachments but have no attachment parts.",
             )
         else:
             checks_passed += 1
@@ -115,7 +116,8 @@ def verify_archive(archive_path: Path | str) -> ArchiveVerificationResult:
         missing_blob_files = archive.count_missing_blob_files()
         if missing_blob_files:
             errors.append(
-                f"{missing_blob_files} external blob files referenced by the archive are missing from disk.",
+                f"{missing_blob_files} external blob files referenced by"
+                " the archive are missing from disk.",
             )
         else:
             checks_passed += 1
@@ -125,7 +127,8 @@ def verify_archive(archive_path: Path | str) -> ArchiveVerificationResult:
         merge_run_count = _scalar(conn, "SELECT COUNT(*) FROM merge_runs")
         if source_type_count > 1 and merge_run_count == 0:
             warnings.append(
-                "Archive contains multiple source types but no merged view has been materialized yet.",
+                "Archive contains multiple source types but no merged"
+                " view has been materialized yet.",
             )
         checks_passed += 1
 
@@ -170,11 +173,15 @@ def _import_run_mismatches(conn: sqlite3.Connection) -> list[str]:
         )
         if actual_messages != int(row["message_count"]):
             errors.append(
-                f"Import run {import_run_id} ({row['source_type']}) records {row['message_count']} messages but stores {actual_messages}.",
+                f"Import run {import_run_id} ({row['source_type']})"
+                f" records {row['message_count']} messages"
+                f" but stores {actual_messages}.",
             )
         if actual_attachments != int(row["attachment_count"]):
             errors.append(
-                f"Import run {import_run_id} ({row['source_type']}) records {row['attachment_count']} attachments but stores {actual_attachments}.",
+                f"Import run {import_run_id} ({row['source_type']})"
+                f" records {row['attachment_count']} attachments"
+                f" but stores {actual_attachments}.",
             )
     return errors
 
@@ -220,15 +227,21 @@ def _merge_mismatches(conn: sqlite3.Connection, merge_run_id: int) -> list[str]:
 
     if actual_conversations != int(row["merged_conversation_count"]):
         errors.append(
-            f"Merge run {merge_run_id} records {row['merged_conversation_count']} merged conversations but stores {actual_conversations}.",
+            f"Merge run {merge_run_id}"
+            f" records {row['merged_conversation_count']} merged"
+            f" conversations but stores {actual_conversations}.",
         )
     if actual_winners != int(row["merged_message_count"]):
         errors.append(
-            f"Merge run {merge_run_id} records {row['merged_message_count']} merged winner messages but stores {actual_winners}.",
+            f"Merge run {merge_run_id}"
+            f" records {row['merged_message_count']} merged winner"
+            f" messages but stores {actual_winners}.",
         )
     if actual_duplicates != int(row["duplicate_message_count"]):
         errors.append(
-            f"Merge run {merge_run_id} records {row['duplicate_message_count']} duplicates but stores {actual_duplicates}.",
+            f"Merge run {merge_run_id}"
+            f" records {row['duplicate_message_count']} duplicates"
+            f" but stores {actual_duplicates}.",
         )
     return errors
 

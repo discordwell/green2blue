@@ -14,9 +14,7 @@ import pytest
 from green2blue.ios.crypto import HAS_CRYPTO, Keybag, parse_keybag
 
 # Skip all crypto-dependent tests if cryptography not installed
-crypto_required = pytest.mark.skipif(
-    not HAS_CRYPTO, reason="cryptography package not installed"
-)
+crypto_required = pytest.mark.skipif(not HAS_CRYPTO, reason="cryptography package not installed")
 
 
 def _build_keybag_tlv(tag: bytes, value: bytes) -> bytes:
@@ -281,7 +279,9 @@ class TestEncryptNewFile:
         source.write_bytes(original)
 
         enc_key_blob = backup.generate_file_key(3)
-        plaintext_size, digest = backup.encrypt_db_file_from_path(source, enc_key_blob, 3, encrypted)
+        plaintext_size, digest = backup.encrypt_db_file_from_path(
+            source, enc_key_blob, 3, encrypted
+        )
         restored_size = backup.decrypt_db_file_to_path(encrypted, enc_key_blob, 3, restored)
 
         assert plaintext_size == len(original)
@@ -335,12 +335,16 @@ class TestEncryptedBackupUnlock:
         # Write Manifest.plist
         backup_dir = tmp_path / "encrypted_backup"
         backup_dir.mkdir()
-        (backup_dir / "Manifest.plist").write_bytes(plistlib.dumps({
-            "IsEncrypted": True,
-            "BackupKeyBag": keybag_data,
-            "ManifestKey": manifest_key_data,
-            "Version": "3.3",
-        }))
+        (backup_dir / "Manifest.plist").write_bytes(
+            plistlib.dumps(
+                {
+                    "IsEncrypted": True,
+                    "BackupKeyBag": keybag_data,
+                    "ManifestKey": manifest_key_data,
+                    "Version": "3.3",
+                }
+            )
+        )
 
         return backup_dir, class_key, manifest_key_data
 
@@ -371,9 +375,7 @@ class TestEncryptedBackupUnlock:
 
         from green2blue.ios.crypto import EncryptedBackup, encrypt_file
 
-        backup_dir, class_key, manifest_key_data = (
-            self._create_synthetic_encrypted_backup(tmp_dir)
-        )
+        backup_dir, class_key, manifest_key_data = self._create_synthetic_encrypted_backup(tmp_dir)
 
         # Create a real Manifest.db, encrypt it, and write to backup
         manifest_db_path = tmp_dir / "manifest_plain.db"
@@ -482,7 +484,5 @@ class TestCryptoDependencyCheck:
         from green2blue.exceptions import CryptoDependencyError
         from green2blue.ios.crypto import check_crypto_available
 
-        with patch("green2blue.ios.crypto.HAS_CRYPTO", False), pytest.raises(
-            CryptoDependencyError
-        ):
+        with patch("green2blue.ios.crypto.HAS_CRYPTO", False), pytest.raises(CryptoDependencyError):
             check_crypto_available()

@@ -337,7 +337,9 @@ class TestMessageInsertion:
             db.inject(result, skip_duplicates=False)
             assert db.get_message_count() == 5
 
-    def test_url_message_sets_has_dd_results_when_rich_body_available(self, empty_sms_db, monkeypatch):
+    def test_url_message_sets_has_dd_results_when_rich_body_available(
+        self, empty_sms_db, monkeypatch
+    ):
         text = "See https://example.com/link"
         monkeypatch.setattr(
             "green2blue.ios.sms_db.build_attributed_body_with_metadata",
@@ -350,9 +352,7 @@ class TestMessageInsertion:
         )
         with SMSDatabase(empty_sms_db) as db:
             db.inject(result)
-            row = db.conn.execute(
-                "SELECT has_dd_results, attributedBody FROM message"
-            ).fetchone()
+            row = db.conn.execute("SELECT has_dd_results, attributedBody FROM message").fetchone()
             assert row["has_dd_results"] == 1
             assert row["attributedBody"] == b"rich-url-blob"
 
@@ -602,7 +602,9 @@ class TestAttachmentInsertion:
                 )
                 assert cursor.fetchone()["ck_server_change_token_blob"] is None
 
-    def test_attachment_without_template_defaults_preview_generation_state_zero_for_media(self, empty_sms_db):
+    def test_attachment_without_template_defaults_preview_generation_state_zero_for_media(
+        self, empty_sms_db
+    ):
         att = iOSAttachment(
             guid="green2blue-att:no-template",
             filename="~/Library/SMS/Attachments/cc/test-uuid/photo.jpg",
@@ -643,7 +645,9 @@ class TestAttachmentInsertion:
             assert row["user_info"] is None
             assert plistlib.loads(row["attribution_info"]) == {"pgenp": True}
 
-    def test_attachment_template_ignores_green2blue_rows_and_prefers_same_service(self, empty_sms_db):
+    def test_attachment_template_ignores_green2blue_rows_and_prefers_same_service(
+        self, empty_sms_db
+    ):
         conn = sqlite3.connect(empty_sms_db)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(attachment)").fetchall()}
 
@@ -683,7 +687,7 @@ class TestAttachmentInsertion:
                  cache_has_attachments, was_data_detected, part_count, ck_sync_state,
                  ck_record_id, ck_record_change_tag)
             VALUES
-                (1, 'REAL-SMS-1', '\uFFFC', 1, 'SMS', 721692700000000000, 0, 0,
+                (1, 'REAL-SMS-1', '\ufffc', 1, 'SMS', 721692700000000000, 0, 0,
                  1, 1, 0, 0, 1, 0, 1, 1, 1, 1, '', '')
             """
         )
@@ -706,7 +710,7 @@ class TestAttachmentInsertion:
                  cache_has_attachments, was_data_detected, part_count, ck_sync_state,
                  ck_record_id, ck_record_change_tag)
             VALUES
-                (2, 'REAL-IMESSAGE-1', '\uFFFC', 1, 'iMessage', 721692701000000000, 0, 0,
+                (2, 'REAL-IMESSAGE-1', '\ufffc', 1, 'iMessage', 721692701000000000, 0, 0,
                  1, 1, 0, 0, 1, 0, 1, 1, 1, 1, '', '')
             """
         )
@@ -724,7 +728,7 @@ class TestAttachmentInsertion:
                  cache_has_attachments, was_data_detected, part_count, ck_sync_state,
                  ck_record_id, ck_record_change_tag)
             VALUES
-                (3, 'green2blue:old-template', '\uFFFC', 1, 'SMS', 721692702000000000, 0, 0,
+                (3, 'green2blue:old-template', '\ufffc', 1, 'SMS', 721692702000000000, 0, 0,
                  1, 1, 0, 0, 1, 0, 1, 1, 1, 0, '', '')
             """
         )
@@ -1065,9 +1069,7 @@ class TestAccountDetection:
         with SMSDatabase(empty_sms_db) as db:
             db.inject(result)
             cursor = db.conn.cursor()
-            cursor.execute(
-                "SELECT account FROM message WHERE guid LIKE 'green2blue:%'"
-            )
+            cursor.execute("SELECT account FROM message WHERE guid LIKE 'green2blue:%'")
             row = cursor.fetchone()
             assert row["account"] == "P:+15052289549"
 
@@ -1091,9 +1093,7 @@ class TestAccountDetection:
         with SMSDatabase(empty_sms_db) as db:
             db.inject(result)
             cursor = db.conn.cursor()
-            cursor.execute(
-                "SELECT account_guid FROM message WHERE guid LIKE 'green2blue:%'"
-            )
+            cursor.execute("SELECT account_guid FROM message WHERE guid LIKE 'green2blue:%'")
             row = cursor.fetchone()
             assert row["account_guid"] == test_guid
 
@@ -1102,8 +1102,10 @@ class TestAccountDetection:
         conn = sqlite3.connect(empty_sms_db)
         for i in range(3):
             conn.execute(
-                "INSERT INTO chat (guid, style, state, chat_identifier, service_name, account_login) "
-                f"VALUES ('existing-{i}', 45, 3, '+1555000{i}', 'SMS', 'P:+15052289549')"
+                "INSERT INTO chat (guid, style, state,"
+                " chat_identifier, service_name, account_login)"
+                f" VALUES ('existing-{i}', 45, 3,"
+                f" '+1555000{i}', 'SMS', 'P:+15052289549')"
             )
         conn.execute(
             "INSERT INTO chat (guid, style, state, chat_identifier, service_name, account_login) "
@@ -1120,9 +1122,7 @@ class TestAccountDetection:
         with SMSDatabase(empty_sms_db) as db:
             db.inject(result)
             cursor = db.conn.cursor()
-            cursor.execute(
-                "SELECT account_login FROM chat WHERE guid = 'any;-;+12025551234'"
-            )
+            cursor.execute("SELECT account_login FROM chat WHERE guid = 'any;-;+12025551234'")
             row = cursor.fetchone()
             assert row["account_login"] == "P:+15052289549"
 
@@ -1338,9 +1338,14 @@ class TestCompositeHandleKey:
         im_result = _make_result(
             handles=[_make_handle(service="iMessage", phone="+12025551234")],
             chats=[_make_chat(service="iMessage", phone="+12025551234")],
-            messages=[_make_message(
-                service="iMessage", phone="+12025551234", text="imsg", date=200000000,
-            )],
+            messages=[
+                _make_message(
+                    service="iMessage",
+                    phone="+12025551234",
+                    text="imsg",
+                    date=200000000,
+                )
+            ],
         )
         with SMSDatabase(empty_sms_db) as db:
             stats1 = db.inject(sms_result)

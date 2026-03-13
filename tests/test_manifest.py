@@ -89,30 +89,37 @@ class TestManifestDB:
         class_uid = 3
         if include_encryption_key:
             objects[1]["EncryptionKey"] = plistlib.UID(3)
-            objects.extend([
-                {
-                    "NS.data": b"\x03\x00\x00\x00" + b"\xaa" * 40,
-                    "$class": plistlib.UID(4),
-                },
-                {
-                    "$classname": "NSMutableData",
-                    "$classes": ["NSMutableData", "NSData", "NSObject"],
-                },
-            ])
+            objects.extend(
+                [
+                    {
+                        "NS.data": b"\x03\x00\x00\x00" + b"\xaa" * 40,
+                        "$class": plistlib.UID(4),
+                    },
+                    {
+                        "$classname": "NSMutableData",
+                        "$classes": ["NSMutableData", "NSData", "NSObject"],
+                    },
+                ]
+            )
             class_uid = 5
 
-        objects.append({
-            "$classname": "MBFile",
-            "$classes": ["MBFile", "NSObject"],
-        })
+        objects.append(
+            {
+                "$classname": "MBFile",
+                "$classes": ["MBFile", "NSObject"],
+            }
+        )
         objects[1]["$class"] = plistlib.UID(class_uid)
 
-        return plistlib.dumps({
-            "$archiver": "NSKeyedArchiver",
-            "$version": 100000,
-            "$top": {"root": plistlib.UID(1)},
-            "$objects": objects,
-        }, fmt=plistlib.FMT_BINARY)
+        return plistlib.dumps(
+            {
+                "$archiver": "NSKeyedArchiver",
+                "$version": 100000,
+                "$top": {"root": plistlib.UID(1)},
+                "$objects": objects,
+            },
+            fmt=plistlib.FMT_BINARY,
+        )
 
     def test_open_close(self, manifest_db):
         m = ManifestDB(manifest_db)
@@ -185,27 +192,30 @@ class TestManifestDB:
 
         # Build an NSKeyedArchiver-style blob with NSData wrapper for EncryptionKey
         enc_key_bytes = b"\x03\x00\x00\x00" + b"\xaa" * 40  # 4-byte prefix + 40-byte wrapped key
-        blob = plistlib.dumps({
-            "$archiver": "NSKeyedArchiver",
-            "$version": 100000,
-            "$top": {"root": plistlib.UID(1)},
-            "$objects": [
-                "$null",
-                {
-                    "RelativePath": plistlib.UID(2),
-                    "EncryptionKey": plistlib.UID(3),
-                    "ProtectionClass": 3,
-                    "$class": plistlib.UID(5),
-                },
-                "Library/SMS/sms.db",
-                {"NS.data": enc_key_bytes, "$class": plistlib.UID(4)},
-                {
-                    "$classname": "NSMutableData",
-                    "$classes": ["NSMutableData", "NSData", "NSObject"],
-                },
-                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
-            ],
-        }, fmt=plistlib.FMT_BINARY)
+        blob = plistlib.dumps(
+            {
+                "$archiver": "NSKeyedArchiver",
+                "$version": 100000,
+                "$top": {"root": plistlib.UID(1)},
+                "$objects": [
+                    "$null",
+                    {
+                        "RelativePath": plistlib.UID(2),
+                        "EncryptionKey": plistlib.UID(3),
+                        "ProtectionClass": 3,
+                        "$class": plistlib.UID(5),
+                    },
+                    "Library/SMS/sms.db",
+                    {"NS.data": enc_key_bytes, "$class": plistlib.UID(4)},
+                    {
+                        "$classname": "NSMutableData",
+                        "$classes": ["NSMutableData", "NSData", "NSObject"],
+                    },
+                    {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+                ],
+            },
+            fmt=plistlib.FMT_BINARY,
+        )
 
         file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
         conn.execute(
@@ -234,21 +244,24 @@ class TestManifestDB:
         """)
 
         enc_key_bytes = b"\x03\x00\x00\x00" + b"\xbb" * 40
-        blob = plistlib.dumps({
-            "$archiver": "NSKeyedArchiver",
-            "$version": 100000,
-            "$top": {"root": plistlib.UID(1)},
-            "$objects": [
-                "$null",
-                {
-                    "EncryptionKey": plistlib.UID(2),
-                    "ProtectionClass": 3,
-                    "$class": plistlib.UID(3),
-                },
-                enc_key_bytes,  # raw bytes, not wrapped in NSData
-                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
-            ],
-        }, fmt=plistlib.FMT_BINARY)
+        blob = plistlib.dumps(
+            {
+                "$archiver": "NSKeyedArchiver",
+                "$version": 100000,
+                "$top": {"root": plistlib.UID(1)},
+                "$objects": [
+                    "$null",
+                    {
+                        "EncryptionKey": plistlib.UID(2),
+                        "ProtectionClass": 3,
+                        "$class": plistlib.UID(3),
+                    },
+                    enc_key_bytes,  # raw bytes, not wrapped in NSData
+                    {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+                ],
+            },
+            fmt=plistlib.FMT_BINARY,
+        )
 
         file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
         conn.execute(
@@ -282,7 +295,8 @@ class TestManifestDB:
             for dir_path in expected_dirs:
                 dir_id = compute_file_id("HomeDomain", dir_path)
                 cursor.execute(
-                    "SELECT flags FROM Files WHERE fileID = ?", (dir_id,),
+                    "SELECT flags FROM Files WHERE fileID = ?",
+                    (dir_id,),
                 )
                 row = cursor.fetchone()
                 assert row is not None, f"Missing directory entry: {dir_path}"
@@ -300,7 +314,8 @@ class TestManifestDB:
             dir_id = compute_file_id("HomeDomain", "Library/SMS/Attachments/ab")
             cursor = m.conn.cursor()
             cursor.execute(
-                "SELECT COUNT(*) FROM Files WHERE fileID = ?", (dir_id,),
+                "SELECT COUNT(*) FROM Files WHERE fileID = ?",
+                (dir_id,),
             )
             assert cursor.fetchone()[0] == 1
 
@@ -313,7 +328,8 @@ class TestManifestDB:
             dir_id = compute_file_id("MediaDomain", "Library/SMS/Attachments/cd")
             cursor = m.conn.cursor()
             cursor.execute(
-                "SELECT domain FROM Files WHERE fileID = ?", (dir_id,),
+                "SELECT domain FROM Files WHERE fileID = ?",
+                (dir_id,),
             )
             row = cursor.fetchone()
             assert row is not None
@@ -392,27 +408,30 @@ class TestPatchMBFileDigest:
 
     def _make_blob_with_digest(self, size: int, digest: bytes) -> bytes:
         """Build an MBFile blob that has a Digest field (simulating real iOS)."""
-        return plistlib.dumps({
-            "$archiver": "NSKeyedArchiver",
-            "$version": 100000,
-            "$top": {"root": plistlib.UID(1)},
-            "$objects": [
-                "$null",
-                {
-                    "Size": size,
-                    "Mode": 0o100644,
-                    "LastModified": 1700000000,
-                    "Birth": 1700000000,
-                    "UserID": 501,
-                    "GroupID": 501,
-                    "Digest": plistlib.UID(2),
-                    "ProtectionClass": 3,
-                    "$class": plistlib.UID(3),
-                },
-                digest,
-                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
-            ],
-        }, fmt=plistlib.FMT_BINARY)
+        return plistlib.dumps(
+            {
+                "$archiver": "NSKeyedArchiver",
+                "$version": 100000,
+                "$top": {"root": plistlib.UID(1)},
+                "$objects": [
+                    "$null",
+                    {
+                        "Size": size,
+                        "Mode": 0o100644,
+                        "LastModified": 1700000000,
+                        "Birth": 1700000000,
+                        "UserID": 501,
+                        "GroupID": 501,
+                        "Digest": plistlib.UID(2),
+                        "ProtectionClass": 3,
+                        "$class": plistlib.UID(3),
+                    },
+                    digest,
+                    {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+                ],
+            },
+            fmt=plistlib.FMT_BINARY,
+        )
 
     def _extract_size(self, blob: bytes) -> int | None:
         """Extract Size from an MBFile blob."""
@@ -495,7 +514,8 @@ class TestPatchMBFileDigest:
 
         with ManifestDB(manifest_db) as m:
             file_id = m.update_sms_db_entry(
-                new_size=2048000, new_digest=new_digest,
+                new_size=2048000,
+                new_digest=new_digest,
             )
             entry = m.get_entry(file_id)
             assert entry is not None
@@ -511,7 +531,8 @@ class TestPatchMBFileDigest:
 
         with ManifestDB(manifest_db) as m:
             m.update_sms_db_entry(
-                new_size=len(file_content), new_digest=expected_digest,
+                new_size=len(file_content),
+                new_digest=expected_digest,
             )
             file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
             entry = m.get_entry(file_id)
@@ -523,30 +544,33 @@ class TestPatchMBFileDigest:
 
 class TestCloneMBFileBlob:
     def test_clone_preserves_relative_path_and_wrapped_encryption_key(self):
-        existing = plistlib.dumps({
-            "$archiver": "NSKeyedArchiver",
-            "$version": 100000,
-            "$top": {"root": plistlib.UID(1)},
-            "$objects": [
-                "$null",
-                {
-                    "RelativePath": plistlib.UID(2),
-                    "EncryptionKey": plistlib.UID(3),
-                    "LastStatusChange": 1700000000,
-                    "ProtectionClass": 3,
-                    "Mode": 33152,
-                    "Size": 100,
-                    "$class": plistlib.UID(5),
-                },
-                "Library/SMS/Attachments/original.jpg",
-                {"NS.data": b"\x03\x00\x00\x00" + b"\xaa" * 40, "$class": plistlib.UID(4)},
-                {
-                    "$classname": "NSMutableData",
-                    "$classes": ["NSMutableData", "NSData", "NSObject"],
-                },
-                {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
-            ],
-        }, fmt=plistlib.FMT_BINARY)
+        existing = plistlib.dumps(
+            {
+                "$archiver": "NSKeyedArchiver",
+                "$version": 100000,
+                "$top": {"root": plistlib.UID(1)},
+                "$objects": [
+                    "$null",
+                    {
+                        "RelativePath": plistlib.UID(2),
+                        "EncryptionKey": plistlib.UID(3),
+                        "LastStatusChange": 1700000000,
+                        "ProtectionClass": 3,
+                        "Mode": 33152,
+                        "Size": 100,
+                        "$class": plistlib.UID(5),
+                    },
+                    "Library/SMS/Attachments/original.jpg",
+                    {"NS.data": b"\x03\x00\x00\x00" + b"\xaa" * 40, "$class": plistlib.UID(4)},
+                    {
+                        "$classname": "NSMutableData",
+                        "$classes": ["NSMutableData", "NSData", "NSObject"],
+                    },
+                    {"$classname": "MBFile", "$classes": ["MBFile", "NSObject"]},
+                ],
+            },
+            fmt=plistlib.FMT_BINARY,
+        )
 
         updated = clone_mbfile_blob(
             existing,

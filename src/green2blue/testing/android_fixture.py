@@ -17,7 +17,7 @@ import json
 import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache
 from importlib.resources import files
 from pathlib import Path
 
@@ -38,7 +38,7 @@ _MP4_ASSETS = {
 }
 
 
-@lru_cache(maxsize=None)
+@cache
 def _asset_bytes(name: str) -> bytes:
     return files("green2blue.testing").joinpath("assets").joinpath(name).read_bytes()
 
@@ -137,8 +137,7 @@ def _mms(
             "charset": "106",
         },
         "__recipient_addresses": [
-            {"address": recipient, "type": "151", "charset": "106"}
-            for recipient in recipients
+            {"address": recipient, "type": "151", "charset": "106"} for recipient in recipients
         ],
     }
     if date_sent_s is not None:
@@ -329,9 +328,7 @@ SCENARIOS: dict[str, FixtureScenario] = {
                 ),
             ),
         ),
-        missing_attachment_refs=(
-            _android_attachment_path("PART_1701000006_missing.jpg"),
-        ),
+        missing_attachment_refs=(_android_attachment_path("PART_1701000006_missing.jpg"),),
         is_negative_control=True,
     ),
 }
@@ -339,7 +336,8 @@ SCENARIOS: dict[str, FixtureScenario] = {
 
 def _all_scenarios(*, include_negative_controls: bool = False) -> tuple[str, ...]:
     return tuple(
-        name for name, scenario in SCENARIOS.items()
+        name
+        for name, scenario in SCENARIOS.items()
         if include_negative_controls or not scenario.is_negative_control
     )
 
@@ -348,10 +346,7 @@ def build_fixture(
     scenario_names: Sequence[str] | None = None,
 ) -> tuple[list[dict], dict[str, bytes], tuple[str, ...], tuple[str, ...]]:
     """Build records and attachments for a set of named scenarios."""
-    if scenario_names:
-        names = tuple(dict.fromkeys(scenario_names))
-    else:
-        names = DEFAULT_SCENARIOS
+    names = tuple(dict.fromkeys(scenario_names)) if scenario_names else DEFAULT_SCENARIOS
 
     unknown = [name for name in names if name not in SCENARIOS]
     if unknown:

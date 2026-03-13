@@ -151,13 +151,15 @@ def _parse_mms(record: dict, line_num: int) -> AndroidMMS:
         # Filename can be in cl (content location), fn (filename), or name
         filename = raw_part.get("cl") or raw_part.get("fn") or raw_part.get("name")
         charset = raw_part.get("chset")
-        parts.append(MMSPart(
-            content_type=content_type,
-            text=text,
-            data_path=data_path,
-            filename=filename,
-            charset=charset,
-        ))
+        parts.append(
+            MMSPart(
+                content_type=content_type,
+                text=text,
+                data_path=data_path,
+                filename=filename,
+                charset=charset,
+            )
+        )
 
     # Parse addresses — support both real SMS IE format and legacy format
     addresses = _parse_mms_addresses(record)
@@ -195,11 +197,13 @@ def _parse_mms_addresses(record: dict) -> list[MMSAddress]:
         if sender and isinstance(sender, dict):
             addr = str(sender.get("address", ""))
             if addr:
-                addresses.append(MMSAddress(
-                    address=addr,
-                    type=int(sender.get("type", 137)),
-                    charset=int(sender.get("charset", 106)),
-                ))
+                addresses.append(
+                    MMSAddress(
+                        address=addr,
+                        type=int(sender.get("type", 137)),
+                        charset=int(sender.get("charset", 106)),
+                    )
+                )
 
         if recipients and isinstance(recipients, list):
             for raw_addr in recipients:
@@ -207,11 +211,13 @@ def _parse_mms_addresses(record: dict) -> list[MMSAddress]:
                     continue
                 addr = str(raw_addr.get("address", ""))
                 if addr:
-                    addresses.append(MMSAddress(
-                        address=addr,
-                        type=int(raw_addr.get("type", 151)),
-                        charset=int(raw_addr.get("charset", 106)),
-                    ))
+                    addresses.append(
+                        MMSAddress(
+                            address=addr,
+                            type=int(raw_addr.get("type", 151)),
+                            charset=int(raw_addr.get("charset", 106)),
+                        )
+                    )
         return addresses
 
     # Legacy format: __addresses (array of objects)
@@ -220,11 +226,13 @@ def _parse_mms_addresses(record: dict) -> list[MMSAddress]:
         addr_type = int(raw_addr.get("type", 151))
         charset = int(raw_addr.get("charset", 106))
         if addr:
-            addresses.append(MMSAddress(
-                address=addr,
-                type=addr_type,
-                charset=charset,
-            ))
+            addresses.append(
+                MMSAddress(
+                    address=addr,
+                    type=addr_type,
+                    charset=charset,
+                )
+            )
 
     return addresses
 

@@ -57,8 +57,7 @@ def _capture_mobiledevice_logs(output_path: Path, started_at: datetime) -> None:
     """Persist host-side MobileDevice/usbmux logs for the live run."""
     start_text = started_at.strftime("%Y-%m-%d %H:%M:%S")
     predicate = (
-        'process == "usbmuxd" || process CONTAINS "AMPDevice" || '
-        'subsystem CONTAINS "MobileDevice"'
+        'process == "usbmuxd" || process CONTAINS "AMPDevice" || subsystem CONTAINS "MobileDevice"'
     )
 
     try:
@@ -109,9 +108,7 @@ def _device_run_session(command: str, metadata: dict[str, object]):
 
     file_handler = logging.FileHandler(artifacts.log_path, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    )
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     root_logger = logging.getLogger()
     root_logger.addHandler(file_handler)
 
@@ -141,23 +138,27 @@ def _device_run_session(command: str, metadata: dict[str, object]):
         file_handler.close()
 
         final_metadata = dict(metadata)
-        final_metadata.update({
-            "command": command,
-            "cwd": str(Path.cwd()),
-            "started_at": started_at.isoformat(),
-            "finished_at": datetime.now().astimezone().isoformat(),
-            "status": status,
-        })
+        final_metadata.update(
+            {
+                "command": command,
+                "cwd": str(Path.cwd()),
+                "started_at": started_at.isoformat(),
+                "finished_at": datetime.now().astimezone().isoformat(),
+                "status": status,
+            }
+        )
         if error_text:
             final_metadata["error"] = error_text
 
         _write_json(artifacts.metadata_path, final_metadata)
         progress_payload = _read_json(artifacts.progress_path)
-        progress_payload.update({
-            "command": command,
-            "status": status,
-            "finished_at": datetime.now().astimezone().isoformat(),
-        })
+        progress_payload.update(
+            {
+                "command": command,
+                "status": status,
+                "finished_at": datetime.now().astimezone().isoformat(),
+            }
+        )
         if error_text:
             progress_payload["error"] = error_text
         _write_json(artifacts.progress_path, progress_payload)
@@ -299,14 +300,16 @@ def _build_device_recovery_payload(
         last_progress=float(last_progress) if progress_seen else None,
     )
     payload = device_recovery_plan_to_dict(plan)
-    payload.update({
-        "command": command,
-        "device_phase": operation,
-        "generated_at": datetime.now().astimezone().isoformat(),
-        "progress_seen": progress_seen,
-        "last_progress": float(last_progress) if progress_seen else None,
-        "error": error_text,
-    })
+    payload.update(
+        {
+            "command": command,
+            "device_phase": operation,
+            "generated_at": datetime.now().astimezone().isoformat(),
+            "progress_seen": progress_seen,
+            "last_progress": float(last_progress) if progress_seen else None,
+            "error": error_text,
+        }
+    )
     return payload
 
 
@@ -316,7 +319,11 @@ def _print_device_recovery_plan(recovery_payload: dict[str, object]) -> None:
 
     print("Recovery assessment:")
     print(f"  Classification:     {recovery_payload.get('classification', 'unknown')}")
-    print(f"  Operation:          {recovery_payload.get('device_phase') or recovery_payload.get('operation')}")
+    operation = (
+        recovery_payload.get('device_phase')
+        or recovery_payload.get('operation')
+    )
+    print(f"  Operation:          {operation}")
     print(f"  Safe to retry now:  {'yes' if recovery_payload.get('safe_to_retry') else 'no'}")
     summary = recovery_payload.get("summary")
     if summary:
@@ -356,11 +363,15 @@ def _print_device_run_status(run_dir: Path) -> int:
         print(f"  Started:   {metadata.get('started_at', '(unknown)')}")
         print(f"  Finished:  {metadata.get('finished_at', '(unknown)')}")
         if metadata.get("device_udid"):
-            print(f"  Device:    {metadata.get('device_name', '(unknown)')} ({metadata.get('device_udid')})")
+            dev_name = metadata.get('device_name', '(unknown)')
+            dev_udid = metadata.get('device_udid')
+            print(f"  Device:    {dev_name} ({dev_udid})")
         if metadata.get("device_phase"):
             print(f"  Phase:     {metadata.get('device_phase')}")
     if progress:
-        print(f"  Progress:  {progress.get('last_progress') if progress.get('last_progress') is not None else '(none)'}")
+        last_prog = progress.get('last_progress')
+        prog_text = last_prog if last_prog is not None else '(none)'
+        print(f"  Progress:  {prog_text}")
         print(f"  Event:     {progress.get('event', '(unknown)')}")
     if recovery:
         _print_device_recovery_plan(recovery)
@@ -473,7 +484,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Parse and convert without modifying the backup",
     )
     common.add_argument(
-        "-y", "--yes",
+        "-y",
+        "--yes",
         action="store_true",
         default=False,
         help="Skip confirmation prompt",
@@ -502,7 +514,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["insert", "overwrite", "clone"],
         default="insert",
         help="Injection mode: insert new rows, overwrite sacrifice messages, "
-             "or clone existing (Hack Patrol) (default: insert)",
+        "or clone existing (Hack Patrol) (default: insert)",
     )
     advanced.add_argument(
         "--sacrifice-chat",
@@ -583,7 +595,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     review_parser = subparsers.add_parser(
         "review",
-        help="Launch a local browser UI to review, filter, and export a subset of an Android export ZIP",
+        help=(
+            "Launch a local browser UI to review, filter, and export"
+            " a subset of an Android export ZIP"
+        ),
     )
     review_parser.add_argument(
         "export_zip",
@@ -623,7 +638,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "import-android",
         help="Import an Android export ZIP into a canonical green2blue archive",
     )
-    archive_import_android.add_argument("export_zip", type=Path, help="Path to the Android export ZIP")
+    archive_import_android.add_argument(
+        "export_zip", type=Path, help="Path to the Android export ZIP"
+    )
     archive_import_android.add_argument("output", type=Path, help="Output archive SQLite path")
     archive_import_android.add_argument(
         "--no-resume",
@@ -715,8 +732,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "export-android",
         help="Export the merged archive view as an Android-style ZIP for reuse by the iOS injector",
     )
-    archive_export_android.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
-    archive_export_android.add_argument("output_zip", type=Path, help="Output Android-style ZIP path")
+    archive_export_android.add_argument(
+        "archive_path", type=Path, help="Path to the archive SQLite file"
+    )
+    archive_export_android.add_argument(
+        "output_zip", type=Path, help="Output Android-style ZIP path"
+    )
     archive_export_android.add_argument(
         "--merge-run",
         type=int,
@@ -737,8 +758,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "stage-ios",
         help="Build and persist an iOS-injection-ready merged export in a reusable stage directory",
     )
-    archive_stage_ios.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
-    archive_stage_ios.add_argument("output_dir", type=Path, help="Directory for the staged export bundle")
+    archive_stage_ios.add_argument(
+        "archive_path", type=Path, help="Path to the archive SQLite file"
+    )
+    archive_stage_ios.add_argument(
+        "output_dir", type=Path, help="Directory for the staged export bundle"
+    )
     archive_stage_ios.add_argument(
         "--merge-run",
         type=int,
@@ -764,11 +789,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     archive_prepare_ios = archive_subs.add_parser(
         "prepare-ios",
-        help="Build a durable merged archive + stage workflow directory for large-history iPhone injection",
+        help=(
+            "Build a durable merged archive + stage workflow directory"
+            " for large-history iPhone injection"
+        ),
     )
     archive_prepare_ios.add_argument("export_zip", type=Path, help="Android export ZIP")
     archive_prepare_ios.add_argument("backup", type=str, help="iPhone backup path or UDID")
-    archive_prepare_ios.add_argument("workflow_dir", type=Path, help="Directory for durable workflow state")
+    archive_prepare_ios.add_argument(
+        "workflow_dir", type=Path, help="Directory for durable workflow state"
+    )
     archive_prepare_ios.add_argument(
         "--backup-root",
         type=Path,
@@ -792,7 +822,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
         dest="resume",
         default=True,
-        help="Force fresh archive imports and stage rebuild instead of reusing existing workflow artifacts",
+        help=(
+            "Force fresh archive imports and stage rebuild instead of"
+            " reusing existing workflow artifacts"
+        ),
     )
     archive_prepare_ios.add_argument("-v", "--verbose", action="store_true")
     archive_prepare_ios.add_argument("-q", "--quiet", action="store_true")
@@ -809,9 +842,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     archive_run_ios = archive_subs.add_parser(
         "run-ios",
-        help="Run a prepared durable iOS workflow directory through the actual iPhone backup injection path",
+        help=(
+            "Run a prepared durable iOS workflow directory through"
+            " the actual iPhone backup injection path"
+        ),
     )
-    archive_run_ios.add_argument("workflow_dir", type=Path, help="Workflow directory created by archive prepare-ios")
+    archive_run_ios.add_argument(
+        "workflow_dir", type=Path, help="Workflow directory created by archive prepare-ios"
+    )
     archive_run_ios.add_argument(
         "--password",
         type=str,
@@ -870,9 +908,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     archive_inject_ios = archive_subs.add_parser(
         "inject-ios",
-        help="Export the merged archive view and inject it into an iPhone backup using the proven pipeline",
+        help=(
+            "Export the merged archive view and inject it into an"
+            " iPhone backup using the proven pipeline"
+        ),
     )
-    archive_inject_ios.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_inject_ios.add_argument(
+        "archive_path", type=Path, help="Path to the archive SQLite file"
+    )
     archive_inject_ios.add_argument(
         "--merge-run",
         type=int,
@@ -901,7 +944,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--stage-dir",
         type=Path,
         default=None,
-        help="Persist and optionally reuse the merged export in this directory instead of a temp dir",
+        help=(
+            "Persist and optionally reuse the merged export in this"
+            " directory instead of a temp dir"
+        ),
     )
     archive_inject_ios.add_argument(
         "--no-stage-resume",
@@ -917,7 +963,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Export and parse without modifying the backup",
     )
     archive_inject_ios.add_argument(
-        "-y", "--yes",
+        "-y",
+        "--yes",
         action="store_true",
         default=False,
         help="Skip confirmation prompt",
@@ -1140,7 +1187,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Create a backup from a connected device",
     )
     dev_backup_parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         type=Path,
         default=None,
         help="Output directory for backup (default: temp directory)",
@@ -1210,7 +1258,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Keep the temporary backup after restore (default: delete)",
     )
     dev_inject_parser.add_argument(
-        "-y", "--yes",
+        "-y",
+        "--yes",
         action="store_true",
         default=False,
         help="Skip confirmation prompt",
@@ -1242,7 +1291,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Backup encryption password",
     )
     dev_restore_parser.add_argument(
-        "-y", "--yes",
+        "-y",
+        "--yes",
         action="store_true",
         default=False,
         help="Skip confirmation prompt",
@@ -1432,8 +1482,10 @@ def _confirm_backup(
 
     encrypted = ", encrypted" if backup_info.is_encrypted else ""
     injected = " [already injected]" if has_restore_checkpoint(backup_info.path) else ""
-    print(f"\nSelected backup: {backup_info.device_name} "
-          f"(iOS {backup_info.product_version}{encrypted}){injected}")
+    print(
+        f"\nSelected backup: {backup_info.device_name} "
+        f"(iOS {backup_info.product_version}{encrypted}){injected}"
+    )
     print(f"  UDID: {backup_info.udid}")
     if backup_info.date:
         print(f"  Date: {backup_info.date}")
@@ -1894,7 +1946,11 @@ def _cmd_archive_run_ios(args: argparse.Namespace) -> int:
     _print_pipeline_summary(result.pipeline_result, result.render_verification)
     if result.render_verification is not None and not result.render_verification.passed:
         return 3
-    return 0 if not result.pipeline_result.verification or result.pipeline_result.verification.passed else 2
+    return (
+        0
+        if not result.pipeline_result.verification or result.pipeline_result.verification.passed
+        else 2
+    )
 
 
 def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
@@ -2080,7 +2136,10 @@ def _cmd_corpus_capture(args: argparse.Namespace) -> int:
     )
     print(f"Corpus ZIP: {result.output_zip}")
     print(f"  Messages selected: {result.selected_messages}")
-    print(f"  Buckets covered:   {', '.join(result.buckets_covered) if result.buckets_covered else '(none)'}")
+    print(
+        "  Buckets covered:   "
+        f"{', '.join(result.buckets_covered) if result.buckets_covered else '(none)'}"
+    )
     print(f"  Attachments saved: {result.attachments_written}")
     return 0
 
@@ -2171,9 +2230,11 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
                 else:
                     text_preview = text or "[attachment]"
                 print(f"  {row['handle']}: {text_preview}")
-                print(f"    ck_sync_state={row['ck_sync_state']}, "
-                      f"ck_record_id={row['ck_record_id'] or '(none)'}, "
-                      f"tag={row['ck_record_change_tag'] or '(none)'}")
+                print(
+                    f"    ck_sync_state={row['ck_sync_state']}, "
+                    f"ck_record_id={row['ck_record_id'] or '(none)'}, "
+                    f"tag={row['ck_record_change_tag'] or '(none)'}"
+                )
 
         # Highlight at-risk messages
         at_risk = conn.execute(
@@ -2336,7 +2397,8 @@ def _resolve_restore_target(backup_path: Path, target_udid: str) -> tuple[Path, 
         backup_dir = candidate if candidate.is_dir() else None
         if backup_dir is None:
             candidates = [
-                entry for entry in backup_root.iterdir()
+                entry
+                for entry in backup_root.iterdir()
                 if entry.is_dir()
                 and ((entry / "Manifest.db").exists() or (entry / "Manifest.mbdb").exists())
             ]
@@ -2399,13 +2461,16 @@ def _cmd_device_backup(args: argparse.Namespace) -> int:
 
     run_artifacts = None
     try:
-        with _device_run_session("device_backup", {
-            "requested_udid": args.udid or "auto",
-            "device_udid": report.udid,
-            "device_name": report.name,
-            "output_dir": str(output_dir),
-            "device_phase": "backup",
-        }) as artifacts:
+        with _device_run_session(
+            "device_backup",
+            {
+                "requested_udid": args.udid or "auto",
+                "device_udid": report.udid,
+                "device_name": report.name,
+                "output_dir": str(output_dir),
+                "device_phase": "backup",
+            },
+        ) as artifacts:
             run_artifacts = artifacts
             progress = _ProgressReporter("Backup", progress_path=artifacts.progress_path)
             progress.start()
@@ -2653,14 +2718,17 @@ def _cmd_device_restore(args: argparse.Namespace) -> int:
 
     run_artifacts = None
     try:
-        with _device_run_session("device_restore", {
-            "device_udid": target.udid,
-            "device_name": target.name,
-            "backup_path": str(backup_path),
-            "backup_root": str(backup_root),
-            "restore_mode": restore_mode,
-            "device_phase": "restore",
-        }) as artifacts:
+        with _device_run_session(
+            "device_restore",
+            {
+                "device_udid": target.udid,
+                "device_name": target.name,
+                "backup_path": str(backup_path),
+                "backup_root": str(backup_root),
+                "restore_mode": restore_mode,
+                "device_phase": "restore",
+            },
+        ) as artifacts:
             run_artifacts = artifacts
             progress = _ProgressReporter("Restore", progress_path=artifacts.progress_path)
             progress.start()

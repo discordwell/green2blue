@@ -59,9 +59,7 @@ logger = logging.getLogger(__name__)
 
 def _default_preview_generation_state(mime_type: str | None) -> int:
     """Return a sane fallback preview state for imported local attachments."""
-    if mime_type and (
-        mime_type.startswith("image/") or mime_type.startswith("video/")
-    ):
+    if mime_type and (mime_type.startswith("image/") or mime_type.startswith("video/")):
         return _DEFAULT_PREVIEW_GENERATION_STATE
     return 0
 
@@ -161,7 +159,9 @@ class SMSDatabase:
 
             # Create/dedup handles, chats, and join links
             handle_rowids, chat_rowids = self._resolve_handles_and_chats(
-                cursor, result, stats,
+                cursor,
+                result,
+                stats,
             )
 
             # Detect inject-specific metadata from existing data
@@ -190,11 +190,15 @@ class SMSDatabase:
                 chat_guid = compute_chat_guid(chat_key, msg.group_members)
 
                 ck_chat_id = compute_ck_chat_id(
-                    msg.service, chat_key, msg.group_members,
+                    msg.service,
+                    chat_key,
+                    msg.group_members,
                 )
 
                 msg_rowid = self._insert_message(
-                    cursor, msg, handle_rowid,
+                    cursor,
+                    msg,
+                    handle_rowid,
                     destination_caller_id=detected_caller_id,
                     ck_chat_id=ck_chat_id,
                     account_override=detected_account,
@@ -210,7 +214,10 @@ class SMSDatabase:
                 # Insert attachments
                 for att in msg.attachments:
                     att_rowid = self._insert_attachment(
-                        cursor, att, msg.is_from_me, msg.service,
+                        cursor,
+                        att,
+                        msg.is_from_me,
+                        msg.service,
                     )
                     self._insert_message_attachment_join(cursor, msg_rowid, att_rowid)
                     stats.attachments_inserted += 1
@@ -285,16 +292,12 @@ class SMSDatabase:
             if chat_rowid is None:
                 continue
             if chat.style == 45:
-                handle_rowid = handle_rowids.get(
-                    (chat.chat_identifier, chat.service_name)
-                )
+                handle_rowid = handle_rowids.get((chat.chat_identifier, chat.service_name))
                 if handle_rowid:
                     self._insert_chat_handle_join(cursor, chat_rowid, handle_rowid)
             else:
                 for phone in chat.participants:
-                    handle_rowid = handle_rowids.get(
-                        (phone, chat.service_name)
-                    )
+                    handle_rowid = handle_rowids.get((phone, chat.service_name))
                     if handle_rowid:
                         self._insert_chat_handle_join(cursor, chat_rowid, handle_rowid)
 
@@ -550,10 +553,7 @@ class SMSDatabase:
                 (chat.service_name, chat_id),
             )
 
-        if (
-            chat.style == 43
-            and "chat_lookup" in self._tables
-        ):
+        if chat.style == 43 and "chat_lookup" in self._tables:
             group_id_row = cursor.execute(
                 "SELECT group_id FROM chat WHERE ROWID = ?",
                 (chat_id,),
@@ -583,8 +583,9 @@ class SMSDatabase:
         display_text = compose_message_text(msg.text, len(msg.attachments))
         cache_has_attachments = 1 if msg.attachments else 0
         caption_text = (
-            display_text[len(msg.attachments):]
-            if msg.attachments and display_text else (display_text or "")
+            display_text[len(msg.attachments) :]
+            if msg.attachments and display_text
+            else (display_text or "")
         )
         part_count = len(msg.attachments) + (1 if caption_text else 0)
         if part_count == 0:
@@ -592,10 +593,7 @@ class SMSDatabase:
 
         # Use detected account values if the message has none
         account = msg.account if msg.account else (account_override or None)
-        account_guid = (
-            msg.account_guid if msg.account_guid
-            else (account_guid_override or None)
-        )
+        account_guid = msg.account_guid if msg.account_guid else (account_guid_override or None)
 
         # Build column list and values dynamically for optional columns
         has_sr_ck = "sr_ck_sync_state" in self._msg_schema
@@ -607,20 +605,28 @@ class SMSDatabase:
         msi_vals = "\n                ?," if has_msi else ""
 
         # Generate message_summary_info blob
-        msi_blob = build_message_summary_info(
-            service=msg.service,
-            is_from_me=msg.is_from_me,
-            has_text=bool(display_text),
-        ) if has_msi else None
+        msi_blob = (
+            build_message_summary_info(
+                service=msg.service,
+                is_from_me=msg.is_from_me,
+                has_text=bool(display_text),
+            )
+            if has_msi
+            else None
+        )
 
         # Generate attributedBody typedstream blob
         has_ab = "attributedBody" in self._msg_schema
         ab_cols = "\n                attributedBody," if has_ab else ""
         ab_vals = "\n                ?," if has_ab else ""
-        ab_blob, has_dd_results = build_attributed_body_with_metadata(
-            display_text,
-            attachment_guids=tuple(att.guid for att in msg.attachments),
-        ) if has_ab else (None, 0)
+        ab_blob, has_dd_results = (
+            build_attributed_body_with_metadata(
+                display_text,
+                attachment_guids=tuple(att.guid for att in msg.attachments),
+            )
+            if has_ab
+            else (None, 0)
+        )
 
         # destination_caller_id (device owner's phone)
         has_dci = "destination_caller_id" in self._msg_schema
@@ -753,9 +759,9 @@ class SMSDatabase:
                 values["ck_record_id"] = None
             if "ck_server_change_token_blob" in values:
                 values["ck_server_change_token_blob"] = None
-            if (
-                "preview_generation_state" in values
-                and values["preview_generation_state"] in (None, 0)
+            if "preview_generation_state" in values and values["preview_generation_state"] in (
+                None,
+                0,
             ):
                 values["preview_generation_state"] = _default_preview_generation_state(
                     att.mime_type
@@ -861,47 +867,37 @@ class SMSDatabase:
 
         queries: list[tuple[str, tuple[object, ...]]] = [
             (
-                template_base
-                + " AND a.mime_type = ? AND a.is_outgoing = ?"
-                + order_clause,
+                template_base + " AND a.mime_type = ? AND a.is_outgoing = ?" + order_clause,
                 (service, att.mime_type, int(is_outgoing)),
             ),
             (
-                template_base
-                + " AND a.uti = ? AND a.is_outgoing = ?"
-                + order_clause,
+                template_base + " AND a.uti = ? AND a.is_outgoing = ?" + order_clause,
                 (service, att.uti, int(is_outgoing)),
             ),
         ]
         if family is not None:
             queries.append(
                 (
-                    template_base
-                    + " AND a.mime_type LIKE ? AND a.is_outgoing = ?"
-                    + order_clause,
+                    template_base + " AND a.mime_type LIKE ? AND a.is_outgoing = ?" + order_clause,
                     (service, family, int(is_outgoing)),
                 ),
             )
-        queries.extend([
-            (
-                template_base
-                + " AND a.mime_type = ?"
-                + order_clause,
-                (service, att.mime_type),
-            ),
-            (
-                template_base
-                + " AND a.uti = ?"
-                + order_clause,
-                (service, att.uti),
-            ),
-        ])
+        queries.extend(
+            [
+                (
+                    template_base + " AND a.mime_type = ?" + order_clause,
+                    (service, att.mime_type),
+                ),
+                (
+                    template_base + " AND a.uti = ?" + order_clause,
+                    (service, att.uti),
+                ),
+            ]
+        )
         if family is not None:
             queries.append(
                 (
-                    template_base
-                    + " AND a.mime_type LIKE ?"
-                    + order_clause,
+                    template_base + " AND a.mime_type LIKE ?" + order_clause,
                     (service, family),
                 ),
             )
@@ -993,7 +989,9 @@ class SMSDatabase:
 
             # Create/dedup handles, chats, and join links
             handle_rowids, chat_rowids = self._resolve_handles_and_chats(
-                cursor, result, stats,
+                cursor,
+                result,
+                stats,
             )
 
             # Detect inject-specific metadata from existing data
@@ -1018,11 +1016,16 @@ class SMSDatabase:
                 chat_guid = compute_chat_guid(chat_key, msg.group_members)
                 target_chat_rowid = chat_rowids.get(chat_guid)
                 ck_chat_id = compute_ck_chat_id(
-                    msg.service, chat_key, msg.group_members,
+                    msg.service,
+                    chat_key,
+                    msg.group_members,
                 )
 
                 self._overwrite_message(
-                    cursor, sacrifice["rowid"], msg, handle_rowid,
+                    cursor,
+                    sacrifice["rowid"],
+                    msg,
+                    handle_rowid,
                     destination_caller_id=detected_caller_id,
                     ck_chat_id=ck_chat_id,
                     account_override=detected_account,
@@ -1034,14 +1037,20 @@ class SMSDatabase:
                 # Move message from sacrifice chat to target chat
                 if target_chat_rowid:
                     self._move_message_to_chat(
-                        cursor, sacrifice["rowid"], target_chat_rowid, msg.date,
+                        cursor,
+                        sacrifice["rowid"],
+                        target_chat_rowid,
+                        msg.date,
                     )
 
                 # Remove old attachment joins and add new ones
                 self._remove_old_attachments(cursor, sacrifice["rowid"])
                 for att in msg.attachments:
                     att_rowid = self._insert_attachment(
-                        cursor, att, msg.is_from_me, msg.service,
+                        cursor,
+                        att,
+                        msg.is_from_me,
+                        msg.service,
                     )
                     self._insert_message_attachment_join(cursor, sacrifice["rowid"], att_rowid)
                     stats.attachments_inserted += 1
@@ -1058,7 +1067,9 @@ class SMSDatabase:
             self._restore_triggers()
 
     def _load_sacrifice_messages(
-        self, cursor: sqlite3.Cursor, chat_ids: list[int],
+        self,
+        cursor: sqlite3.Cursor,
+        chat_ids: list[int],
     ) -> list[dict]:
         """Load messages from sacrifice chats, oldest first.
 
@@ -1096,32 +1107,38 @@ class SMSDatabase:
         display_text = compose_message_text(msg.text, len(msg.attachments))
         cache_has_attachments = 1 if msg.attachments else 0
         caption_text = (
-            display_text[len(msg.attachments):]
-            if msg.attachments and display_text else (display_text or "")
+            display_text[len(msg.attachments) :]
+            if msg.attachments and display_text
+            else (display_text or "")
         )
         part_count = len(msg.attachments) + (1 if caption_text else 0)
         if part_count == 0:
             part_count = 1
         account = msg.account if msg.account else (account_override or None)
-        account_guid = (
-            msg.account_guid if msg.account_guid
-            else (account_guid_override or None)
-        )
+        account_guid = msg.account_guid if msg.account_guid else (account_guid_override or None)
 
         # Build optional column updates
         has_msi = "message_summary_info" in self._msg_schema
         has_ab = "attributedBody" in self._msg_schema
 
-        msi_blob = build_message_summary_info(
-            service=msg.service,
-            is_from_me=msg.is_from_me,
-            has_text=bool(display_text),
-        ) if has_msi else None
+        msi_blob = (
+            build_message_summary_info(
+                service=msg.service,
+                is_from_me=msg.is_from_me,
+                has_text=bool(display_text),
+            )
+            if has_msi
+            else None
+        )
 
-        ab_blob, has_dd_results = build_attributed_body_with_metadata(
-            display_text,
-            attachment_guids=tuple(att.guid for att in msg.attachments),
-        ) if has_ab else (None, 0)
+        ab_blob, has_dd_results = (
+            build_attributed_body_with_metadata(
+                display_text,
+                attachment_guids=tuple(att.guid for att in msg.attachments),
+            )
+            if has_ab
+            else (None, 0)
+        )
 
         opt_sets = ""
         opt_params: list = []
@@ -1205,7 +1222,9 @@ class SMSDatabase:
         )
 
     def _remove_old_attachments(
-        self, cursor: sqlite3.Cursor, message_id: int,
+        self,
+        cursor: sqlite3.Cursor,
+        message_id: int,
     ) -> None:
         """Remove old attachment joins for a message."""
         cursor.execute(
@@ -1232,17 +1251,13 @@ class SMSDatabase:
     def _clone_last_sms_handle(self, cursor: sqlite3.Cursor) -> sqlite3.Row | None:
         """Find the last SMS handle to clone from."""
         return cursor.execute(
-            "SELECT * FROM handle "
-            "WHERE service = 'SMS' "
-            "ORDER BY ROWID DESC LIMIT 1",
+            "SELECT * FROM handle WHERE service = 'SMS' ORDER BY ROWID DESC LIMIT 1",
         ).fetchone()
 
     def _clone_last_sms_chat(self, cursor: sqlite3.Cursor) -> sqlite3.Row | None:
         """Find the last SMS chat to clone from."""
         return cursor.execute(
-            "SELECT * FROM chat "
-            "WHERE service_name = 'SMS' "
-            "ORDER BY ROWID DESC LIMIT 1",
+            "SELECT * FROM chat WHERE service_name = 'SMS' ORDER BY ROWID DESC LIMIT 1",
         ).fetchone()
 
     def _clone_insert_handle(
@@ -1415,7 +1430,9 @@ class SMSDatabase:
                         stats.handles_existing += 1
                     else:
                         handle_rowid = self._clone_insert_handle(
-                            cursor, source_handle, phone,
+                            cursor,
+                            source_handle,
+                            phone,
                         )
                         stats.handles_inserted += 1
                     handle_cache[phone] = handle_rowid
@@ -1435,7 +1452,9 @@ class SMSDatabase:
                         stats.chats_existing += 1
                     else:
                         chat_rowid = self._clone_insert_chat(
-                            cursor, source_chat, phone,
+                            cursor,
+                            source_chat,
+                            phone,
                         )
                         stats.chats_inserted += 1
 
@@ -1479,7 +1498,9 @@ class SMSDatabase:
                     overrides["attributedBody"] = ab_blob
 
                 msg_rowid = self._clone_insert_message(
-                    cursor, source_msg, overrides,
+                    cursor,
+                    source_msg,
+                    overrides,
                 )
                 stats.message_rowids.append(msg_rowid)
 
@@ -1619,7 +1640,7 @@ def _build_hackpatrol_attributed_body(text: str | None) -> bytes | None:
         "84012b"
     )
 
-    middle = bytes.fromhex("86" "84026949")
+    middle = bytes.fromhex("8684026949")
 
     suffix = bytes.fromhex(
         "92"
@@ -1654,12 +1675,4 @@ def _build_hackpatrol_attributed_body(text: str | None) -> bytes | None:
         return build_attributed_body(text)
 
     # Single-byte length prefix (max 255)
-    return (
-        header
-        + bytes([len(text_bytes)])
-        + text_bytes
-        + middle
-        + b"\x01"
-        + run_len_byte
-        + suffix
-    )
+    return header + bytes([len(text_bytes)]) + text_bytes + middle + b"\x01" + run_len_byte + suffix

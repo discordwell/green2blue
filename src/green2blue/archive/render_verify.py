@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
-from contextlib import contextmanager
-from dataclasses import dataclass
 import hashlib
 import json
 import sqlite3
 import tempfile
+from collections import Counter, defaultdict
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from green2blue.converter.message_converter import convert_messages
@@ -18,7 +18,13 @@ from green2blue.ios.backup import find_backup, get_sms_db_path
 from green2blue.ios.crypto import EncryptedBackup
 from green2blue.ios.manifest import ManifestDB, compute_file_id
 from green2blue.ios.sms_db import _build_hackpatrol_attributed_body
-from green2blue.models import CKStrategy, InjectionMode, compose_message_text, iOSAttachment, iOSMessage
+from green2blue.models import (
+    CKStrategy,
+    InjectionMode,
+    compose_message_text,
+    iOSAttachment,
+    iOSMessage,
+)
 from green2blue.parser.ndjson_parser import parse_ndjson
 from green2blue.parser.zip_reader import open_export_zip
 from green2blue.pipeline import PipelineResult
@@ -279,7 +285,9 @@ def _load_actual_render_signatures(
     message_rowids: tuple[int, ...],
     attachment_rowids: tuple[int, ...],
     injection_mode: InjectionMode,
-) -> tuple[Counter[str], Counter[str], tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+) -> tuple[
+    Counter[str], Counter[str], tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...]
+]:
     resolved_message_rowids = _dedupe_rowids(message_rowids)
     resolved_attachment_rowids = _dedupe_rowids(attachment_rowids)
 
@@ -287,7 +295,9 @@ def _load_actual_render_signatures(
     chat_ids_by_message = _fetch_chat_ids(conn, resolved_message_rowids)
     chat_identifier_map = _fetch_chat_identifiers(conn, tuple(chat_ids_by_message.values()))
     participant_map = _fetch_chat_participants(conn, tuple(chat_ids_by_message.values()))
-    attachment_map, joined_attachment_rowids = _fetch_message_attachments(conn, resolved_message_rowids)
+    attachment_map, joined_attachment_rowids = _fetch_message_attachments(
+        conn, resolved_message_rowids
+    )
     present_attachment_rowids = _fetch_attachment_rowids(conn, resolved_attachment_rowids)
 
     actual_message_signatures: Counter[str] = Counter()
@@ -313,20 +323,18 @@ def _load_actual_render_signatures(
             actual_attachment_signatures[_attachment_signature_from_actual(attachment)] += 1
 
     missing_message_rowids = tuple(
-        rowid for rowid in resolved_message_rowids
-        if rowid not in message_rows
+        rowid for rowid in resolved_message_rowids if rowid not in message_rows
     )
     missing_attachment_rowids = tuple(
-        rowid for rowid in resolved_attachment_rowids
-        if rowid not in present_attachment_rowids
+        rowid for rowid in resolved_attachment_rowids if rowid not in present_attachment_rowids
     )
     unchatted_message_rowids = tuple(
-        rowid for rowid in resolved_message_rowids
+        rowid
+        for rowid in resolved_message_rowids
         if rowid in message_rows and rowid not in chat_ids_by_message
     )
     unjoined_attachment_rowids = tuple(
-        rowid for rowid in resolved_attachment_rowids
-        if rowid not in joined_attachment_rowids
+        rowid for rowid in resolved_attachment_rowids if rowid not in joined_attachment_rowids
     )
 
     return (
@@ -474,9 +482,7 @@ def _fetch_attachment_rowids(
 def _expected_message_signature(msg: iOSMessage, injection_mode: InjectionMode) -> str:
     display_text = compose_message_text(msg.text, len(msg.attachments)) or ""
     caption_text = (
-        display_text[len(msg.attachments):]
-        if msg.attachments and display_text
-        else display_text
+        display_text[len(msg.attachments) :] if msg.attachments and display_text else display_text
     )
     part_count = len(msg.attachments) + (1 if caption_text else 0)
     if part_count == 0:
@@ -512,8 +518,7 @@ def _expected_message_signature(msg: iOSMessage, injection_mode: InjectionMode) 
     else:
         payload = {
             "attachments": sorted(
-                _attachment_signature_payload_from_expected(att)
-                for att in msg.attachments
+                _attachment_signature_payload_from_expected(att) for att in msg.attachments
             ),
             "attributed_body_sha1": attributed_sha1,
             "cache_has_attachments": 1 if msg.attachments else 0,
@@ -540,9 +545,7 @@ def _actual_message_signature(
 ) -> str:
     has_dd_results = 0 if row["has_dd_results"] is None else int(row["has_dd_results"])
     attributed_sha1 = None
-    if injection_mode == InjectionMode.CLONE:
-        attributed_sha1 = _sha1_or_none(row["attributedBody"])
-    elif not attachments:
+    if injection_mode == InjectionMode.CLONE or not attachments:
         attributed_sha1 = _sha1_or_none(row["attributedBody"])
 
     normalized_group_members = tuple(sorted(group_members))
@@ -562,8 +565,7 @@ def _actual_message_signature(
     else:
         payload = {
             "attachments": sorted(
-                _attachment_signature_payload_from_actual(attachment)
-                for attachment in attachments
+                _attachment_signature_payload_from_actual(attachment) for attachment in attachments
             ),
             "attributed_body_sha1": attributed_sha1,
             "cache_has_attachments": int(row["cache_has_attachments"] or 0),

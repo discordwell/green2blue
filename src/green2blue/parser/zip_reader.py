@@ -53,9 +53,7 @@ def open_export_zip(zip_path: Path | str) -> Generator[ExtractedExport, None, No
                 for member in zf.namelist():
                     target = (tmp_path / member).resolve()
                     if not str(target).startswith(str(tmp_path.resolve())):
-                        raise InvalidZipError(
-                            f"ZIP contains path traversal entry: {member}"
-                        )
+                        raise InvalidZipError(f"ZIP contains path traversal entry: {member}")
 
                 zf.extractall(tmp_path)
         except zipfile.BadZipFile as e:

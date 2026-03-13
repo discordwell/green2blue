@@ -45,7 +45,10 @@ def patch_mbfile_blob(
     # corruption from blind byte search in raw patching.
     if new_digest is not None:
         return _patch_via_plistlib(
-            existing_blob, new_size, int(new_mtime), new_digest,
+            existing_blob,
+            new_size,
+            int(new_mtime),
+            new_digest,
         )
 
     # Size/LastModified only: try raw patching first
@@ -172,7 +175,9 @@ def _patch_via_plistlib(
 
 
 def _try_raw_patch(
-    blob: bytes, new_size: int, new_mtime: int,
+    blob: bytes,
+    new_size: int,
+    new_mtime: int,
 ) -> bytes | None:
     """Attempt to patch Size and LastModified directly in the raw binary plist.
 
@@ -281,9 +286,10 @@ def _resolve_digest_ref(objects: list, mbfile: dict) -> bytes | None:
     return None
 
 
-
 def _patch_or_add_digest(
-    plist: dict, objects: list, new_digest: bytes,
+    plist: dict,
+    objects: list,
+    new_digest: bytes,
 ) -> None:
     """Patch or add Digest in plistlib-parsed objects.
 
@@ -310,7 +316,9 @@ def _patch_or_add_digest(
 
 
 def _patch_or_add_relative_path(
-    objects: list, mbfile: dict, new_relative_path: str,
+    objects: list,
+    mbfile: dict,
+    new_relative_path: str,
 ) -> None:
     """Patch or add RelativePath in an MBFile dict."""
     relative_path_ref = mbfile.get("RelativePath")
@@ -323,7 +331,9 @@ def _patch_or_add_relative_path(
 
 
 def _patch_or_add_encryption_key(
-    objects: list, mbfile: dict, new_encryption_key: bytes,
+    objects: list,
+    mbfile: dict,
+    new_encryption_key: bytes,
 ) -> None:
     """Patch or add EncryptionKey, preserving NSData wrapper when present."""
     encryption_key_ref = mbfile.get("EncryptionKey")
@@ -341,16 +351,18 @@ def _patch_or_add_encryption_key(
 
     data_uid = len(objects)
     class_uid = data_uid + 1
-    objects.extend([
-        {
-            "NS.data": new_encryption_key,
-            "$class": plistlib.UID(class_uid),
-        },
-        {
-            "$classname": "NSMutableData",
-            "$classes": ["NSMutableData", "NSData", "NSObject"],
-        },
-    ])
+    objects.extend(
+        [
+            {
+                "NS.data": new_encryption_key,
+                "$class": plistlib.UID(class_uid),
+            },
+            {
+                "$classname": "NSMutableData",
+                "$classes": ["NSMutableData", "NSData", "NSObject"],
+            },
+        ]
+    )
     mbfile["EncryptionKey"] = plistlib.UID(data_uid)
 
 

@@ -58,7 +58,9 @@ def export_merged_android_zip(
                         start=1,
                     ):
                         merged_conversation_id = int(message["merged_conversation_id"])
-                        thread_id = thread_map.setdefault(merged_conversation_id, len(thread_map) + 1)
+                        thread_id = thread_map.setdefault(
+                            merged_conversation_id, len(thread_map) + 1
+                        )
                         participant_rows = participants.get(merged_conversation_id, ())
                         part_rows = attachments.get(int(message["id"]), ())
                         record, new_files, missing = _build_android_record(
@@ -70,7 +72,9 @@ def export_merged_android_zip(
                             ordinal=index,
                         )
                         tmp_ndjson.write(
-                            (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+                            (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode(
+                                "utf-8"
+                            )
                         )
                         for rel_path, source_path in new_files:
                             zf.write(source_path, arcname=rel_path)
@@ -210,7 +214,9 @@ def _build_android_record(
     sent_at_ms = int(message["sent_at_ms"])
     read_flag = 0 if str(message["read_state"]) == "unread" else 1
     participant_addresses = [str(row["address"]) for row in participants]
-    primary_address = participant_addresses[0] if participant_addresses else _fallback_address(message)
+    primary_address = (
+        participant_addresses[0] if participant_addresses else _fallback_address(message)
+    )
     has_binary_parts = any(row["blob_id"] is not None for row in parts)
     is_group = len(participant_addresses) > 1
 
@@ -232,21 +238,25 @@ def _build_android_record(
     seq = 0
 
     if body_text:
-        mms_parts.append({
-            "seq": str(seq),
-            "ct": "text/plain",
-            "text": body_text,
-        })
+        mms_parts.append(
+            {
+                "seq": str(seq),
+                "ct": "text/plain",
+                "text": body_text,
+            }
+        )
         seq += 1
 
     for part_index, part in enumerate(parts):
         if part["blob_id"] is None:
             if part["text_content"]:
-                mms_parts.append({
-                    "seq": str(seq),
-                    "ct": part["mime_type"] or "text/plain",
-                    "text": part["text_content"],
-                })
+                mms_parts.append(
+                    {
+                        "seq": str(seq),
+                        "ct": part["mime_type"] or "text/plain",
+                        "text": part["text_content"],
+                    }
+                )
                 seq += 1
             else:
                 attachments_missing_data += 1
@@ -263,12 +273,14 @@ def _build_android_record(
         except FileNotFoundError:
             attachments_missing_data += 1
             continue
-        mms_parts.append({
-            "seq": str(seq),
-            "ct": part["mime_type"] or "application/octet-stream",
-            "_data": f"{ANDROID_ATTACHMENT_ROOT}/{basename}",
-            "cl": basename,
-        })
+        mms_parts.append(
+            {
+                "seq": str(seq),
+                "ct": part["mime_type"] or "application/octet-stream",
+                "_data": f"{ANDROID_ATTACHMENT_ROOT}/{basename}",
+                "cl": basename,
+            }
+        )
         files_to_write.append((f"data/{basename}", blob_path))
         seq += 1
 

@@ -194,10 +194,13 @@ class TestBuildAttributedBody:
             "00"
             "868686"
         )
-        assert build_attributed_body(
-            "\uFFFC",
-            attachment_guids=("at_0_1F16F9F0-7BD2-4710-B1F3-0222DD1904A6",),
-        ) == expected
+        assert (
+            build_attributed_body(
+                "\ufffc",
+                attachment_guids=("at_0_1F16F9F0-7BD2-4710-B1F3-0222DD1904A6",),
+            )
+            == expected
+        )
 
     def test_one_attachment_with_caption_exact_match(self):
         expected = bytes.fromhex(
@@ -253,10 +256,13 @@ class TestBuildAttributedBody:
             "01"
             "868686"
         )
-        assert build_attributed_body(
-            "\uFFFCFor garage",
-            attachment_guids=("at_0_B3EF53AE-FF4F-4A18-B61C-252226D08B2E",),
-        ) == expected
+        assert (
+            build_attributed_body(
+                "\ufffcFor garage",
+                attachment_guids=("at_0_B3EF53AE-FF4F-4A18-B61C-252226D08B2E",),
+            )
+            == expected
+        )
 
     def test_two_attachments_only_exact_match(self):
         expected = bytes.fromhex(
@@ -316,13 +322,16 @@ class TestBuildAttributedBody:
             "01"
             "868686"
         )
-        assert build_attributed_body(
-            "\uFFFC\uFFFC",
-            attachment_guids=(
-                "at_0_6426EDD8-D319-4ACD-BCE0-C6BB34E825BB",
-                "at_1_6426EDD8-D319-4ACD-BCE0-C6BB34E825BB",
-            ),
-        ) == expected
+        assert (
+            build_attributed_body(
+                "\ufffc\ufffc",
+                attachment_guids=(
+                    "at_0_6426EDD8-D319-4ACD-BCE0-C6BB34E825BB",
+                    "at_1_6426EDD8-D319-4ACD-BCE0-C6BB34E825BB",
+                ),
+            )
+            == expected
+        )
 
     def test_two_attachments_with_caption_exact_match(self):
         expected = bytes.fromhex(
@@ -392,13 +401,16 @@ class TestBuildAttributedBody:
             "02"
             "868686"
         )
-        assert build_attributed_body(
-            "\uFFFC\uFFFCHope you are happy",
-            attachment_guids=(
-                "at_0_A3C3169E-1332-4B41-957B-98502A532149",
-                "at_1_A3C3169E-1332-4B41-957B-98502A532149",
-            ),
-        ) == expected
+        assert (
+            build_attributed_body(
+                "\ufffc\ufffcHope you are happy",
+                attachment_guids=(
+                    "at_0_A3C3169E-1332-4B41-957B-98502A532149",
+                    "at_1_A3C3169E-1332-4B41-957B-98502A532149",
+                ),
+            )
+            == expected
+        )
 
     def test_emoji_utf16_length(self):
         """Emoji characters count as 2 UTF-16 units (surrogate pair)."""
@@ -615,7 +627,7 @@ class TestAttributedBodyInjection:
             cursor = db.conn.cursor()
             cursor.execute("SELECT text, part_count, attributedBody FROM message")
             row = cursor.fetchone()
-            assert row["text"] == "\uFFFC"
+            assert row["text"] == "\ufffc"
             assert row["part_count"] == 1
             assert row["attributedBody"] is not None
 
@@ -633,9 +645,7 @@ class TestAttributedBodyInjection:
         with SMSDatabase(empty_sms_db) as db:
             db.inject(result, skip_duplicates=False)
             cursor = db.conn.cursor()
-            cursor.execute(
-                "SELECT COUNT(*) as cnt FROM message WHERE attributedBody IS NOT NULL"
-            )
+            cursor.execute("SELECT COUNT(*) as cnt FROM message WHERE attributedBody IS NOT NULL")
             assert cursor.fetchone()["cnt"] == 5
 
     def test_attributed_body_matches_real_ios_format(self, empty_sms_db):
