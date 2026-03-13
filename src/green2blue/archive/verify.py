@@ -112,6 +112,15 @@ def verify_archive(archive_path: Path | str) -> ArchiveVerificationResult:
         checks_passed += 1
 
         checks_run += 1
+        missing_blob_files = archive.count_missing_blob_files()
+        if missing_blob_files:
+            errors.append(
+                f"{missing_blob_files} external blob files referenced by the archive are missing from disk.",
+            )
+        else:
+            checks_passed += 1
+
+        checks_run += 1
         source_type_count = _scalar(conn, "SELECT COUNT(DISTINCT source_type) FROM import_runs")
         merge_run_count = _scalar(conn, "SELECT COUNT(*) FROM merge_runs")
         if source_type_count > 1 and merge_run_count == 0:

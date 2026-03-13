@@ -58,6 +58,24 @@ List all available iPhone backups.
 
 Show export contents (message counts, attachment info) without modifying anything.
 
+### `green2blue review <export.zip>`
+
+Launch a local browser UI for reviewing an Android export before import.
+
+The review UI lets you:
+- sort and filter by phone number / participant
+- filter by message text
+- filter SMS vs MMS
+- select/deselect visible conversations
+- select/deselect visible messages
+- export a filtered ZIP containing only the selected messages
+
+| Flag | Description |
+|------|-------------|
+| `--host <addr>` | Host interface for the local review server (default: `127.0.0.1`) |
+| `--port <n>` | TCP port for the local review server (default: auto) |
+| `--no-open-browser` | Do not automatically open the browser |
+
 ### `green2blue archive <subcommand>`
 
 Canonical archive workflows for future merge and re-render support.
@@ -140,9 +158,26 @@ Direct device operations via USB (requires `pymobiledevice3`).
 |------------|-------------|
 | `device list` | List connected iOS devices |
 | `device doctor` | Check device readiness for backup/restore |
+| `device run-status <run-dir>` | Inspect a persisted live device run bundle and recovery guidance |
 | `device backup` | Create a backup from a connected device |
 | `device inject <zip>` | Full pipeline: backup, inject, restore |
 | `device restore <path>` | Restore a modified backup to a device |
+
+Every live device command writes a run bundle under `.live_device_runs/`
+containing:
+- `metadata.json`
+- `progress.json`
+- `green2blue.log`
+- `mobiledevice.log`
+- `recovery.json` when the run fails during a live backup/restore phase
+
+If a live run fails, use:
+
+```bash
+green2blue device run-status .live_device_runs/<timestamp>_<command>
+```
+
+to inspect the recorded phase, last progress, and recommended recovery steps.
 
 ## Environment
 
@@ -170,6 +205,11 @@ green2blue archive prepare-ios android-export.zip <UDID> .g2b_workflows/<UDID>
 green2blue archive run-ios .g2b_workflows/<UDID>
 ```
 
+The archive now stores attachment payloads in a content-addressed sidecar blob
+store beside the SQLite file at `<archive>.blobs/`. Large media payloads are
+deduped by SHA-256 across imports and streamed from disk during export/render
+instead of being kept inline inside SQLite.
+
 You can also pass a backup UDID to `archive import-ios` instead of a full path
 and combine it with `--backup-root`.
 
@@ -190,6 +230,7 @@ completed import run instead of creating a second empty/deduped run. Use
 - message attachment flags vs actual attachment parts
 - latest merge counters vs materialized merged rows
 - metadata-only attachment warnings
+- missing external blob files in the archive sidecar store
 
 `archive stage-ios` writes a durable stage bundle containing:
 - `merged_export.zip`

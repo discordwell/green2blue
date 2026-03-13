@@ -226,7 +226,7 @@ def _import_mms(
             attachment_path = _resolve_attachment_path(export, part)
             blob_id = None
             if attachment_path is not None:
-                blob_id, _ = archive.upsert_blob(attachment_path.read_bytes())
+                blob_id, _ = archive.upsert_blob_path(attachment_path)
                 blob_ids.add(blob_id)
             archive.insert_attachment(
                 message_id=message_id,

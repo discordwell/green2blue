@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -90,6 +90,18 @@ class DeviceHealthReport:
     checks: tuple[DeviceCheckResult, ...]
 
 
+@dataclass(frozen=True)
+class DeviceRecoveryPlan:
+    """Actionable recovery guidance for a failed live device operation."""
+
+    operation: str
+    classification: str
+    summary: str
+    safe_to_retry: bool
+    hint: str
+    next_steps: tuple[str, ...]
+
+
 def _classify_device_exception(exc: Exception) -> tuple[str, str]:
     """Map raw device-layer exceptions to a stable state + user hint."""
     message = f"{type(exc).__name__}: {exc}"
@@ -147,6 +159,128 @@ def _classify_device_exception(exc: Exception) -> tuple[str, str]:
             "Reconnect the iPhone over USB and verify the cable carries data.",
         )
     return ("unknown_error", message)
+
+
+def build_device_recovery_plan(
+    operation: str,
+    exc: Exception | str,
+    *,
+    progress_seen: bool = False,
+    last_progress: float | None = None,
+) -> DeviceRecoveryPlan:
+    """Classify a failed live backup/restore operation and suggest next steps."""
+    message = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
+    lowered = message.lower()
+    state, hint = _classify_device_exception(
+        exc if isinstance(exc, Exception) else Exception(message),
+    )
+
+    if "mberrordomain/211" in lowered or "find my iphone" in lowered:
+        return DeviceRecoveryPlan(
+            operation=operation,
+            classification="find_my_enabled",
+            summary="Find My iPhone is enabled and blocks local restore.",
+            safe_to_retry=True,
+            hint="Turn Find My iPhone off, keep the phone unlocked on the home screen, and retry.",
+            next_steps=(
+                "On the iPhone, turn off Find My iPhone in Settings.",
+                "Leave the phone unlocked on the normal home screen.",
+                "Retry the same restore image.",
+            ),
+        )
+
+    if "springboard" in lowered and "ready for a restore" in lowered:
+        return DeviceRecoveryPlan(
+            operation=operation,
+            classification="springboard_not_ready",
+            summary="The device never signaled that SpringBoard was ready for restore.",
+            safe_to_retry=True,
+            hint="Unlock the phone, dismiss popups, leave it idle on the home screen for 20-30 seconds, then retry once.",
+            next_steps=(
+                "Unlock the iPhone to the normal home screen.",
+                "Dismiss any passcode, setup, trust, or error dialogs.",
+                "Leave it idle on the home screen for 20-30 seconds.",
+                "Retry the restore once.",
+            ),
+        )
+
+    if operation == "restore" and progress_seen:
+        pct_text = f" after reaching {last_progress:.1f}%" if last_progress is not None else ""
+        return DeviceRecoveryPlan(
+            operation=operation,
+            classification="partial_restore_state",
+            summary=f"The restore started transferring data{pct_text} and failed during apply/reboot.",
+            safe_to_retry=False,
+            hint="Treat the phone as partially restored. Erase or recovery-restore it before retrying another modified backup.",
+            next_steps=(
+                "Do not keep retrying ordinary restore immediately on the same device state.",
+                "Erase the test phone or reflash it via recovery/DFU if needed.",
+                "Complete minimal local setup back to the normal home screen.",
+                "Retry the same restore image from the fresh baseline.",
+            ),
+        )
+
+    if state in {"device_locked", "password_protected", "backup_authorization_pending"}:
+        label = "restore" if operation == "restore" else "backup"
+        return DeviceRecoveryPlan(
+            operation=operation,
+            classification=state,
+            summary=f"The iPhone is waiting on on-device authorization before {label} can proceed.",
+            safe_to_retry=True,
+            hint=hint,
+            next_steps=(
+                "Unlock the iPhone with its device passcode.",
+                "Watch for any on-device backup/restore authorization prompt and accept it.",
+                "Leave the phone unlocked on the home screen.",
+                f"Retry the {label}.",
+            ),
+        )
+
+    if state in {"invalid_host_id", "pairing_blocked", "not_paired"}:
+        return DeviceRecoveryPlan(
+            operation=operation,
+            classification=state,
+            summary="The current Mac pairing session is not usable for backup/restore.",
+            safe_to_retry=True,
+            hint=hint,
+            next_steps=(
+                "Unlock the iPhone on the home screen.",
+                "Reconnect it over USB and accept any Trust prompt.",
+                "If needed, reset Location & Privacy on the iPhone to force the Trust prompt back.",
+                f"Retry the {operation}.",
+            ),
+        )
+
+    if state == "requires_tunnel":
+        return DeviceRecoveryPlan(
+            operation=operation,
+            classification=state,
+            summary="This iOS build is not exposing MobileBackup2 over the current direct USB path.",
+            safe_to_retry=True,
+            hint=hint,
+            next_steps=(
+                "Start the required pymobiledevice3 tunnel/RSD session.",
+                "Re-run device doctor through the tunnel path.",
+                f"Retry the {operation} once MobileBackup2 is reachable.",
+            ),
+        )
+
+    return DeviceRecoveryPlan(
+        operation=operation,
+        classification=state,
+        summary=f"The live {operation} failed with an unclassified device-side error.",
+        safe_to_retry=False,
+        hint=hint,
+        next_steps=(
+            "Inspect the run bundle logs and progress snapshot.",
+            "Return the phone to a clean unlocked home-screen state.",
+            "If the phone looks partially restored, erase/recover it before retrying.",
+        ),
+    )
+
+
+def device_recovery_plan_to_dict(plan: DeviceRecoveryPlan) -> dict[str, object]:
+    return asdict(plan)
 
 
 def _wrap_device_exception(action: str, exc: Exception) -> DeviceError:

@@ -62,6 +62,7 @@ def export_merged_android_zip(
                         participant_rows = participants.get(merged_conversation_id, ())
                         part_rows = attachments.get(int(message["id"]), ())
                         record, new_files, missing = _build_android_record(
+                            archive,
                             message,
                             participant_rows,
                             part_rows,
@@ -71,8 +72,8 @@ def export_merged_android_zip(
                         tmp_ndjson.write(
                             (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
                         )
-                        for rel_path, payload in new_files:
-                            zf.writestr(rel_path, payload)
+                        for rel_path, source_path in new_files:
+                            zf.write(source_path, arcname=rel_path)
                         records_written += 1
                         attachments_missing_data += missing
                         attachment_files_written += len(new_files)
@@ -179,10 +180,9 @@ def _load_message_parts(
             ma.mime_type,
             ma.filename,
             ma.text_content,
-            b.data AS blob_data
+            ma.blob_id
         FROM merged_messages mm
         JOIN message_attachments ma ON ma.message_id = mm.message_id
-        LEFT JOIN blobs b ON b.id = ma.blob_id
         WHERE mm.merge_run_id = ?
           AND mm.is_duplicate = 0
         ORDER BY ma.message_id, ma.part_index
@@ -196,13 +196,14 @@ def _load_message_parts(
 
 
 def _build_android_record(
+    archive: CanonicalArchive,
     message: sqlite3.Row,
     participants: tuple[sqlite3.Row, ...],
     parts: tuple[sqlite3.Row, ...],
     *,
     thread_id: int,
     ordinal: int,
-) -> tuple[dict[str, object], list[tuple[str, bytes]], int]:
+) -> tuple[dict[str, object], list[tuple[str, Path]], int]:
     direction = str(message["direction"])
     body_text = message["body_text"]
     subject = message["subject"]
@@ -210,7 +211,7 @@ def _build_android_record(
     read_flag = 0 if str(message["read_state"]) == "unread" else 1
     participant_addresses = [str(row["address"]) for row in participants]
     primary_address = participant_addresses[0] if participant_addresses else _fallback_address(message)
-    has_binary_parts = any(row["blob_data"] is not None for row in parts)
+    has_binary_parts = any(row["blob_id"] is not None for row in parts)
     is_group = len(participant_addresses) > 1
 
     if not has_binary_parts and not is_group and not subject:
@@ -226,7 +227,7 @@ def _build_android_record(
         return sms_record, [], 0
 
     mms_parts: list[dict[str, object]] = []
-    files_to_write: list[tuple[str, bytes]] = []
+    files_to_write: list[tuple[str, Path]] = []
     attachments_missing_data = 0
     seq = 0
 
@@ -239,7 +240,7 @@ def _build_android_record(
         seq += 1
 
     for part_index, part in enumerate(parts):
-        if part["blob_data"] is None:
+        if part["blob_id"] is None:
             if part["text_content"]:
                 mms_parts.append({
                     "seq": str(seq),
@@ -257,13 +258,18 @@ def _build_android_record(
             ordinal=ordinal,
             part_index=part_index,
         )
+        try:
+            blob_path = archive.get_blob_path(int(part["blob_id"]))
+        except FileNotFoundError:
+            attachments_missing_data += 1
+            continue
         mms_parts.append({
             "seq": str(seq),
             "ct": part["mime_type"] or "application/octet-stream",
             "_data": f"{ANDROID_ATTACHMENT_ROOT}/{basename}",
             "cl": basename,
         })
-        files_to_write.append((f"data/{basename}", bytes(part["blob_data"])))
+        files_to_write.append((f"data/{basename}", blob_path))
         seq += 1
 
     sender, recipients = _sender_and_recipients(

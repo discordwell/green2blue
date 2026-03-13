@@ -443,6 +443,65 @@ class TestDeviceRunArtifacts:
         assert payload["status"] == "completed"
         assert payload["last_progress"] == 12.5
 
+    def test_device_run_session_writes_recovery_plan_on_failure(self, tmp_dir):
+        run_root = tmp_dir / "runs"
+
+        def fake_capture(log_path, _started_at):
+            log_path.write_text("host logs")
+
+        with (
+            patch("green2blue.cli._default_device_run_root", return_value=run_root),
+            patch("green2blue.cli._capture_mobiledevice_logs", side_effect=fake_capture),
+            pytest.raises(RuntimeError, match="restore broke"),
+        ):
+            with _device_run_session("device_restore", {
+                "device_udid": "abc123",
+                "device_phase": "restore",
+            }) as artifacts:
+                progress = _ProgressReporter("Restore", heartbeat_seconds=60.0, progress_path=artifacts.progress_path)
+                progress.start()
+                progress.callback(44.9)
+                progress.finish()
+                raise RuntimeError("restore broke")
+
+        payload = json.loads(artifacts.recovery_path.read_text())
+        assert payload["classification"] == "partial_restore_state"
+        assert payload["last_progress"] == 44.9
+
+    def test_device_run_status_prints_recovery_guidance(self, tmp_dir, capsys):
+        run_dir = tmp_dir / "run"
+        run_dir.mkdir()
+        (run_dir / "metadata.json").write_text(json.dumps({
+            "command": "device_restore",
+            "status": "failed",
+            "device_udid": "abc123",
+            "device_name": "Test iPhone",
+            "device_phase": "restore",
+            "started_at": "2026-03-12T00:00:00-07:00",
+            "finished_at": "2026-03-12T00:05:00-07:00",
+        }))
+        (run_dir / "progress.json").write_text(json.dumps({
+            "event": "progress",
+            "last_progress": 44.9,
+        }))
+        (run_dir / "recovery.json").write_text(json.dumps({
+            "classification": "partial_restore_state",
+            "device_phase": "restore",
+            "safe_to_retry": False,
+            "summary": "The restore started transferring data after reaching 44.9% and failed during apply/reboot.",
+            "hint": "Treat the phone as partially restored.",
+            "next_steps": [
+                "Erase the test phone before retrying.",
+            ],
+        }))
+
+        ret = main(["device", "run-status", str(run_dir)])
+
+        assert ret == 0
+        output = capsys.readouterr().out
+        assert "Classification:     partial_restore_state" in output
+        assert "Safe to retry now:  no" in output
+
 
 class TestArchiveCLI:
     def test_archive_import_android_reports_reused_existing(self, tmp_dir, capsys):
@@ -610,6 +669,26 @@ class TestQuickstartCommand:
 
 
 class TestArchiveCommands:
+    def test_review_command_launches_local_review_ui(self, sample_export_zip):
+        with patch("green2blue.review.serve_review_app") as mock_review:
+            ret = main([
+                "review",
+                str(sample_export_zip),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8080",
+                "--no-open-browser",
+            ])
+
+        assert ret == 0
+        mock_review.assert_called_once_with(
+            sample_export_zip,
+            host="127.0.0.1",
+            port=8080,
+            open_browser=False,
+        )
+
     def test_archive_import_android_creates_archive(self, sample_export_zip, tmp_dir):
         archive_path = tmp_dir / "sample.g2b.sqlite"
 

@@ -742,6 +742,7 @@ def _step_offer_device_restore(
     from green2blue.cli import (
         _ProgressReporter,
         _device_run_session,
+        _print_device_run_failure,
         _print_device_health_report,
         _print_post_restore_instructions,
     )
@@ -806,6 +807,7 @@ def _step_offer_device_restore(
             run_artifacts = artifacts
 
             if create_rollback:
+                run_metadata["device_phase"] = "backup"
                 print("\n  Creating rollback backup...\n")
                 backup_progress = _ProgressReporter(
                     "Backup",
@@ -824,6 +826,7 @@ def _step_offer_device_restore(
 
                 print(f"\n  Rollback backup saved to: {rollback_path}")
 
+            run_metadata["device_phase"] = "restore"
             print("\n  Restoring modified backup to the connected iPhone...\n")
             restore_progress = _ProgressReporter(
                 "Restore",
@@ -843,8 +846,7 @@ def _step_offer_device_restore(
         print(f"\n  Device restore failed: {exc}")
         if exc.hint:
             print(f"  Hint: {exc.hint}")
-        if run_artifacts is not None:
-            print(f"  Live device logs: {run_artifacts.run_dir}")
+        _print_device_run_failure(run_artifacts)
         _print_manual_restore_instructions()
         return
 

@@ -11,6 +11,11 @@ merge direction:
 - import iPhone backups into that same archive
 - capture privacy-safe representative Android corpora for testing and sharing
 
+There is also now a local export review tool for sharing with an Android owner
+before import. It lets them open their export in a browser, sort/filter by
+phone number or message text, select/deselect messages in bulk, and download a
+filtered ZIP containing only the chosen messages.
+
 ## The Easy Way
 
 Download the standalone binary for your platform from the [latest release](https://github.com/discordwell/green2blue/releases/latest). No Python required.
@@ -177,6 +182,7 @@ Quick reference:
 green2blue                     Interactive wizard
 green2blue quickstart          Step-by-step guide
 green2blue inject <zip>        Inject messages into a backup
+green2blue review <zip>        Browser review/filter UI for an Android export
 green2blue archive import-android <zip> <archive.sqlite>
 green2blue archive import-ios <backup> <archive.sqlite>
 green2blue archive inspect <archive.sqlite>
@@ -190,6 +196,7 @@ green2blue archive workflow-status <workflow-dir>
 green2blue archive run-ios <workflow-dir>
 green2blue archive inject-ios <archive.sqlite> --backup <path-or-udid>
 green2blue corpus capture <zip> <sample.zip>
+green2blue device run-status <run-dir>
 green2blue list-backups        List available iPhone backups
 green2blue inspect <zip>       Show export contents
 green2blue verify <path>       Verify backup integrity
@@ -221,6 +228,12 @@ duplicate suppression. `archive export-android` turns that merged view back
 into the existing Android ZIP contract, and `archive inject-ios` uses that
 adapter to feed the proven iPhone injection pipeline directly.
 
+The canonical archive now keeps attachment payloads in a content-addressed
+sidecar blob store next to the SQLite file at `<archive>.blobs/`. That keeps
+large photo/video histories out of SQLite itself, dedupes identical media
+across Android and iPhone imports by SHA-256, and lets later export/render
+steps stream attachment files directly from disk.
+
 Archive imports are resumable by default: if you import the exact same Android
 ZIP or the exact same iPhone backup state again, green2blue reuses the prior
 completed import run instead of creating a second empty dedupe-only run. Use
@@ -241,7 +254,8 @@ across repeated large-history runs.
 
 `archive verify` checks that import-run counters, attachment flags, and latest
 merge counters still match the actual archive contents before you render or
-inject from it.
+inject from it. It also verifies that any externalized blob files referenced by
+the archive still exist on disk.
 
 `archive stage-ios` gives you a durable, reusable export bundle instead of a
 throwaway temp ZIP. The merge wizard now uses the same staged-export pattern
@@ -257,6 +271,17 @@ merged workflow. It writes:
 
 and resumes those steps by default when the inputs and verified artifacts still
 match.
+
+Live device operations now also persist recovery-oriented run bundles under
+`.live_device_runs/`. Each bundle includes:
+- `metadata.json`
+- `progress.json`
+- `recovery.json` when a live backup/restore fails
+- `green2blue.log`
+- `mobiledevice.log`
+
+Use `green2blue device run-status <run-dir>` to inspect one of those bundles
+and see the classified recovery guidance for the failed phase.
 
 Use `green2blue archive workflow-status .g2b_workflows/<UDID>` to inspect the
 persisted workflow state, current step, and artifact paths after an interrupted

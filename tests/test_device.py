@@ -10,9 +10,10 @@ import pytest
 from green2blue.ios.device import (
     DeviceDependencyError,
     DeviceError,
-    DevicePairingError,
     DeviceInfo,
     DeviceNotFoundError,
+    DevicePairingError,
+    build_device_recovery_plan,
     check_pymobiledevice3,
     doctor_device,
     extract_sms_db,
@@ -431,6 +432,43 @@ class TestRestoreBackup:
             restore_backup(backup_dir=tmp_path)
 
         assert mock_service.restore.call_count == 2
+
+
+class TestDeviceRecoveryPlan:
+    def test_restore_after_progress_requires_fresh_device_state(self):
+        plan = build_device_recovery_plan(
+            "restore",
+            "DeviceError: Restore failed: Could not receive from mobilebackup2 (-4)",
+            progress_seen=True,
+            last_progress=44.9,
+        )
+
+        assert plan.classification == "partial_restore_state"
+        assert plan.safe_to_retry is False
+        assert "44.9%" in plan.summary
+        assert any("Erase the test phone" in step for step in plan.next_steps)
+
+    def test_find_my_restore_failure_is_retryable_after_setting_change(self):
+        plan = build_device_recovery_plan(
+            "restore",
+            "DeviceError: Restore failed: MBErrorDomain/211",
+            progress_seen=False,
+        )
+
+        assert plan.classification == "find_my_enabled"
+        assert plan.safe_to_retry is True
+        assert "Find My iPhone" in plan.summary
+
+    def test_backup_authorization_failure_is_retryable(self):
+        plan = build_device_recovery_plan(
+            "backup",
+            "DevicePairingError: Backup failed: SSL handshake is taking longer than 10 seconds: aborting the connection",
+            progress_seen=False,
+        )
+
+        assert plan.classification == "backup_authorization_pending"
+        assert plan.safe_to_retry is True
+        assert any("Unlock the iPhone" in step for step in plan.next_steps)
 
 
 # --- push_synthetic_backup tests ---

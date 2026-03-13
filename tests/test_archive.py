@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -50,12 +51,14 @@ class TestAndroidArchiveImport:
 
         with CanonicalArchive(archive_path) as archive:
             summary = archive.summary()
+            blob_files = [path for path in archive.blob_store_dir.rglob("*") if path.is_file()]
 
         assert summary.import_runs == 1
         assert summary.messages == 3
         assert summary.attachment_parts >= 2
         assert summary.blobs == 1
         assert summary.blob_bytes > 0
+        assert len(blob_files) == 1
 
     def test_reimport_reuses_existing_import_by_default(self, sample_export_zip, tmp_dir):
         archive_path = tmp_dir / "sample.g2b.sqlite"
@@ -190,9 +193,11 @@ class TestIOSArchiveImport:
         summary = CanonicalArchive(archive_path)
         with summary as archive:
             archive_summary = archive.summary()
+            blob_files = [path for path in archive.blob_store_dir.rglob("*") if path.is_file()]
         assert archive_summary.import_runs == 1
         assert archive_summary.messages == 2
         assert archive_summary.blobs == 1
+        assert len(blob_files) == 1
 
         photo_row = conn.execute(
             "SELECT body_text, has_attachments FROM messages WHERE source_uid = 'ios:msg-2'",
@@ -255,6 +260,25 @@ def _create_matching_android_export(tmp_dir: Path) -> Path:
     )
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("messages.ndjson", content)
+    return zip_path
+
+
+def _create_matching_android_media_export(tmp_dir: Path) -> Path:
+    zip_path = tmp_dir / "matching_android_media.zip"
+    payload = b"real-jpeg-bytes"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(
+            "messages.ndjson",
+            (
+                '{"ct_t":"application/vnd.wap.multipart.related","date":"1700000001",'
+                '"date_sent":"1700000001","msg_box":"1","read":"1","sub":null,"thread_id":"1",'
+                '"__parts":[{"seq":"0","ct":"text/plain","text":"Photo caption"},'
+                '{"seq":"1","ct":"image/jpeg","_data":"/data/user/0/com.android.providers.telephony/app_parts/image000000.jpg","cl":"image000000.jpg"}],'
+                '"__sender_address":{"address":"+12025550101","type":"137","charset":"106"},'
+                '"__recipient_addresses":[{"address":"+12025550101","type":"151","charset":"106"}]}\n'
+            ),
+        )
+        zf.writestr("data/image000000.jpg", payload)
     return zip_path
 
 
@@ -384,6 +408,23 @@ class TestArchiveMerge:
 
         result = merge_archive(archive_path)
         assert result.merged_conversations == 1
+
+    def test_cross_source_identical_media_dedupes_to_one_blob(self, sample_backup_dir, tmp_dir):
+        _populate_ios_backup(sample_backup_dir)
+        android_zip = _create_matching_android_media_export(tmp_dir)
+        archive_path = tmp_dir / "dedupe_blob.g2b.sqlite"
+
+        import_android_export(android_zip, archive_path)
+        import_ios_backup(sample_backup_dir, archive_path)
+
+        with CanonicalArchive(archive_path) as archive:
+            summary = archive.summary()
+            blob_files = [path for path in archive.blob_store_dir.rglob("*") if path.is_file()]
+
+        assert summary.blobs == 1
+        assert summary.attachment_parts == 3
+        assert len(blob_files) == 1
+        assert blob_files[0].read_bytes() == b"real-jpeg-bytes"
 
     def test_merge_direct_chat_title_identity_matches_participant_identity(self, tmp_dir):
         archive_path = tmp_dir / "direct_merge.g2b.sqlite"
@@ -535,6 +576,17 @@ class TestArchiveVerify:
 
         assert result.passed is False
         assert any("records 999 messages" in error for error in result.errors)
+
+    def test_verify_archive_detects_missing_external_blob_files(self, sample_export_zip, tmp_dir):
+        archive_path = tmp_dir / "verify_missing_blob.g2b.sqlite"
+
+        import_android_export(sample_export_zip, archive_path)
+        shutil.rmtree(Path(f"{archive_path}.blobs"))
+
+        result = verify_archive(archive_path)
+
+        assert result.passed is False
+        assert any("external blob files" in error for error in result.errors)
 
 
 class TestArchiveStage:
@@ -764,6 +816,39 @@ class TestArchiveExport:
             dry_run=True,
         )
         assert pipeline_result.total_messages_parsed == 2
+
+
+class TestArchiveBlobStore:
+    def test_open_migrates_inline_blob_rows_into_sidecar_store(self, tmp_dir):
+        archive_path = tmp_dir / "inline_blob.g2b.sqlite"
+
+        with CanonicalArchive(archive_path) as archive:
+            blob_id, sha256 = archive.upsert_blob(b"legacy-inline-payload")
+            archive.conn.execute(
+                """
+                UPDATE blobs
+                SET storage_kind = 'inline',
+                    external_relpath = NULL,
+                    data = ?
+                WHERE id = ?
+                """,
+                (sqlite3.Binary(b"legacy-inline-payload"), blob_id),
+            )
+            archive.conn.commit()
+
+        shutil.rmtree(Path(f"{archive_path}.blobs"))
+
+        with CanonicalArchive(archive_path) as archive:
+            blob_path = archive.get_blob_path(blob_id)
+            row = archive.conn.execute(
+                "SELECT storage_kind, external_relpath, length(data) AS data_len FROM blobs WHERE id = ?",
+                (blob_id,),
+            ).fetchone()
+
+        assert blob_path.read_bytes() == b"legacy-inline-payload"
+        assert row["storage_kind"] == "external"
+        assert row["external_relpath"] == f"{sha256[:2]}/{sha256}"
+        assert row["data_len"] == 0
 
     def test_export_for_ios_inject_excludes_ios_source_winners(self, sample_backup_dir, tmp_dir):
         _populate_ios_backup(sample_backup_dir)

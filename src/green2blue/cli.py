@@ -33,6 +33,7 @@ class _DeviceRunArtifacts:
     metadata_path: Path
     mobiledevice_log_path: Path
     progress_path: Path
+    recovery_path: Path
 
 
 def _default_device_run_root() -> Path:
@@ -42,6 +43,14 @@ def _default_device_run_root() -> Path:
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError, TypeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _capture_mobiledevice_logs(output_path: Path, started_at: datetime) -> None:
@@ -95,6 +104,7 @@ def _device_run_session(command: str, metadata: dict[str, object]):
         metadata_path=run_dir / "metadata.json",
         mobiledevice_log_path=run_dir / "mobiledevice.log",
         progress_path=run_dir / "progress.json",
+        recovery_path=run_dir / "recovery.json",
     )
 
     file_handler = logging.FileHandler(artifacts.log_path, encoding="utf-8")
@@ -142,13 +152,7 @@ def _device_run_session(command: str, metadata: dict[str, object]):
             final_metadata["error"] = error_text
 
         _write_json(artifacts.metadata_path, final_metadata)
-        if artifacts.progress_path.exists():
-            try:
-                progress_payload = json.loads(artifacts.progress_path.read_text())
-            except (OSError, ValueError, TypeError):
-                progress_payload = {}
-        else:
-            progress_payload = {}
+        progress_payload = _read_json(artifacts.progress_path)
         progress_payload.update({
             "command": command,
             "status": status,
@@ -157,6 +161,16 @@ def _device_run_session(command: str, metadata: dict[str, object]):
         if error_text:
             progress_payload["error"] = error_text
         _write_json(artifacts.progress_path, progress_payload)
+
+        if status == "failed":
+            recovery_payload = _build_device_recovery_payload(
+                command=command,
+                metadata=final_metadata,
+                error_text=error_text,
+                progress_payload=progress_payload,
+            )
+            if recovery_payload is not None:
+                _write_json(artifacts.recovery_path, recovery_payload)
         _capture_mobiledevice_logs(artifacts.mobiledevice_log_path, started_at)
         print(f"\nRun artifacts: {run_dir}")
 
@@ -254,6 +268,105 @@ class _ProgressReporter:
         _write_json(self.progress_path, payload)
 
 
+def _build_device_recovery_payload(
+    *,
+    command: str,
+    metadata: dict[str, object],
+    error_text: str,
+    progress_payload: dict[str, object],
+) -> dict[str, object] | None:
+    operation = str(metadata.get("device_phase") or "").strip().lower()
+    if not operation:
+        operation = {
+            "device_backup": "backup",
+            "device_restore": "restore",
+            "wizard_restore": "restore",
+        }.get(command, "")
+    if operation not in {"backup", "restore"}:
+        return None
+
+    from green2blue.ios.device import (
+        build_device_recovery_plan,
+        device_recovery_plan_to_dict,
+    )
+
+    last_progress = progress_payload.get("last_progress")
+    progress_seen = isinstance(last_progress, (int, float))
+    plan = build_device_recovery_plan(
+        operation,
+        error_text,
+        progress_seen=progress_seen,
+        last_progress=float(last_progress) if progress_seen else None,
+    )
+    payload = device_recovery_plan_to_dict(plan)
+    payload.update({
+        "command": command,
+        "device_phase": operation,
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "progress_seen": progress_seen,
+        "last_progress": float(last_progress) if progress_seen else None,
+        "error": error_text,
+    })
+    return payload
+
+
+def _print_device_recovery_plan(recovery_payload: dict[str, object]) -> None:
+    if not recovery_payload:
+        return
+
+    print("Recovery assessment:")
+    print(f"  Classification:     {recovery_payload.get('classification', 'unknown')}")
+    print(f"  Operation:          {recovery_payload.get('device_phase') or recovery_payload.get('operation')}")
+    print(f"  Safe to retry now:  {'yes' if recovery_payload.get('safe_to_retry') else 'no'}")
+    summary = recovery_payload.get("summary")
+    if summary:
+        print(f"  Summary:            {summary}")
+    hint = recovery_payload.get("hint")
+    if hint:
+        print(f"  Hint:               {hint}")
+    steps = recovery_payload.get("next_steps")
+    if isinstance(steps, (list, tuple)) and steps:
+        print("  Next steps:")
+        for index, step in enumerate(steps, start=1):
+            print(f"    {index}. {step}")
+
+
+def _load_device_run_bundle(run_dir: Path) -> dict[str, dict[str, object]]:
+    return {
+        "metadata": _read_json(run_dir / "metadata.json"),
+        "progress": _read_json(run_dir / "progress.json"),
+        "recovery": _read_json(run_dir / "recovery.json"),
+    }
+
+
+def _print_device_run_status(run_dir: Path) -> int:
+    bundle = _load_device_run_bundle(run_dir)
+    metadata = bundle["metadata"]
+    progress = bundle["progress"]
+    recovery = bundle["recovery"]
+
+    if not metadata and not progress and not recovery:
+        print(f"No run bundle metadata found in: {run_dir}", file=sys.stderr)
+        return 1
+
+    print(f"Run bundle: {run_dir}")
+    if metadata:
+        print(f"  Command:   {metadata.get('command', '(unknown)')}")
+        print(f"  Status:    {metadata.get('status', '(unknown)')}")
+        print(f"  Started:   {metadata.get('started_at', '(unknown)')}")
+        print(f"  Finished:  {metadata.get('finished_at', '(unknown)')}")
+        if metadata.get("device_udid"):
+            print(f"  Device:    {metadata.get('device_name', '(unknown)')} ({metadata.get('device_udid')})")
+        if metadata.get("device_phase"):
+            print(f"  Phase:     {metadata.get('device_phase')}")
+    if progress:
+        print(f"  Progress:  {progress.get('last_progress') if progress.get('last_progress') is not None else '(none)'}")
+        print(f"  Event:     {progress.get('event', '(unknown)')}")
+    if recovery:
+        _print_device_recovery_plan(recovery)
+    return 0
+
+
 def _print_device_health_report(report) -> None:
     """Render a device doctor report for a human operator."""
     ready = "yes" if report.ready_for_backup_restore else "no"
@@ -266,6 +379,14 @@ def _print_device_health_report(report) -> None:
         print(f"  [{status}] {check.name}: {check.detail}")
     if report.hint:
         print(f"  Hint: {report.hint}")
+
+
+def _print_device_run_failure(run_artifacts: _DeviceRunArtifacts | None) -> None:
+    if run_artifacts is None:
+        return
+    if run_artifacts.recovery_path.exists():
+        _print_device_recovery_plan(_read_json(run_artifacts.recovery_path))
+    print(f"  Live device logs: {run_artifacts.run_dir}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -459,6 +580,37 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("-v", "--verbose", action="store_true")
     inspect_parser.add_argument("-q", "--quiet", action="store_true")
     inspect_parser.set_defaults(func=_cmd_inspect)
+
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Launch a local browser UI to review, filter, and export a subset of an Android export ZIP",
+    )
+    review_parser.add_argument(
+        "export_zip",
+        type=Path,
+        help="Path to the SMS Import/Export ZIP file",
+    )
+    review_parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host interface for the local review server (default: 127.0.0.1)",
+    )
+    review_parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="TCP port for the local review server (default: auto)",
+    )
+    review_parser.add_argument(
+        "--no-open-browser",
+        action="store_true",
+        default=False,
+        help="Do not automatically open a browser tab",
+    )
+    review_parser.add_argument("-v", "--verbose", action="store_true")
+    review_parser.add_argument("-q", "--quiet", action="store_true")
+    review_parser.set_defaults(func=_cmd_review)
 
     # --- archive (canonical archive workflows) ---
     archive_parser = subparsers.add_parser(
@@ -973,6 +1125,15 @@ def _build_parser() -> argparse.ArgumentParser:
     dev_doctor_parser.add_argument("-q", "--quiet", action="store_true")
     dev_doctor_parser.set_defaults(func=_cmd_device_doctor)
 
+    dev_run_status_parser = device_subs.add_parser(
+        "run-status",
+        help="Inspect a persisted live device run bundle and any recovery guidance",
+    )
+    dev_run_status_parser.add_argument("run_dir", type=Path, help="Path to the live run directory")
+    dev_run_status_parser.add_argument("-v", "--verbose", action="store_true")
+    dev_run_status_parser.add_argument("-q", "--quiet", action="store_true")
+    dev_run_status_parser.set_defaults(func=_cmd_device_run_status)
+
     # device backup
     dev_backup_parser = device_subs.add_parser(
         "backup",
@@ -1377,6 +1538,19 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     print(f"  Parse errors:   {counts['errors']}")
     print(f"  Attachments:    {'yes' if has_attachments else 'no'}")
 
+    return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    """Launch the local browser review UI for an Android export."""
+    from green2blue.review import serve_review_app
+
+    serve_review_app(
+        args.export_zip,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_open_browser,
+    )
     return 0
 
 
@@ -2202,6 +2376,11 @@ def _cmd_device_doctor(args: argparse.Namespace) -> int:
     return 0 if report.ready_for_backup_restore else 1
 
 
+def _cmd_device_run_status(args: argparse.Namespace) -> int:
+    """Inspect a persisted live device run bundle."""
+    return _print_device_run_status(args.run_dir)
+
+
 def _cmd_device_backup(args: argparse.Namespace) -> int:
     """Create a backup from a connected device."""
     import tempfile
@@ -2218,23 +2397,33 @@ def _cmd_device_backup(args: argparse.Namespace) -> int:
         return 1
     print(f"  Device doctor: OK ({report.name}, iOS {report.ios_version}, state={report.state})")
 
-    with _device_run_session("device_backup", {
-        "requested_udid": args.udid or "auto",
-        "device_udid": report.udid,
-        "device_name": report.name,
-        "output_dir": str(output_dir),
-    }) as artifacts:
-        progress = _ProgressReporter("Backup", progress_path=artifacts.progress_path)
-        progress.start()
-        try:
-            backup_path = create_backup(
-                backup_dir=output_dir,
-                udid=report.udid,
-                password=args.password,
-                progress_cb=progress.callback,
-            )
-        finally:
-            progress.finish()
+    run_artifacts = None
+    try:
+        with _device_run_session("device_backup", {
+            "requested_udid": args.udid or "auto",
+            "device_udid": report.udid,
+            "device_name": report.name,
+            "output_dir": str(output_dir),
+            "device_phase": "backup",
+        }) as artifacts:
+            run_artifacts = artifacts
+            progress = _ProgressReporter("Backup", progress_path=artifacts.progress_path)
+            progress.start()
+            try:
+                backup_path = create_backup(
+                    backup_dir=output_dir,
+                    udid=report.udid,
+                    password=args.password,
+                    progress_cb=progress.callback,
+                )
+            finally:
+                progress.finish()
+    except Green2BlueError as exc:
+        print(f"\nBackup failed: {exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"Hint: {exc.hint}", file=sys.stderr)
+        _print_device_run_failure(run_artifacts)
+        return 1
 
     print(f"\n\nBackup created: {backup_path}")
     return 0
@@ -2313,69 +2502,80 @@ def _cmd_device_inject(args: argparse.Namespace) -> int:
         "ck_strategy": args.ck_strategy,
     }
 
-    with _device_run_session("device_inject", run_metadata) as artifacts:
-        # Step 2: Create backup
-        backup_root = Path(tempfile.mkdtemp(prefix="g2b_device_"))
-        print("\nCreating backup...")
+    run_artifacts = None
+    try:
+        with _device_run_session("device_inject", run_metadata) as artifacts:
+            run_artifacts = artifacts
+            # Step 2: Create backup
+            backup_root = Path(tempfile.mkdtemp(prefix="g2b_device_"))
+            run_metadata["backup_root"] = str(backup_root)
+            run_metadata["device_phase"] = "backup"
+            print("\nCreating backup...")
 
-        backup_progress = _ProgressReporter("Backup", progress_path=artifacts.progress_path)
-        backup_progress.start()
-        try:
-            backup_path = create_backup(
-                backup_dir=backup_root,
-                udid=target.udid,
+            backup_progress = _ProgressReporter("Backup", progress_path=artifacts.progress_path)
+            backup_progress.start()
+            try:
+                backup_path = create_backup(
+                    backup_dir=backup_root,
+                    udid=target.udid,
+                    password=args.password,
+                    progress_cb=backup_progress.callback,
+                )
+            finally:
+                backup_progress.finish()
+            print(f"\n  Backup saved to: {backup_path}")
+
+            # Step 3: Run injection pipeline
+            run_metadata["device_phase"] = "inject"
+            ck_strategy = CKStrategy(args.ck_strategy)
+            print("\nInjecting messages...")
+            result = run_pipeline(
+                export_path=args.export_zip,
+                backup_path_or_udid=str(backup_path),
+                country=args.country,
+                skip_duplicates=True,
+                include_attachments=True,
+                dry_run=False,
                 password=args.password,
-                progress_cb=backup_progress.callback,
+                ck_strategy=ck_strategy,
+                service=args.service,
             )
-        finally:
-            backup_progress.finish()
-        print(f"\n  Backup saved to: {backup_path}")
 
-        run_metadata["backup_root"] = str(backup_root)
+            # Print injection summary
+            stats = result.injection_stats
+            if stats:
+                print("\n--- Injection Summary ---")
+                print(f"Messages injected: {stats.messages_inserted}")
+                print(f"Handles created:   {stats.handles_inserted}")
+                print(f"Chats created:     {stats.chats_inserted}")
+                print(f"Attachments:       {stats.attachments_inserted}")
 
-        # Step 3: Run injection pipeline
-        ck_strategy = CKStrategy(args.ck_strategy)
-        print("\nInjecting messages...")
-        result = run_pipeline(
-            export_path=args.export_zip,
-            backup_path_or_udid=str(backup_path),
-            country=args.country,
-            skip_duplicates=True,
-            include_attachments=True,
-            dry_run=False,
-            password=args.password,
-            ck_strategy=ck_strategy,
-            service=args.service,
-        )
+            if result.verification:
+                v = result.verification
+                status = "PASSED" if v.passed else "FAILED"
+                print(f"Verification:      {status} ({v.checks_passed}/{v.checks_run})")
 
-        # Print injection summary
-        stats = result.injection_stats
-        if stats:
-            print("\n--- Injection Summary ---")
-            print(f"Messages injected: {stats.messages_inserted}")
-            print(f"Handles created:   {stats.handles_inserted}")
-            print(f"Chats created:     {stats.chats_inserted}")
-            print(f"Attachments:       {stats.attachments_inserted}")
+            # Step 4: Restore to device
+            run_metadata["device_phase"] = "restore"
+            print("\nRestoring modified backup to device...")
 
-        if result.verification:
-            v = result.verification
-            status = "PASSED" if v.passed else "FAILED"
-            print(f"Verification:      {status} ({v.checks_passed}/{v.checks_run})")
-
-        # Step 4: Restore to device
-        print("\nRestoring modified backup to device...")
-
-        restore_progress = _ProgressReporter("Restore", progress_path=artifacts.progress_path)
-        restore_progress.start()
-        try:
-            restore_backup(
-                backup_dir=backup_root,
-                udid=target.udid,
-                password=args.password,
-                progress_cb=restore_progress.callback,
-            )
-        finally:
-            restore_progress.finish()
+            restore_progress = _ProgressReporter("Restore", progress_path=artifacts.progress_path)
+            restore_progress.start()
+            try:
+                restore_backup(
+                    backup_dir=backup_root,
+                    udid=target.udid,
+                    password=args.password,
+                    progress_cb=restore_progress.callback,
+                )
+            finally:
+                restore_progress.finish()
+    except Green2BlueError as exc:
+        print(f"\nDevice inject failed: {exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"Hint: {exc.hint}", file=sys.stderr)
+        _print_device_run_failure(run_artifacts)
+        return 1
 
     _print_post_restore_instructions()
 
@@ -2451,31 +2651,41 @@ def _cmd_device_restore(args: argparse.Namespace) -> int:
             print("Aborted.")
             return 1
 
-    with _device_run_session("device_restore", {
-        "device_udid": target.udid,
-        "device_name": target.name,
-        "backup_path": str(backup_path),
-        "backup_root": str(backup_root),
-        "restore_mode": restore_mode,
-    }) as artifacts:
-        progress = _ProgressReporter("Restore", progress_path=artifacts.progress_path)
-        progress.start()
-        try:
-            if restore_mode == "synthetic":
-                push_synthetic_backup(
-                    backup_dir=backup_root,
-                    udid=target.udid,
-                    progress_cb=progress.callback,
-                )
-            else:
-                restore_backup(
-                    backup_dir=backup_root,
-                    udid=target.udid,
-                    password=args.password,
-                    progress_cb=progress.callback,
-                )
-        finally:
-            progress.finish()
+    run_artifacts = None
+    try:
+        with _device_run_session("device_restore", {
+            "device_udid": target.udid,
+            "device_name": target.name,
+            "backup_path": str(backup_path),
+            "backup_root": str(backup_root),
+            "restore_mode": restore_mode,
+            "device_phase": "restore",
+        }) as artifacts:
+            run_artifacts = artifacts
+            progress = _ProgressReporter("Restore", progress_path=artifacts.progress_path)
+            progress.start()
+            try:
+                if restore_mode == "synthetic":
+                    push_synthetic_backup(
+                        backup_dir=backup_root,
+                        udid=target.udid,
+                        progress_cb=progress.callback,
+                    )
+                else:
+                    restore_backup(
+                        backup_dir=backup_root,
+                        udid=target.udid,
+                        password=args.password,
+                        progress_cb=progress.callback,
+                    )
+            finally:
+                progress.finish()
+    except Green2BlueError as exc:
+        print(f"\nRestore failed: {exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"Hint: {exc.hint}", file=sys.stderr)
+        _print_device_run_failure(run_artifacts)
+        return 1
 
     _print_post_restore_instructions()
 

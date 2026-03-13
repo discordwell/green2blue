@@ -94,4 +94,10 @@ Android-to-iPhone injector into a universal backup and merge tool.
 - Done: streamed unencrypted attachment copies in the backup hot path to avoid whole-file buffering.
 - Done: streamed encrypted attachment writes so large encrypted media imports no longer require full plaintext buffering.
 - Done: persisted `progress.json` snapshots inside live device run bundles for long backup/restore operations.
-- Next: deeper scale work beyond workflow persistence, especially chunked encrypted database handling and richer live-restore retry/recovery ergonomics.
+- Done: streamed encrypted database handling so large encrypted backups no longer require whole-file buffering for `sms.db` or `Manifest.db`.
+- Done: one-shot retry for the known first MobileBackup2 protocol-exchange failure before any live backup/restore progress is emitted.
+- Done: content-addressed archive blob sidecar storage with SHA-256 dedupe across Android and iPhone imports.
+- Done: disk-streamed archive export/render attachment reuse from the blob sidecar store instead of SQLite-inline blobs.
+- Done: persisted `recovery.json` guidance in live device run bundles based on the failed phase and last observed progress.
+- Done: `device run-status` inspection for failed live runs, including classified recovery steps.
+- Next: broader feature-fidelity coverage and more recovery automation above the current classification/persisted-guidance layer.

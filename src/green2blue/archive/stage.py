@@ -186,6 +186,7 @@ def _expected_stage_render(archive_path: Path, merge_run_id: int) -> dict[str, o
             merged_conversation_id = int(message["merged_conversation_id"])
             thread_id = thread_map.setdefault(merged_conversation_id, len(thread_map) + 1)
             record, new_files, _missing = _build_android_record(
+                archive,
                 message,
                 participants.get(merged_conversation_id, ()),
                 attachments.get(int(message["id"]), ()),

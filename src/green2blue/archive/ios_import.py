@@ -281,14 +281,14 @@ def _import_messages(
 
         for part_index, attachment in enumerate(attachments):
             blob_id = None
-            payload = _read_attachment_payload(
+            blob_id = _import_attachment_blob(
+                archive,
                 backup_path,
                 manifest,
                 attachment.filename,
                 encrypted_backup=encrypted_backup,
             )
-            if payload is not None:
-                blob_id, _ = archive.upsert_blob(payload)
+            if blob_id is not None:
                 blob_ids.add(blob_id)
             archive.insert_attachment(
                 message_id=int(message_id),
@@ -468,13 +468,14 @@ def _ios_read_state(row: sqlite3.Row) -> str:
     return "unread"
 
 
-def _read_attachment_payload(
+def _import_attachment_blob(
+    archive: CanonicalArchive,
     backup_path: Path,
     manifest: ManifestDB,
     filename: str | None,
     *,
     encrypted_backup,
-) -> bytes | None:
+) -> int | None:
     if not filename:
         return None
 
@@ -484,14 +485,23 @@ def _read_attachment_payload(
         backup_file = backup_path / file_id[:2] / file_id
         if not backup_file.exists():
             continue
-        payload = backup_file.read_bytes()
         if encrypted_backup is None:
-            return payload
-        entry = manifest.get_entry(file_id)
-        if entry is None:
-            continue
+            blob_id, _ = archive.upsert_blob_path(backup_file)
+            return blob_id
         encryption_key, protection_class = manifest.get_file_encryption_info(file_id)
-        return encrypted_backup.decrypt_db_file(payload, encryption_key, protection_class)
+        with tempfile.NamedTemporaryFile(suffix=".blob", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            encrypted_backup.decrypt_db_file_to_path(
+                backup_file,
+                encryption_key,
+                protection_class,
+                tmp_path,
+            )
+            blob_id, _ = archive.upsert_blob_path(tmp_path)
+            return blob_id
+        finally:
+            tmp_path.unlink(missing_ok=True)
     return None
 
 

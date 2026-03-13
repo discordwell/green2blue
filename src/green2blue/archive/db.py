@@ -8,6 +8,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,8 @@ class CanonicalArchive:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
         _ensure_schema_compat(self.conn)
+        self.blob_store_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_inline_blobs()
         if is_new:
             self.set_meta("archive_format", "green2blue-canonical")
             self.set_meta("archive_version", "1")
@@ -419,17 +422,91 @@ class CanonicalArchive:
     def upsert_blob(self, data: bytes) -> tuple[int, str]:
         assert self.conn is not None
         sha256 = hashlib.sha256(data).hexdigest()
+        byte_size = len(data)
+        relpath = self._blob_relpath(sha256)
+        self._write_blob_bytes(self._blob_absolute_path(relpath), data)
         row = self.conn.execute(
             "SELECT id FROM blobs WHERE sha256 = ?",
             (sha256,),
         ).fetchone()
         if row is not None:
+            self.conn.execute(
+                """
+                UPDATE blobs
+                SET byte_size = ?,
+                    storage_kind = 'external',
+                    external_relpath = ?,
+                    data = ?
+                WHERE id = ?
+                """,
+                (byte_size, relpath, sqlite3.Binary(b""), int(row["id"])),
+            )
             return int(row["id"]), sha256
         cur = self.conn.execute(
-            "INSERT INTO blobs (sha256, byte_size, data) VALUES (?, ?, ?)",
-            (sha256, len(data), data),
+            """
+            INSERT INTO blobs (sha256, byte_size, data, storage_kind, external_relpath)
+            VALUES (?, ?, ?, 'external', ?)
+            """,
+            (sha256, byte_size, sqlite3.Binary(b""), relpath),
         )
         return int(cur.lastrowid), sha256
+
+    def upsert_blob_path(self, source_path: Path | str) -> tuple[int, str]:
+        assert self.conn is not None
+        source = Path(source_path)
+        sha256, byte_size = _hash_path(source)
+        relpath = self._blob_relpath(sha256)
+        self._copy_blob_file(source, self._blob_absolute_path(relpath))
+        row = self.conn.execute(
+            "SELECT id FROM blobs WHERE sha256 = ?",
+            (sha256,),
+        ).fetchone()
+        if row is not None:
+            self.conn.execute(
+                """
+                UPDATE blobs
+                SET byte_size = ?,
+                    storage_kind = 'external',
+                    external_relpath = ?,
+                    data = ?
+                WHERE id = ?
+                """,
+                (byte_size, relpath, sqlite3.Binary(b""), int(row["id"])),
+            )
+            return int(row["id"]), sha256
+        cur = self.conn.execute(
+            """
+            INSERT INTO blobs (sha256, byte_size, data, storage_kind, external_relpath)
+            VALUES (?, ?, ?, 'external', ?)
+            """,
+            (sha256, byte_size, sqlite3.Binary(b""), relpath),
+        )
+        return int(cur.lastrowid), sha256
+
+    def get_blob_path(self, blob_id: int) -> Path:
+        assert self.conn is not None
+        row = self.conn.execute(
+            """
+            SELECT id, sha256, byte_size, data, storage_kind, external_relpath
+            FROM blobs
+            WHERE id = ?
+            """,
+            (blob_id,),
+        ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"Blob {blob_id} does not exist in archive.")
+        return self._ensure_blob_row_externalized(row)
+
+    def count_missing_blob_files(self) -> int:
+        assert self.conn is not None
+        missing = 0
+        for row in self.conn.execute(
+            "SELECT sha256, external_relpath FROM blobs WHERE COALESCE(storage_kind, 'inline') = 'external'"
+        ).fetchall():
+            relpath = row["external_relpath"] or self._blob_relpath(str(row["sha256"]))
+            if not self._blob_absolute_path(str(relpath)).exists():
+                missing += 1
+        return missing
 
     def start_merge_run(self, strategy: str, country: str) -> int:
         assert self.conn is not None
@@ -591,6 +668,83 @@ class CanonicalArchive:
             blob_bytes=int(counts["blob_bytes"]),
         )
 
+    @property
+    def blob_store_dir(self) -> Path:
+        return Path(f"{self.archive_path}.blobs")
+
+    def _migrate_inline_blobs(self) -> None:
+        assert self.conn is not None
+        rows = self.conn.execute(
+            """
+            SELECT id, sha256, byte_size, data, storage_kind, external_relpath
+            FROM blobs
+            WHERE COALESCE(storage_kind, 'inline') != 'external'
+               OR external_relpath IS NULL
+               OR length(data) > 0
+            """
+        ).fetchall()
+        for row in rows:
+            self._ensure_blob_row_externalized(row)
+
+    def _ensure_blob_row_externalized(self, row: sqlite3.Row) -> Path:
+        assert self.conn is not None
+        sha256 = str(row["sha256"])
+        relpath = str(row["external_relpath"] or self._blob_relpath(sha256))
+        dest_path = self._blob_absolute_path(relpath)
+        if dest_path.exists():
+            self.conn.execute(
+                """
+                UPDATE blobs
+                SET storage_kind = 'external',
+                    external_relpath = ?,
+                    data = ?
+                WHERE id = ?
+                """,
+                (relpath, sqlite3.Binary(b""), int(row["id"])),
+            )
+            return dest_path
+
+        payload = bytes(row["data"] or b"")
+        if not payload:
+            raise FileNotFoundError(
+                f"Blob {row['id']} ({sha256}) has no external file and no inline payload."
+            )
+        self._write_blob_bytes(dest_path, payload)
+        self.conn.execute(
+            """
+            UPDATE blobs
+            SET storage_kind = 'external',
+                external_relpath = ?,
+                data = ?
+            WHERE id = ?
+            """,
+            (relpath, sqlite3.Binary(b""), int(row["id"])),
+        )
+        return dest_path
+
+    def _blob_relpath(self, sha256: str) -> str:
+        return f"{sha256[:2]}/{sha256}"
+
+    def _blob_absolute_path(self, relpath: str) -> Path:
+        return self.blob_store_dir / relpath
+
+    def _write_blob_bytes(self, dest_path: Path, data: bytes) -> None:
+        if dest_path.exists():
+            return
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = dest_path.with_name(f".{dest_path.name}.tmp")
+        tmp_path.write_bytes(data)
+        tmp_path.replace(dest_path)
+
+    def _copy_blob_file(self, source_path: Path, dest_path: Path) -> None:
+        if dest_path.exists():
+            return
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = dest_path.with_name(f".{dest_path.name}.tmp")
+        with source_path.open("rb") as src, tmp_path.open("wb") as dst:
+            _copy_stream(src, dst)
+        tmp_path.replace(dest_path)
+
 
 def detect_address_kind(address: str) -> str:
     if "@" in address:
@@ -607,7 +761,10 @@ def json_dumps_stable(payload: dict[str, object]) -> str:
 def _ensure_schema_compat(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "import_runs", "source_fingerprint", "TEXT")
     _ensure_column(conn, "import_runs", "status", "TEXT NOT NULL DEFAULT 'completed'")
+    _ensure_column(conn, "blobs", "storage_kind", "TEXT NOT NULL DEFAULT 'inline'")
+    _ensure_column(conn, "blobs", "external_relpath", "TEXT")
     conn.execute("UPDATE import_runs SET status = 'completed' WHERE status IS NULL")
+    conn.execute("UPDATE blobs SET storage_kind = 'inline' WHERE storage_kind IS NULL")
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -618,3 +775,18 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
     if column in existing:
         return
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _hash_path(path: Path, *, chunk_size: int = 1024 * 1024) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    byte_size = 0
+    with path.open("rb") as fh:
+        while chunk := fh.read(chunk_size):
+            digest.update(chunk)
+            byte_size += len(chunk)
+    return digest.hexdigest(), byte_size
+
+
+def _copy_stream(src: BinaryIO, dst: BinaryIO, *, chunk_size: int = 1024 * 1024) -> None:
+    while chunk := src.read(chunk_size):
+        dst.write(chunk)
