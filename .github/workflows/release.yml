@@ -16,7 +16,7 @@ jobs:
           - os: macos-14
             arch: arm64
             artifact: green2blue-macos-arm64
-          - os: macos-13
+          - os: macos-latest
             arch: x86_64
             artifact: green2blue-macos-x86_64
           - os: windows-latest
@@ -33,7 +33,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[encrypted]"
+          pip install -e .
           pip install pyinstaller
 
       - name: Build standalone binary
