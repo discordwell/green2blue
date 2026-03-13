@@ -5,7 +5,7 @@ REM
 REM What it does:
 REM   1. Checks for Python 3.10+
 REM   2. Creates a virtual environment at %USERPROFILE%\.green2blue\
-REM   3. Installs green2blue with encrypted backup support
+REM   3. Installs green2blue with encrypted backup support included by default
 REM   4. Creates a run-green2blue.bat launcher on your Desktop
 REM   5. Launches the interactive wizard
 
@@ -79,9 +79,9 @@ echo   Installing green2blue...
 REM Check if we're in the repo directory
 set SCRIPT_DIR=%~dp0..
 if exist "%SCRIPT_DIR%\pyproject.toml" (
-    pip install -q "%SCRIPT_DIR%[encrypted]"
+    pip install -q "%SCRIPT_DIR%"
 ) else (
-    pip install -q "green2blue[encrypted]"
+    pip install -q "green2blue"
 )
 
 echo   Installation complete!

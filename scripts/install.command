@@ -5,7 +5,7 @@
 # What it does:
 #   1. Checks for Python 3.10+ (installs via Homebrew if needed)
 #   2. Creates a virtual environment at ~/.green2blue/
-#   3. Installs green2blue with encrypted backup support
+#   3. Installs green2blue with encrypted backup support included by default
 #   4. Creates a run-green2blue.command launcher on your Desktop
 #   5. Launches the interactive wizard
 
@@ -77,9 +77,9 @@ echo "  Installing green2blue..."
 # If we're in the repo directory, install from source
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
-    pip install -q "$SCRIPT_DIR[encrypted]"
+    pip install -q "$SCRIPT_DIR"
 else
-    pip install -q "green2blue[encrypted]"
+    pip install -q "green2blue"
 fi
 
 echo "  Installation complete!"

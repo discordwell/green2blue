@@ -6,8 +6,8 @@ Handles decryption and re-encryption of encrypted iPhone backups:
 - Unwrap class keys using AES key unwrap (RFC3394)
 - Decrypt/re-encrypt Manifest.db and individual files (sms.db)
 
-Requires the `cryptography` package (optional dependency).
-Install via: pip install green2blue[encrypted]
+Requires the `cryptography` package (default dependency).
+Install via: pip install green2blue
 """
 
 from __future__ import annotations

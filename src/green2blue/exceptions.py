@@ -90,7 +90,7 @@ class EncryptedBackupError(BackupError):
     """The backup is encrypted but no password was provided or decryption failed."""
 
     hint = (
-        "This backup is encrypted. Install green2blue[encrypted] and provide "
+        "This backup is encrypted. Make sure green2blue is fully installed and provide "
         "the backup password with --password."
     )
 
@@ -147,7 +147,7 @@ class CryptoError(Green2BlueError):
 class CryptoDependencyError(CryptoError):
     """The cryptography package is not installed."""
 
-    hint = "Install encrypted backup support: pip install green2blue[encrypted]"
+    hint = "Reinstall green2blue so its default cryptography dependency is installed."
 
 
 class WrongPasswordError(CryptoError):

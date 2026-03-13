@@ -15,3 +15,7 @@ build/
 .live_test_exports/
 .tmp_idevicebackup2_control_*/
 .tmp_pmd3_control_*/
+.sample_exports/
+conda-recipe/
+docs/PUBLISHING.md
+.github/workflows/publish-package.yml

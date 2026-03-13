@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,encrypted]"
+          pip install -e ".[dev]"
 
       - name: Run linter
         run: ruff check src/ tests/
@@ -48,3 +48,24 @@ jobs:
 
       - name: Run ruff
         run: ruff check src/ tests/
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install packaging tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Validate package metadata
+        run: python -m twine check dist/*

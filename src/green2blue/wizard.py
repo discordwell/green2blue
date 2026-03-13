@@ -366,7 +366,8 @@ def _step_encryption(backup_info: BackupInfo) -> str | None:
         import cryptography  # noqa: F401
     except ImportError:
         print("\n  This backup is encrypted, but the 'cryptography' package is not installed.")
-        print("  Install it with: pip install green2blue[encrypted]")
+        print("  Reinstall green2blue so its default dependencies are present.")
+        print("  For a source checkout, run: pip install -e .")
         print()
         sys.exit(1)
 

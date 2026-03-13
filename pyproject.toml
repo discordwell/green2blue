@@ -8,7 +8,12 @@ version = "0.1.0"
 description = "Transfer SMS/MMS/RCS messages from Android to iPhone"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+keywords = ["sms", "mms", "android", "iphone", "backup", "migration"]
+dependencies = [
+    "cryptography>=41.0",
+]
 authors = [
     { name = "green2blue contributors" },
 ]
@@ -24,13 +29,20 @@ classifiers = [
     "Topic :: System :: Archiving",
 ]
 
+[project.urls]
+Homepage = "https://github.com/discordwell/green2blue"
+Repository = "https://github.com/discordwell/green2blue"
+Issues = "https://github.com/discordwell/green2blue/issues"
+Changelog = "https://github.com/discordwell/green2blue/releases"
+
 [project.optional-dependencies]
-encrypted = ["cryptography>=41.0"]
 device = ["pymobiledevice3>=4.0"]
 dev = [
+    "build>=1.2",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.4",
+    "twine>=5.0",
 ]
 
 [project.scripts]
