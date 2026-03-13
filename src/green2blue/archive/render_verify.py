@@ -252,14 +252,14 @@ def _open_backup_sms_db(
             with ManifestDB(manifest_path) as manifest:
                 sms_enc_key, sms_protection_class = manifest.get_file_encryption_info(sms_file_id)
 
-            decrypted_sms = encrypted_backup.decrypt_db_file(
-                sms_db_path.read_bytes(),
+            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                sms_db_path = Path(tmp.name)
+            encrypted_backup.decrypt_db_file_to_path(
+                get_sms_db_path(backup_info.path),
                 sms_enc_key,
                 sms_protection_class,
+                sms_db_path,
             )
-            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-                tmp.write(decrypted_sms)
-                sms_db_path = Path(tmp.name)
             temp_paths.append(sms_db_path)
 
         conn = sqlite3.connect(sms_db_path)

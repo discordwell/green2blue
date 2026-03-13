@@ -92,4 +92,6 @@ Android-to-iPhone injector into a universal backup and merge tool.
 - Done: workflow-status inspection for long-running or interrupted large-history runs.
 - Done: durable workflow-backed iPhone injection with persisted inject/render-verify state.
 - Done: streamed unencrypted attachment copies in the backup hot path to avoid whole-file buffering.
-- Next: deeper scale work beyond workflow persistence, especially heavier full-history encrypted attachment processing and longer-running inject ergonomics on live device restore paths.
+- Done: streamed encrypted attachment writes so large encrypted media imports no longer require full plaintext buffering.
+- Done: persisted `progress.json` snapshots inside live device run bundles for long backup/restore operations.
+- Next: deeper scale work beyond workflow persistence, especially chunked encrypted database handling and richer live-restore retry/recovery ergonomics.

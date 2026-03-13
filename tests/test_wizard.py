@@ -365,8 +365,9 @@ class TestWizardHappyPath:
             yield MagicMock(run_dir=tmp_dir / "live-run")
 
         class _FakeProgress:
-            def __init__(self, label):
+            def __init__(self, label, progress_path=None):
                 self.label = label
+                self.progress_path = progress_path
 
             def start(self):
                 return None

@@ -632,15 +632,15 @@ def _run_encrypted_pipeline(
     # Step 4: Decrypt sms.db to temp file
     logger.info("Decrypting sms.db...")
     sms_db_on_disk = get_sms_db_path(backup_info.path)
-    encrypted_sms_data = sms_db_on_disk.read_bytes()
-    decrypted_sms_data = encrypted_backup.decrypt_db_file(
-        encrypted_sms_data, sms_enc_key, sms_prot_class,
-    )
-
     temp_sms_fd, temp_sms_str = tempfile.mkstemp(suffix=".db")
     os.close(temp_sms_fd)
     temp_sms_path = Path(temp_sms_str)
-    temp_sms_path.write_bytes(decrypted_sms_data)
+    encrypted_backup.decrypt_db_file_to_path(
+        sms_db_on_disk,
+        sms_enc_key,
+        sms_prot_class,
+        temp_sms_path,
+    )
 
     try:
         # Step 5: Parse export ZIP
@@ -852,11 +852,12 @@ def _run_encrypted_pipeline(
 
             # Step 12: Re-encrypt sms.db and write to backup
             logger.info("Re-encrypting sms.db...")
-            temp_sms_bytes = temp_sms_path.read_bytes()
-            re_encrypted_sms = encrypted_backup.encrypt_db_file(
-                temp_sms_bytes, sms_enc_key, sms_prot_class,
+            sms_db_size, sms_db_digest = encrypted_backup.encrypt_db_file_from_path(
+                temp_sms_path,
+                sms_enc_key,
+                sms_prot_class,
+                sms_db_on_disk,
             )
-            sms_db_on_disk.write_bytes(re_encrypted_sms)
             _emit_progress(
                 progress_callback,
                 phase="reencrypted_sms_db",
@@ -867,8 +868,6 @@ def _run_encrypted_pipeline(
             # Step 13: Before writing Manifest.db back, swap the sms.db digest to the
             # ciphertext hash iOS expects for encrypted backups.
             with ManifestDB(temp_manifest_path) as manifest:
-                sms_db_size = temp_sms_path.stat().st_size
-                sms_db_digest = hashlib.sha1(re_encrypted_sms).digest()
                 manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
 
             # Step 14: Re-encrypt Manifest.db and write to backup

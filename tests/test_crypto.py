@@ -6,6 +6,7 @@ Tests that do require it are skipped if the package is not installed.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 
 import pytest
@@ -244,6 +245,49 @@ class TestEncryptNewFile:
             encrypted, key_blob = backup.encrypt_new_file(data, 3)
             decrypted = decrypt_file(encrypted, key_blob, 3, backup.class_keys)
             assert decrypted == data, f"Round-trip failed for size {size}"
+
+    def test_encrypt_new_file_to_path_round_trip(self, tmp_path):
+        """Streaming encrypted attachment writes should round-trip too."""
+        from green2blue.ios.crypto import EncryptedBackup, decrypt_file
+
+        backup = EncryptedBackup.__new__(EncryptedBackup)
+        backup.class_keys = {3: b"\xdd" * 32}
+
+        source = tmp_path / "source.bin"
+        dest = tmp_path / "encrypted.bin"
+        original = (b"stream-me-" * 1024) + b"tail"
+        source.write_bytes(original)
+
+        plaintext_size, digest, key_blob = backup.encrypt_new_file_to_path(source, dest, 3)
+
+        encrypted_data = dest.read_bytes()
+        decrypted = decrypt_file(encrypted_data, key_blob, 3, backup.class_keys)
+
+        assert plaintext_size == len(original)
+        assert digest == hashlib.sha1(encrypted_data).digest()
+        assert decrypted == original
+
+    def test_encrypt_and_decrypt_db_file_via_paths(self, tmp_path):
+        """Existing-key DB helpers should stream round-trip from disk."""
+        from green2blue.ios.crypto import EncryptedBackup
+
+        backup = EncryptedBackup.__new__(EncryptedBackup)
+        backup.class_keys = {3: b"\xee" * 32}
+
+        source = tmp_path / "sms.db"
+        encrypted = tmp_path / "sms.db.enc"
+        restored = tmp_path / "sms_restored.db"
+        original = (b"sqlite-format-3\0" * 1024) + b"tail"
+        source.write_bytes(original)
+
+        enc_key_blob = backup.generate_file_key(3)
+        plaintext_size, digest = backup.encrypt_db_file_from_path(source, enc_key_blob, 3, encrypted)
+        restored_size = backup.decrypt_db_file_to_path(encrypted, enc_key_blob, 3, restored)
+
+        assert plaintext_size == len(original)
+        assert restored_size == len(original)
+        assert digest == hashlib.sha1(encrypted.read_bytes()).digest()
+        assert restored.read_bytes() == original
 
 
 @crypto_required

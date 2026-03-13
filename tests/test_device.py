@@ -205,7 +205,9 @@ class TestCreateBackup:
             create_backup(backup_dir=tmp_path, udid="test-udid", progress_cb=progress_fn)
 
         call_kwargs = mock_service.backup.call_args
-        assert call_kwargs.kwargs["progress_callback"] is progress_fn
+        wrapped_progress = call_kwargs.kwargs["progress_callback"]
+        wrapped_progress(42.0)
+        progress_fn.assert_called_once_with(42.0)
 
     def test_wraps_password_protected_backup_errors(self, tmp_path):
         from green2blue.ios.device import create_backup
@@ -275,6 +277,61 @@ class TestCreateBackup:
             create_backup(backup_dir=tmp_path, udid="test-udid")
 
         assert "authorizing local backup" in exc_info.value.hint.lower()
+
+    def test_retries_protocol_exchange_failure_once_before_progress(self, tmp_path):
+        from green2blue.ios.device import create_backup
+
+        mocks = _make_pmd3_mocks()
+        mock_lockdown = MagicMock()
+        mock_lockdown.udid = "test-udid"
+        mock_lockdown.display_name = "Test iPhone"
+
+        mock_service = MagicMock()
+        mock_service.backup.side_effect = [
+            Exception("Could not perform backup protocol version exchange, error code -1"),
+            None,
+        ]
+        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
+            mock_service
+        )
+
+        with (
+            patch.dict(sys.modules, mocks),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+        ):
+            result = create_backup(backup_dir=tmp_path, udid="test-udid")
+
+        assert result == tmp_path / "test-udid"
+        assert mock_service.backup.call_count == 2
+
+    def test_does_not_retry_protocol_exchange_failure_after_progress(self, tmp_path):
+        from green2blue.ios.device import create_backup
+
+        mocks = _make_pmd3_mocks()
+        mock_lockdown = MagicMock()
+        mock_lockdown.udid = "test-udid"
+        mock_lockdown.display_name = "Test iPhone"
+
+        mock_service = MagicMock()
+
+        def _fail_after_progress(*, progress_callback=None, **_kwargs):
+            assert progress_callback is not None
+            progress_callback(1.0)
+            raise Exception("Could not perform backup protocol version exchange, error code -1")
+
+        mock_service.backup.side_effect = _fail_after_progress
+        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
+            mock_service
+        )
+
+        with (
+            patch.dict(sys.modules, mocks),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+            pytest.raises(DeviceError, match="Backup failed"),
+        ):
+            create_backup(backup_dir=tmp_path, udid="test-udid")
+
+        assert mock_service.backup.call_count == 1
 
 
 # --- restore_backup tests ---
@@ -350,6 +407,30 @@ class TestRestoreBackup:
 
         call_kwargs = mock_service.restore.call_args.kwargs
         assert call_kwargs["password"] == "secret"
+
+    def test_restore_retries_protocol_exchange_failure_once_before_progress(self, tmp_path):
+        from green2blue.ios.device import restore_backup
+
+        mocks = _make_pmd3_mocks()
+        mock_lockdown = MagicMock()
+        mock_lockdown.display_name = "Test iPhone"
+
+        mock_service = MagicMock()
+        mock_service.restore.side_effect = [
+            Exception("Could not perform backup protocol version exchange, error code -1"),
+            None,
+        ]
+        mocks["pymobiledevice3.services.mobilebackup2"].Mobilebackup2Service.return_value = (
+            mock_service
+        )
+
+        with (
+            patch.dict(sys.modules, mocks),
+            patch("green2blue.ios.device._get_lockdown_async", new=AsyncMock(return_value=mock_lockdown)),
+        ):
+            restore_backup(backup_dir=tmp_path)
+
+        assert mock_service.restore.call_count == 2
 
 
 # --- push_synthetic_backup tests ---

@@ -17,6 +17,7 @@ import os
 import plistlib
 import struct
 import tempfile
+import hashlib
 from pathlib import Path
 
 from green2blue.exceptions import (
@@ -246,6 +247,72 @@ def decrypt_file(
     return decrypted
 
 
+def decrypt_file_to_path(
+    encrypted_path: Path,
+    dest_path: Path,
+    encryption_key: bytes,
+    protection_class: int,
+    class_keys: dict[int, bytes],
+    *,
+    chunk_size: int = 1024 * 1024,
+) -> int:
+    """Decrypt a backup file from disk into a destination path.
+
+    Returns:
+        Plaintext size in bytes.
+    """
+    check_crypto_available()
+
+    class_key = class_keys.get(protection_class)
+    if not class_key:
+        raise CryptoError(
+            f"No class key for protection class {protection_class}"
+        )
+
+    wrapped_file_key = encryption_key[4:] if len(encryption_key) >= 4 else encryption_key
+
+    try:
+        file_key = aes_key_unwrap(class_key, wrapped_file_key)
+    except Exception as e:
+        raise CryptoError(f"Failed to unwrap file key: {e}") from e
+
+    iv = b"\x00" * 16
+    cipher = Cipher(algorithms.AES(file_key), modes.CBC(iv))
+    decryptor = cipher.decryptor()
+
+    plaintext_size = 0
+    buffered = b""
+
+    with encrypted_path.open("rb") as src, dest_path.open("wb") as dst:
+        while True:
+            chunk = src.read(chunk_size)
+            if not chunk:
+                break
+            buffered += chunk
+            full_len = len(buffered) - 16
+            if full_len <= 0:
+                continue
+            full_len -= full_len % 16
+            if full_len <= 0:
+                continue
+            decrypted_chunk = decryptor.update(buffered[:full_len])
+            buffered = buffered[full_len:]
+            if decrypted_chunk:
+                dst.write(decrypted_chunk)
+                plaintext_size += len(decrypted_chunk)
+
+        decrypted_tail = decryptor.update(buffered) + decryptor.finalize()
+        if decrypted_tail:
+            pad_len = decrypted_tail[-1]
+            if 0 < pad_len <= 16 and all(b == pad_len for b in decrypted_tail[-pad_len:]):
+                decrypted_tail = decrypted_tail[:-pad_len]
+            if decrypted_tail:
+                dst.write(decrypted_tail)
+                plaintext_size += len(decrypted_tail)
+
+    return plaintext_size
+
+
 def encrypt_file(
     plaintext: bytes,
     encryption_key: bytes,
@@ -289,6 +356,71 @@ def encrypt_file(
     cipher = Cipher(algorithms.AES(file_key), modes.CBC(iv))
     encryptor = cipher.encryptor()
     return encryptor.update(padded) + encryptor.finalize()
+
+
+def encrypt_file_from_path(
+    plaintext_path: Path,
+    dest_path: Path,
+    encryption_key: bytes,
+    protection_class: int,
+    class_keys: dict[int, bytes],
+    *,
+    chunk_size: int = 1024 * 1024,
+) -> tuple[int, bytes]:
+    """Encrypt a plaintext file from disk into a destination path.
+
+    Returns:
+        Tuple of (plaintext_size, ciphertext_sha1_digest).
+    """
+    check_crypto_available()
+
+    class_key = class_keys.get(protection_class)
+    if not class_key:
+        raise CryptoError(
+            f"No class key for protection class {protection_class}"
+        )
+
+    wrapped_file_key = encryption_key[4:] if len(encryption_key) >= 4 else encryption_key
+
+    try:
+        file_key = aes_key_unwrap(class_key, wrapped_file_key)
+    except Exception as e:
+        raise CryptoError(f"Failed to unwrap file key for encryption: {e}") from e
+
+    iv = b"\x00" * 16
+    cipher = Cipher(algorithms.AES(file_key), modes.CBC(iv))
+    encryptor = cipher.encryptor()
+
+    digest_hasher = hashlib.sha1()
+    plaintext_size = 0
+    buffered = b""
+
+    with plaintext_path.open("rb") as src, dest_path.open("wb") as dst:
+        while True:
+            chunk = src.read(chunk_size)
+            if not chunk:
+                break
+            plaintext_size += len(chunk)
+            buffered += chunk
+            full_len = len(buffered) - (len(buffered) % 16)
+            if full_len == 0:
+                continue
+            encrypted_chunk = encryptor.update(buffered[:full_len])
+            buffered = buffered[full_len:]
+            if encrypted_chunk:
+                dst.write(encrypted_chunk)
+                digest_hasher.update(encrypted_chunk)
+
+        pad_len = 16 - (len(buffered) % 16)
+        if pad_len == 0:
+            pad_len = 16
+        padded = buffered + bytes([pad_len] * pad_len)
+        encrypted_tail = encryptor.update(padded) + encryptor.finalize()
+        if encrypted_tail:
+            dst.write(encrypted_tail)
+            digest_hasher.update(encrypted_tail)
+
+    return plaintext_size, digest_hasher.digest()
 
 
 class EncryptedBackup:
@@ -349,18 +481,17 @@ class EncryptedBackup:
             Path to the decrypted Manifest.db.
         """
         encrypted_path = self.backup_path / "Manifest.db"
-        encrypted_data = encrypted_path.read_bytes()
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            dest_path = Path(tmp.name)
 
-        decrypted = decrypt_file(
-            encrypted_data,
+        decrypt_file_to_path(
+            encrypted_path,
+            dest_path,
             self._manifest_key,
             self._manifest_class,
             self.class_keys,
         )
-
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-            tmp.write(decrypted)
-        return Path(tmp.name)
+        return dest_path
 
     def decrypt_db_file(
         self,
@@ -371,6 +502,22 @@ class EncryptedBackup:
         """Decrypt an individual database file."""
         return decrypt_file(file_data, encryption_key, protection_class, self.class_keys)
 
+    def decrypt_db_file_to_path(
+        self,
+        encrypted_path: Path,
+        encryption_key: bytes,
+        protection_class: int,
+        dest_path: Path,
+    ) -> int:
+        """Decrypt an individual database file from disk to a destination path."""
+        return decrypt_file_to_path(
+            encrypted_path,
+            dest_path,
+            encryption_key,
+            protection_class,
+            self.class_keys,
+        )
+
     def encrypt_db_file(
         self,
         plaintext: bytes,
@@ -379,6 +526,22 @@ class EncryptedBackup:
     ) -> bytes:
         """Re-encrypt a modified database file."""
         return encrypt_file(plaintext, encryption_key, protection_class, self.class_keys)
+
+    def encrypt_db_file_from_path(
+        self,
+        plaintext_path: Path,
+        encryption_key: bytes,
+        protection_class: int,
+        dest_path: Path,
+    ) -> tuple[int, bytes]:
+        """Re-encrypt a modified database file from disk into the backup."""
+        return encrypt_file_from_path(
+            plaintext_path,
+            dest_path,
+            encryption_key,
+            protection_class,
+            self.class_keys,
+        )
 
     def generate_file_key(self, protection_class: int = 3) -> bytes:
         """Generate a new per-file encryption key for an encrypted backup.
@@ -425,13 +588,74 @@ class EncryptedBackup:
         )
         return encrypted, enc_key_blob
 
+    def encrypt_new_file_to_path(
+        self,
+        source_path: Path,
+        dest_path: Path,
+        protection_class: int = 3,
+        chunk_size: int = 1024 * 1024,
+    ) -> tuple[int, bytes, bytes]:
+        """Encrypt a new file from disk directly into the backup path.
+
+        This avoids loading large attachment payloads fully into memory before
+        writing them into the encrypted backup.
+
+        Returns:
+            Tuple of (plaintext_size, encrypted_digest, encryption_key_blob).
+        """
+        check_crypto_available()
+
+        class_key = self.class_keys.get(protection_class)
+        if not class_key:
+            raise CryptoError(
+                f"No class key for protection class {protection_class}"
+            )
+
+        file_key = os.urandom(32)
+        wrapped = aes_key_wrap(class_key, file_key)
+        enc_key_blob = struct.pack("<I", protection_class) + wrapped
+
+        iv = b"\x00" * 16
+        cipher = Cipher(algorithms.AES(file_key), modes.CBC(iv))
+        encryptor = cipher.encryptor()
+
+        digest_hasher = hashlib.sha1()
+        plaintext_size = 0
+        buffered = b""
+
+        with source_path.open("rb") as src, dest_path.open("wb") as dst:
+            while True:
+                chunk = src.read(chunk_size)
+                if not chunk:
+                    break
+                plaintext_size += len(chunk)
+                buffered += chunk
+                full_len = len(buffered) - (len(buffered) % 16)
+                if full_len == 0:
+                    continue
+                encrypted_chunk = encryptor.update(buffered[:full_len])
+                buffered = buffered[full_len:]
+                if encrypted_chunk:
+                    dst.write(encrypted_chunk)
+                    digest_hasher.update(encrypted_chunk)
+
+            pad_len = 16 - (len(buffered) % 16)
+            if pad_len == 0:
+                pad_len = 16
+            padded = buffered + bytes([pad_len] * pad_len)
+            encrypted_tail = encryptor.update(padded) + encryptor.finalize()
+            if encrypted_tail:
+                dst.write(encrypted_tail)
+                digest_hasher.update(encrypted_tail)
+
+        return plaintext_size, digest_hasher.digest(), enc_key_blob
+
     def re_encrypt_manifest_db(self, decrypted_path: Path) -> None:
         """Re-encrypt a modified Manifest.db back into the backup."""
-        plaintext = decrypted_path.read_bytes()
-        encrypted = encrypt_file(
-            plaintext,
+        encrypt_file_from_path(
+            decrypted_path,
+            self.backup_path / "Manifest.db",
             self._manifest_key,
             self._manifest_class,
             self.class_keys,
         )
-        (self.backup_path / "Manifest.db").write_bytes(encrypted)

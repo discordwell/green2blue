@@ -807,7 +807,10 @@ def _step_offer_device_restore(
 
             if create_rollback:
                 print("\n  Creating rollback backup...\n")
-                backup_progress = _ProgressReporter("Backup")
+                backup_progress = _ProgressReporter(
+                    "Backup",
+                    progress_path=artifacts.progress_path,
+                )
                 backup_progress.start()
                 try:
                     rollback_path = create_backup(
@@ -822,7 +825,10 @@ def _step_offer_device_restore(
                 print(f"\n  Rollback backup saved to: {rollback_path}")
 
             print("\n  Restoring modified backup to the connected iPhone...\n")
-            restore_progress = _ProgressReporter("Restore")
+            restore_progress = _ProgressReporter(
+                "Restore",
+                progress_path=artifacts.progress_path,
+            )
             restore_progress.start()
             try:
                 restore_backup(

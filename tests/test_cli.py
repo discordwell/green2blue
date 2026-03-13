@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import plistlib
 import sqlite3
@@ -18,6 +19,7 @@ from green2blue.cli import (
     _capture_mobiledevice_logs,
     _cmd_device_doctor,
     _cmd_device_restore,
+    _ProgressReporter,
     _confirm_backup,
     _device_run_session,
     _format_progress_heartbeat,
@@ -418,6 +420,28 @@ class TestDeviceRunArtifacts:
         assert artifacts.run_dir.exists()
         assert artifacts.metadata_path.exists()
         assert artifacts.mobiledevice_log_path.read_text() == "host logs"
+        assert artifacts.progress_path.exists()
+
+    def test_progress_reporter_persists_progress_snapshot(self, tmp_dir):
+        run_root = tmp_dir / "runs"
+
+        def fake_capture(log_path, _started_at):
+            log_path.write_text("host logs")
+
+        with (
+            patch("green2blue.cli._default_device_run_root", return_value=run_root),
+            patch("green2blue.cli._capture_mobiledevice_logs", side_effect=fake_capture),
+        ):
+            with _device_run_session("restore", {"device_udid": "abc123"}) as artifacts:
+                progress = _ProgressReporter("Restore", heartbeat_seconds=60.0, progress_path=artifacts.progress_path)
+                progress.start()
+                progress.callback(12.5)
+                progress.finish()
+
+        payload = json.loads(artifacts.progress_path.read_text())
+        assert payload["label"] == "Restore"
+        assert payload["status"] == "completed"
+        assert payload["last_progress"] == 12.5
 
 
 class TestArchiveCLI:

@@ -32,6 +32,7 @@ class _DeviceRunArtifacts:
     log_path: Path
     metadata_path: Path
     mobiledevice_log_path: Path
+    progress_path: Path
 
 
 def _default_device_run_root() -> Path:
@@ -93,6 +94,7 @@ def _device_run_session(command: str, metadata: dict[str, object]):
         log_path=run_dir / "green2blue.log",
         metadata_path=run_dir / "metadata.json",
         mobiledevice_log_path=run_dir / "mobiledevice.log",
+        progress_path=run_dir / "progress.json",
     )
 
     file_handler = logging.FileHandler(artifacts.log_path, encoding="utf-8")
@@ -107,6 +109,15 @@ def _device_run_session(command: str, metadata: dict[str, object]):
     error_text = ""
 
     logger.debug("Starting device run bundle at %s", run_dir)
+    _write_json(
+        artifacts.progress_path,
+        {
+            "command": command,
+            "status": "running",
+            "started_at": started_at.isoformat(),
+            "updated_at": started_at.isoformat(),
+        },
+    )
 
     try:
         yield artifacts
@@ -131,6 +142,21 @@ def _device_run_session(command: str, metadata: dict[str, object]):
             final_metadata["error"] = error_text
 
         _write_json(artifacts.metadata_path, final_metadata)
+        if artifacts.progress_path.exists():
+            try:
+                progress_payload = json.loads(artifacts.progress_path.read_text())
+            except (OSError, ValueError, TypeError):
+                progress_payload = {}
+        else:
+            progress_payload = {}
+        progress_payload.update({
+            "command": command,
+            "status": status,
+            "finished_at": datetime.now().astimezone().isoformat(),
+        })
+        if error_text:
+            progress_payload["error"] = error_text
+        _write_json(artifacts.progress_path, progress_payload)
         _capture_mobiledevice_logs(artifacts.mobiledevice_log_path, started_at)
         print(f"\nRun artifacts: {run_dir}")
 
@@ -153,10 +179,17 @@ def _format_progress_heartbeat(
 class _ProgressReporter:
     """Print live progress and heartbeat updates for long-running device steps."""
 
-    def __init__(self, label: str, heartbeat_seconds: float = 15.0):
+    def __init__(
+        self,
+        label: str,
+        heartbeat_seconds: float = 15.0,
+        progress_path: Path | None = None,
+    ):
         self.label = label
         self.heartbeat_seconds = heartbeat_seconds
+        self.progress_path = progress_path
         self._start_time = time.monotonic()
+        self._started_at = datetime.now().astimezone()
         self._last_update = None
         self._last_progress = None
         self._last_printed = None
@@ -165,6 +198,7 @@ class _ProgressReporter:
         self._thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
 
     def start(self) -> None:
+        self._persist_snapshot("started")
         self._thread.start()
 
     def callback(self, pct: float) -> None:
@@ -176,12 +210,14 @@ class _ProgressReporter:
                 self._last_printed = pct
 
         logger.debug("%s progress callback: %.1f%%", self.label, pct)
+        self._persist_snapshot("progress")
         if should_print:
             print(_format_progress_update(self.label, pct), flush=True)
 
     def finish(self) -> None:
         self._stop_event.set()
         self._thread.join(timeout=0.1)
+        self._persist_snapshot("finished", status="completed")
 
     def _heartbeat_loop(self) -> None:
         while not self._stop_event.wait(self.heartbeat_seconds):
@@ -198,7 +234,24 @@ class _ProgressReporter:
                 total_age,
             )
             logger.debug(message.strip())
+            self._persist_snapshot("heartbeat")
             print(message, flush=True)
+
+    def _persist_snapshot(self, event: str, *, status: str = "running") -> None:
+        if self.progress_path is None:
+            return
+
+        with self._lock:
+            payload = {
+                "label": self.label,
+                "status": status,
+                "event": event,
+                "started_at": self._started_at.isoformat(),
+                "updated_at": datetime.now().astimezone().isoformat(),
+                "elapsed_seconds": time.monotonic() - self._start_time,
+                "last_progress": self._last_progress,
+            }
+        _write_json(self.progress_path, payload)
 
 
 def _print_device_health_report(report) -> None:
@@ -1885,12 +1938,15 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
             sms_file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
             with ManifestDB(temp_manifest) as manifest:
                 sms_enc_key, sms_prot_class = manifest.get_file_encryption_info(sms_file_id)
-            encrypted_data = sms_db_path.read_bytes()
-            decrypted_data = eb.decrypt_db_file(encrypted_data, sms_enc_key, sms_prot_class)
             fd, tmp = tempfile.mkstemp(suffix=".db")
             os.close(fd)
             temp_path = Path(tmp)
-            temp_path.write_bytes(decrypted_data)
+            eb.decrypt_db_file_to_path(
+                sms_db_path,
+                sms_enc_key,
+                sms_prot_class,
+                temp_path,
+            )
             temp_manifest.unlink(missing_ok=True)
             sms_db_path = temp_path
 
@@ -1990,25 +2046,26 @@ def _cmd_prepare_sync(args: argparse.Namespace) -> int:
             sms_file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
             with ManifestDB(temp_manifest) as manifest:
                 sms_enc_key, sms_prot_class = manifest.get_file_encryption_info(sms_file_id)
-            encrypted_data = sms_db_path.read_bytes()
-            decrypted_data = eb.decrypt_db_file(encrypted_data, sms_enc_key, sms_prot_class)
             fd, tmp = tempfile.mkstemp(suffix=".db")
             os.close(fd)
             temp_path = Path(tmp)
-            temp_path.write_bytes(decrypted_data)
+            eb.decrypt_db_file_to_path(
+                sms_db_path,
+                sms_enc_key,
+                sms_prot_class,
+                temp_path,
+            )
 
             result = prepare_sync(temp_path)
 
-            sms_db_size = temp_path.stat().st_size
-            re_encrypted = eb.encrypt_db_file(
-                temp_path.read_bytes(), sms_enc_key, sms_prot_class,
+            sms_db_size, sms_db_digest = eb.encrypt_db_file_from_path(
+                temp_path,
+                sms_enc_key,
+                sms_prot_class,
+                sms_db_path,
             )
-            sms_db_digest = hashlib.sha1(re_encrypted).digest()
             with ManifestDB(temp_manifest) as manifest:
                 manifest.update_sms_db_entry(sms_db_size, new_digest=sms_db_digest)
-
-            # Re-encrypt sms.db and write back
-            sms_db_path.write_bytes(re_encrypted)
 
             # Re-encrypt Manifest.db and write back
             eb.re_encrypt_manifest_db(temp_manifest)
@@ -2166,8 +2223,8 @@ def _cmd_device_backup(args: argparse.Namespace) -> int:
         "device_udid": report.udid,
         "device_name": report.name,
         "output_dir": str(output_dir),
-    }):
-        progress = _ProgressReporter("Backup")
+    }) as artifacts:
+        progress = _ProgressReporter("Backup", progress_path=artifacts.progress_path)
         progress.start()
         try:
             backup_path = create_backup(
@@ -2256,12 +2313,12 @@ def _cmd_device_inject(args: argparse.Namespace) -> int:
         "ck_strategy": args.ck_strategy,
     }
 
-    with _device_run_session("device_inject", run_metadata):
+    with _device_run_session("device_inject", run_metadata) as artifacts:
         # Step 2: Create backup
         backup_root = Path(tempfile.mkdtemp(prefix="g2b_device_"))
         print("\nCreating backup...")
 
-        backup_progress = _ProgressReporter("Backup")
+        backup_progress = _ProgressReporter("Backup", progress_path=artifacts.progress_path)
         backup_progress.start()
         try:
             backup_path = create_backup(
@@ -2308,7 +2365,7 @@ def _cmd_device_inject(args: argparse.Namespace) -> int:
         # Step 4: Restore to device
         print("\nRestoring modified backup to device...")
 
-        restore_progress = _ProgressReporter("Restore")
+        restore_progress = _ProgressReporter("Restore", progress_path=artifacts.progress_path)
         restore_progress.start()
         try:
             restore_backup(
@@ -2400,8 +2457,8 @@ def _cmd_device_restore(args: argparse.Namespace) -> int:
         "backup_path": str(backup_path),
         "backup_root": str(backup_root),
         "restore_mode": restore_mode,
-    }):
-        progress = _ProgressReporter("Restore")
+    }) as artifacts:
+        progress = _ProgressReporter("Restore", progress_path=artifacts.progress_path)
         progress.start()
         try:
             if restore_mode == "synthetic":

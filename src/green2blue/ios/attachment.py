@@ -65,13 +65,13 @@ def copy_attachment_to_backup(
     dest_path = dest_dir / file_id
 
     if encrypted_backup is not None:
-        # Encrypted path: encrypt the file data before writing
-        plaintext = source_path.read_bytes()
-        encrypted_data, enc_key_blob = encrypted_backup.encrypt_new_file(
-            plaintext, protection_class,
+        # Encrypted path: stream the plaintext from disk into the encrypted
+        # backup file to avoid buffering large attachment payloads in memory.
+        file_size, digest, enc_key_blob = encrypted_backup.encrypt_new_file_to_path(
+            source_path,
+            dest_path,
+            protection_class,
         )
-        digest = hashlib.sha1(encrypted_data).digest()
-        dest_path.write_bytes(encrypted_data)
         logger.debug("Encrypted attachment: %s -> %s", source_path.name, dest_path)
 
         # iOS keeps the plaintext size but stores the ciphertext digest in Manifest.db.

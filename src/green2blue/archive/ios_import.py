@@ -81,14 +81,15 @@ def import_ios_backup(
                     sms_file_id,
                 )
 
-            decrypted_sms = encrypted_backup.decrypt_db_file(
-                sms_db_path.read_bytes(),
+            encrypted_sms_path = sms_db_path
+            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                sms_db_path = Path(tmp.name)
+            encrypted_backup.decrypt_db_file_to_path(
+                encrypted_sms_path,
                 sms_enc_key,
                 sms_protection_class,
+                sms_db_path,
             )
-            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-                tmp.write(decrypted_sms)
-                sms_db_path = Path(tmp.name)
             temp_paths.append(sms_db_path)
 
         with (

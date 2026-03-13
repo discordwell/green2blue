@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS = 2
+
 
 async def _maybe_await(value):
     """Await async pymobiledevice3 results, pass through sync values."""
@@ -163,6 +165,23 @@ def _wrap_device_exception(action: str, exc: Exception) -> DeviceError:
     if state == "not_connected":
         return DeviceNotFoundError(f"{action}: {exc}", hint=hint)
     return DeviceError(f"{action}: {exc}", hint=hint)
+
+
+def _is_retryable_mobilebackup_handshake_error(exc: Exception, *, progress_seen: bool) -> bool:
+    """Return whether a MobileBackup2 failure is safe to retry immediately once.
+
+    We only retry the known first-exchange protocol failure, and only if the
+    operation never emitted progress. If progress has already started, retrying
+    would hide a real mid-operation failure.
+    """
+    if progress_seen:
+        return False
+
+    lowered = f"{type(exc).__name__}: {exc}".lower()
+    return (
+        "protocol version exchange" in lowered
+        and "error code -1" in lowered
+    )
 
 
 def check_pymobiledevice3() -> None:
@@ -436,21 +455,46 @@ def create_backup(
 
             logger.info("Starting backup of %s to %s...", lockdown.display_name, device_backup_dir)
 
-            service = Mobilebackup2Service(lockdown)
-            connect = getattr(service, "connect", None)
-            close = getattr(service, "close", None)
+            for attempt in range(1, _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS + 1):
+                service = Mobilebackup2Service(lockdown)
+                connect = getattr(service, "connect", None)
+                close = getattr(service, "close", None)
+                attempt_progress_seen = False
 
-            if callable(connect):
-                await _maybe_await(connect())
-            try:
-                await _maybe_await(service.backup(
-                    full=True,
-                    backup_directory=str(backup_dir),
-                    progress_callback=progress_cb,
-                ))
-            finally:
-                if callable(close):
-                    await _maybe_await(close())
+                def _progress_wrapper(pct: float) -> None:
+                    nonlocal attempt_progress_seen
+                    attempt_progress_seen = True
+                    if progress_cb is not None:
+                        progress_cb(pct)
+
+                if callable(connect):
+                    await _maybe_await(connect())
+                try:
+                    await _maybe_await(service.backup(
+                        full=True,
+                        backup_directory=str(backup_dir),
+                        progress_callback=_progress_wrapper,
+                    ))
+                    break
+                except Exception as exc:
+                    if (
+                        attempt < _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS
+                        and _is_retryable_mobilebackup_handshake_error(
+                            exc,
+                            progress_seen=attempt_progress_seen,
+                        )
+                    ):
+                        logger.warning(
+                            "Backup handshake failed before progress on attempt %d/%d; retrying once: %s",
+                            attempt,
+                            _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS,
+                            exc,
+                        )
+                        continue
+                    raise
+                finally:
+                    if callable(close):
+                        await _maybe_await(close())
 
             logger.info("Backup complete: %s", device_backup_dir)
             return device_backup_dir
@@ -487,27 +531,52 @@ def restore_backup(
 
             logger.info("Starting restore to %s...", lockdown.display_name)
 
-            service = Mobilebackup2Service(lockdown)
-            connect = getattr(service, "connect", None)
-            close = getattr(service, "close", None)
+            for attempt in range(1, _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS + 1):
+                service = Mobilebackup2Service(lockdown)
+                connect = getattr(service, "connect", None)
+                close = getattr(service, "close", None)
+                attempt_progress_seen = False
 
-            # Critical flags: system + settings + remove + reboot
-            # remove=True sets RemoveItemsNotRestored which triggers iOS data migration
-            if callable(connect):
-                await _maybe_await(connect())
-            try:
-                await _maybe_await(service.restore(
-                    backup_directory=str(backup_dir),
-                    system=True,
-                    settings=True,
-                    remove=True,
-                    reboot=True,
-                    password=password or "",
-                    progress_callback=progress_cb,
-                ))
-            finally:
-                if callable(close):
-                    await _maybe_await(close())
+                def _progress_wrapper(pct: float) -> None:
+                    nonlocal attempt_progress_seen
+                    attempt_progress_seen = True
+                    if progress_cb is not None:
+                        progress_cb(pct)
+
+                # Critical flags: system + settings + remove + reboot
+                # remove=True sets RemoveItemsNotRestored which triggers iOS data migration
+                if callable(connect):
+                    await _maybe_await(connect())
+                try:
+                    await _maybe_await(service.restore(
+                        backup_directory=str(backup_dir),
+                        system=True,
+                        settings=True,
+                        remove=True,
+                        reboot=True,
+                        password=password or "",
+                        progress_callback=_progress_wrapper,
+                    ))
+                    break
+                except Exception as exc:
+                    if (
+                        attempt < _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS
+                        and _is_retryable_mobilebackup_handshake_error(
+                            exc,
+                            progress_seen=attempt_progress_seen,
+                        )
+                    ):
+                        logger.warning(
+                            "Restore handshake failed before progress on attempt %d/%d; retrying once: %s",
+                            attempt,
+                            _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS,
+                            exc,
+                        )
+                        continue
+                    raise
+                finally:
+                    if callable(close):
+                        await _maybe_await(close())
 
             logger.info("Restore complete. Device will reboot.")
         except Green2BlueError:
@@ -540,24 +609,49 @@ def push_synthetic_backup(
 
             logger.info("Pushing synthetic backup to %s (experimental)...", lockdown.display_name)
 
-            service = Mobilebackup2Service(lockdown)
-            connect = getattr(service, "connect", None)
-            close = getattr(service, "close", None)
+            for attempt in range(1, _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS + 1):
+                service = Mobilebackup2Service(lockdown)
+                connect = getattr(service, "connect", None)
+                close = getattr(service, "close", None)
+                attempt_progress_seen = False
 
-            # Partial restore: system=True, remove=False (overlay, no delete)
-            if callable(connect):
-                await _maybe_await(connect())
-            try:
-                await _maybe_await(service.restore(
-                    backup_directory=str(backup_dir),
-                    system=True,
-                    remove=False,
-                    reboot=True,
-                    progress_callback=progress_cb,
-                ))
-            finally:
-                if callable(close):
-                    await _maybe_await(close())
+                def _progress_wrapper(pct: float) -> None:
+                    nonlocal attempt_progress_seen
+                    attempt_progress_seen = True
+                    if progress_cb is not None:
+                        progress_cb(pct)
+
+                # Partial restore: system=True, remove=False (overlay, no delete)
+                if callable(connect):
+                    await _maybe_await(connect())
+                try:
+                    await _maybe_await(service.restore(
+                        backup_directory=str(backup_dir),
+                        system=True,
+                        remove=False,
+                        reboot=True,
+                        progress_callback=_progress_wrapper,
+                    ))
+                    break
+                except Exception as exc:
+                    if (
+                        attempt < _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS
+                        and _is_retryable_mobilebackup_handshake_error(
+                            exc,
+                            progress_seen=attempt_progress_seen,
+                        )
+                    ):
+                        logger.warning(
+                            "Synthetic restore handshake failed before progress on attempt %d/%d; retrying once: %s",
+                            attempt,
+                            _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS,
+                            exc,
+                        )
+                        continue
+                    raise
+                finally:
+                    if callable(close):
+                        await _maybe_await(close())
 
             logger.info("Synthetic restore complete. Device will reboot.")
         except Green2BlueError:
