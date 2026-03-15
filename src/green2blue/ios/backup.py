@@ -178,6 +178,32 @@ def create_safety_copy(backup_path: Path) -> Path:
     return safety_path
 
 
+_STASH_DIR = Path.home() / ".green2blue_safety_copies"
+
+
+def stash_safety_copy(safety_copy_path: Path) -> Path:
+    """Move a safety copy out of the MobileSync/Backup directory.
+
+    Finder shows all backup directories as separate restore options, which
+    confuses users. This moves the safety copy to a hidden stash directory
+    so only the modified backup appears in Finder.
+
+    Returns:
+        New path of the stashed safety copy.
+    """
+    _STASH_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _STASH_DIR / safety_copy_path.name
+    if dest.exists():
+        # Append a counter to avoid collisions
+        i = 1
+        while dest.exists():
+            dest = _STASH_DIR / f"{safety_copy_path.name}_{i}"
+            i += 1
+    logger.info("Stashing safety copy: %s -> %s", safety_copy_path, dest)
+    shutil.move(str(safety_copy_path), str(dest))
+    return dest
+
+
 def validate_backup(backup_path: Path) -> None:
     """Validate that a backup directory has the required structure.
 

@@ -1445,7 +1445,10 @@ def _cmd_inject(args: argparse.Namespace) -> int:
         print(f"Attachments:       {stats.attachments_inserted}")
 
     if result.safety_copy_path:
-        print(f"\nSafety copy:       {result.safety_copy_path}")
+        from green2blue.ios.backup import stash_safety_copy
+
+        stashed = stash_safety_copy(result.safety_copy_path)
+        print(f"\nSafety copy:       {stashed} (stashed)")
 
     if result.verification:
         v = result.verification
@@ -2095,7 +2098,10 @@ def _print_pipeline_summary(result, render_verify_result=None) -> None:
         print(f"Messages skipped:  {stats.messages_skipped + result.skipped_count}")
 
     if result.safety_copy_path:
-        print(f"\nSafety copy:       {result.safety_copy_path}")
+        from green2blue.ios.backup import stash_safety_copy
+
+        stashed = stash_safety_copy(result.safety_copy_path)
+        print(f"\nSafety copy:       {stashed} (stashed)")
 
     if result.verification:
         v = result.verification

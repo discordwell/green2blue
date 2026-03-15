@@ -15,6 +15,7 @@ from green2blue.ios.backup import (
     get_sms_db_hash,
     has_restore_checkpoint,
     list_backups,
+    stash_safety_copy,
     validate_backup,
 )
 
@@ -234,6 +235,45 @@ class TestHasRestoreCheckpoint:
         path = _create_backup(root, "MY-PHONE")
         (root / "OTHER-PHONE.restore_checkpoint_20260101_000000_000000").mkdir()
         assert not has_restore_checkpoint(path)
+
+
+class TestStashSafetyCopy:
+    def test_stash_moves_to_hidden_dir(self, tmp_dir, monkeypatch):
+        """stash_safety_copy moves the checkpoint out of the backup dir."""
+        import green2blue.ios.backup as backup_mod
+
+        stash_dir = tmp_dir / "stash"
+        monkeypatch.setattr(backup_mod, "_STASH_DIR", stash_dir)
+
+        root = tmp_dir / "backups"
+        root.mkdir()
+        safety = root / "PHONE.restore_checkpoint_20260314_000000_000000"
+        safety.mkdir()
+        (safety / "Info.plist").write_bytes(b"test")
+
+        stashed = stash_safety_copy(safety)
+        assert not safety.exists()
+        assert stashed.parent == stash_dir
+        assert (stashed / "Info.plist").read_bytes() == b"test"
+
+    def test_stash_handles_name_collision(self, tmp_dir, monkeypatch):
+        """Duplicate stash names get a counter suffix."""
+        import green2blue.ios.backup as backup_mod
+
+        stash_dir = tmp_dir / "stash"
+        monkeypatch.setattr(backup_mod, "_STASH_DIR", stash_dir)
+
+        stash_dir.mkdir()
+        name = "PHONE.restore_checkpoint_20260314_000000_000000"
+        (stash_dir / name).mkdir()  # pre-existing collision
+
+        root = tmp_dir / "backups"
+        root.mkdir()
+        safety = root / name
+        safety.mkdir()
+
+        stashed = stash_safety_copy(safety)
+        assert stashed.name == f"{name}_1"
 
 
 class TestSmartAutoSelect:

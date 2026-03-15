@@ -24,6 +24,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MOBILEBACKUP_HANDSHAKE_RETRY_ATTEMPTS = 2
+_SSL_HANDSHAKE_TIMEOUT = 60
+
+
+def _patch_pmd3_ssl_timeout() -> None:
+    """Raise pymobiledevice3's SSL handshake timeout from 10s to 60s.
+
+    The default 10s is too short when the phone is waiting for a
+    passcode/trust prompt before the backup service comes up.
+    """
+    try:
+        from pymobiledevice3 import service_connection
+        service_connection.DEFAULT_SSL_HANDSHAKE_TIMEOUT = _SSL_HANDSHAKE_TIMEOUT
+    except (ImportError, AttributeError):
+        pass
 
 
 async def _maybe_await(value):
@@ -342,6 +356,7 @@ def check_pymobiledevice3() -> None:
             "pymobiledevice3 is not installed.",
             hint="Install device support: pip install green2blue[device]",
         ) from e
+    _patch_pmd3_ssl_timeout()
 
 
 def list_devices() -> list[DeviceInfo]:

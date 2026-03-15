@@ -61,6 +61,24 @@ class TestCheckPymobiledevice3:
         with patch.dict(sys.modules, {"pymobiledevice3": mock_module}):
             check_pymobiledevice3()  # Should not raise
 
+    def test_patches_ssl_timeout(self):
+        """check_pymobiledevice3 bumps the SSL handshake timeout to 60s."""
+        from types import ModuleType
+
+        mock_sc = ModuleType("pymobiledevice3.service_connection")
+        mock_sc.DEFAULT_SSL_HANDSHAKE_TIMEOUT = 10
+        mock_pmd3 = MagicMock()
+        mock_pmd3.service_connection = mock_sc
+        with patch.dict(
+            sys.modules,
+            {
+                "pymobiledevice3": mock_pmd3,
+                "pymobiledevice3.service_connection": mock_sc,
+            },
+        ):
+            check_pymobiledevice3()
+        assert mock_sc.DEFAULT_SSL_HANDSHAKE_TIMEOUT == 60
+
 
 # --- list_devices tests ---
 
