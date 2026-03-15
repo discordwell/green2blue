@@ -2451,11 +2451,10 @@ def _cmd_device_run_status(args: argparse.Namespace) -> int:
 
 def _cmd_device_backup(args: argparse.Namespace) -> int:
     """Create a backup from a connected device."""
-    import tempfile
-
+    from green2blue.ios.backup import get_backup_dir
     from green2blue.ios.device import create_backup, doctor_device
 
-    output_dir = args.output or Path(tempfile.mkdtemp(prefix="g2b_backup_"))
+    output_dir = args.output or get_backup_dir()
     print(f"Creating backup in: {output_dir}")
 
     print("\nRunning device doctor...")
