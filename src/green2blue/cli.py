@@ -17,10 +17,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from green2blue import __version__
-from green2blue.exceptions import Green2BlueError
+from green2blue.credentials import is_interactive_stdin, resolve_backup_password
+from green2blue.exceptions import EncryptedBackupError, Green2BlueError
+from green2blue.user_paths import default_app_state_root, normalize_user_path
 
 if TYPE_CHECKING:
-    from green2blue.ios.backup import BackupInfo
+    from green2blue.ios.backup import BackupInfo, BackupScanResult
 
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,58 @@ class _DeviceRunArtifacts:
 
 def _default_device_run_root() -> Path:
     """Directory for timestamped live device operation bundles."""
-    return Path.cwd() / ".live_device_runs"
+    return default_app_state_root() / "live_device_runs"
+
+
+def _arg_path(raw: str) -> Path:
+    """Argparse path coercion that matches user-facing path expectations."""
+    return normalize_user_path(raw)
+
+
+def _resolve_required_backup_password(
+    backup_info: BackupInfo,
+    password: str | None,
+    *,
+    prompt_label: str = "backup",
+) -> str | None:
+    """Return a usable password for an encrypted backup or raise."""
+    resolved = resolve_backup_password(
+        backup_info,
+        password,
+        prompt_label=prompt_label,
+        interactive=is_interactive_stdin(),
+    )
+    if backup_info.is_encrypted and not resolved:
+        raise EncryptedBackupError("Encrypted backup requires a password.")
+    return resolved
+
+
+def _print_backup_scan_issues(scan: BackupScanResult, *, indent: str = "  ") -> None:
+    """Render concise diagnostics about skipped backup directories."""
+    if not scan.skipped:
+        return
+    noun = "directory" if len(scan.skipped) == 1 else "directories"
+    print(f"{indent}Skipped {len(scan.skipped)} unusable backup {noun}:")
+    for issue in scan.skipped[:5]:
+        print(f"{indent}  - {issue.path.name}: {issue.message}")
+    if len(scan.skipped) > 5:
+        remaining = len(scan.skipped) - 5
+        print(f"{indent}  ... and {remaining} more")
+
+
+def _load_workflow_backup_info(workflow_dir: Path):
+    """Resolve the target backup recorded inside a durable workflow directory."""
+    from green2blue.archive import load_ios_workflow_status
+    from green2blue.ios.backup import find_backup
+
+    status = load_ios_workflow_status(workflow_dir)
+    backup_path_value = status.inputs.get("backup_path")
+    if not backup_path_value:
+        raise Green2BlueError(
+            "Workflow directory is missing backup metadata.",
+            hint="Run 'green2blue archive prepare-ios' again to rebuild the workflow state.",
+        )
+    return find_backup(str(backup_path_value))
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -405,16 +458,18 @@ def main(argv: list[str] | None = None) -> int:
     effective_argv = argv if argv is not None else sys.argv[1:]
 
     # Smart pre-parse checks (before argparse can error on unknown subcommands)
-    if not effective_argv and getattr(sys.stdin, "isatty", lambda: False)():
+    if not effective_argv and is_interactive_stdin():
         from green2blue.wizard import run_wizard
 
         return run_wizard()
 
     if len(effective_argv) == 1 and effective_argv[0].lower().endswith(".zip"):
-        zip_arg = effective_argv[0]
-        print(f"Did you mean: green2blue inject {zip_arg}", file=sys.stderr)
-        print(f"\nRun:  green2blue inject {zip_arg}", file=sys.stderr)
-        return 1
+        zip_arg = str(normalize_user_path(effective_argv[0]))
+        if is_interactive_stdin():
+            from green2blue.wizard import run_wizard
+
+            return run_wizard(initial_export_raw=zip_arg)
+        effective_argv = ["inject", zip_arg]
 
     parser = _build_parser()
     args = parser.parse_args(effective_argv)
@@ -459,7 +514,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inject_parser.add_argument(
         "export_zip",
-        type=Path,
+        type=_arg_path,
         help="Path to the SMS Import/Export ZIP file",
     )
 
@@ -539,7 +594,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     advanced.add_argument(
         "--backup-root",
-        type=Path,
+        type=_arg_path,
         default=None,
         help="Override the default backup directory",
     )
@@ -571,7 +626,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     list_parser.add_argument(
         "--backup-root",
-        type=Path,
+        type=_arg_path,
         default=None,
         help="Override the default backup directory",
     )
@@ -586,7 +641,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inspect_parser.add_argument(
         "export_zip",
-        type=Path,
+        type=_arg_path,
         help="Path to the SMS Import/Export ZIP file",
     )
     inspect_parser.add_argument("-v", "--verbose", action="store_true")
@@ -602,7 +657,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     review_parser.add_argument(
         "export_zip",
-        type=Path,
+        type=_arg_path,
         help="Path to the SMS Import/Export ZIP file",
     )
     review_parser.add_argument(
@@ -639,9 +694,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Import an Android export ZIP into a canonical green2blue archive",
     )
     archive_import_android.add_argument(
-        "export_zip", type=Path, help="Path to the Android export ZIP"
+        "export_zip", type=_arg_path, help="Path to the Android export ZIP"
     )
-    archive_import_android.add_argument("output", type=Path, help="Output archive SQLite path")
+    archive_import_android.add_argument("output", type=_arg_path, help="Output archive SQLite path")
     archive_import_android.add_argument(
         "--no-resume",
         action="store_false",
@@ -662,10 +717,10 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         help="Backup path or UDID",
     )
-    archive_import_ios.add_argument("output", type=Path, help="Output archive SQLite path")
+    archive_import_ios.add_argument("output", type=_arg_path, help="Output archive SQLite path")
     archive_import_ios.add_argument(
         "--backup-root",
-        type=Path,
+        type=_arg_path,
         default=None,
         help="Override the default backup directory",
     )
@@ -690,7 +745,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect",
         help="Inspect a canonical green2blue archive",
     )
-    archive_inspect.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_inspect.add_argument(
+        "archive_path",
+        type=_arg_path,
+        help="Path to the archive SQLite file",
+    )
     archive_inspect.add_argument("-v", "--verbose", action="store_true")
     archive_inspect.add_argument("-q", "--quiet", action="store_true")
     archive_inspect.set_defaults(func=_cmd_archive_inspect)
@@ -699,7 +758,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "report",
         help="Generate a migration-oriented report for a canonical archive",
     )
-    archive_report.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_report.add_argument(
+        "archive_path",
+        type=_arg_path,
+        help="Path to the archive SQLite file",
+    )
     archive_report.add_argument("-v", "--verbose", action="store_true")
     archive_report.add_argument("-q", "--quiet", action="store_true")
     archive_report.set_defaults(func=_cmd_archive_report)
@@ -708,7 +771,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "verify",
         help="Run consistency checks against a canonical archive",
     )
-    archive_verify.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_verify.add_argument(
+        "archive_path",
+        type=_arg_path,
+        help="Path to the archive SQLite file",
+    )
     archive_verify.add_argument("-v", "--verbose", action="store_true")
     archive_verify.add_argument("-q", "--quiet", action="store_true")
     archive_verify.set_defaults(func=_cmd_archive_verify)
@@ -717,7 +784,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "merge",
         help="Materialize a merged cross-source view inside a canonical archive",
     )
-    archive_merge.add_argument("archive_path", type=Path, help="Path to the archive SQLite file")
+    archive_merge.add_argument(
+        "archive_path",
+        type=_arg_path,
+        help="Path to the archive SQLite file",
+    )
     archive_merge.add_argument(
         "--country",
         type=str,
@@ -733,10 +804,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Export the merged archive view as an Android-style ZIP for reuse by the iOS injector",
     )
     archive_export_android.add_argument(
-        "archive_path", type=Path, help="Path to the archive SQLite file"
+        "archive_path", type=_arg_path, help="Path to the archive SQLite file"
     )
     archive_export_android.add_argument(
-        "output_zip", type=Path, help="Output Android-style ZIP path"
+        "output_zip", type=_arg_path, help="Output Android-style ZIP path"
     )
     archive_export_android.add_argument(
         "--merge-run",
@@ -759,10 +830,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Build and persist an iOS-injection-ready merged export in a reusable stage directory",
     )
     archive_stage_ios.add_argument(
-        "archive_path", type=Path, help="Path to the archive SQLite file"
+        "archive_path", type=_arg_path, help="Path to the archive SQLite file"
     )
     archive_stage_ios.add_argument(
-        "output_dir", type=Path, help="Directory for the staged export bundle"
+        "output_dir", type=_arg_path, help="Directory for the staged export bundle"
     )
     archive_stage_ios.add_argument(
         "--merge-run",
@@ -794,14 +865,14 @@ def _build_parser() -> argparse.ArgumentParser:
             " for large-history iPhone injection"
         ),
     )
-    archive_prepare_ios.add_argument("export_zip", type=Path, help="Android export ZIP")
+    archive_prepare_ios.add_argument("export_zip", type=_arg_path, help="Android export ZIP")
     archive_prepare_ios.add_argument("backup", type=str, help="iPhone backup path or UDID")
     archive_prepare_ios.add_argument(
-        "workflow_dir", type=Path, help="Directory for durable workflow state"
+        "workflow_dir", type=_arg_path, help="Directory for durable workflow state"
     )
     archive_prepare_ios.add_argument(
         "--backup-root",
-        type=Path,
+        type=_arg_path,
         default=None,
         help="Override the default backup directory when resolving a UDID",
     )
@@ -835,7 +906,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "workflow-status",
         help="Inspect a durable iOS workflow directory created by archive prepare-ios",
     )
-    archive_workflow_status.add_argument("workflow_dir", type=Path, help="Workflow directory path")
+    archive_workflow_status.add_argument(
+        "workflow_dir",
+        type=_arg_path,
+        help="Workflow directory path",
+    )
     archive_workflow_status.add_argument("-v", "--verbose", action="store_true")
     archive_workflow_status.add_argument("-q", "--quiet", action="store_true")
     archive_workflow_status.set_defaults(func=_cmd_archive_workflow_status)
@@ -848,7 +923,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     archive_run_ios.add_argument(
-        "workflow_dir", type=Path, help="Workflow directory created by archive prepare-ios"
+        "workflow_dir", type=_arg_path, help="Workflow directory created by archive prepare-ios"
     )
     archive_run_ios.add_argument(
         "--password",
@@ -914,7 +989,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     archive_inject_ios.add_argument(
-        "archive_path", type=Path, help="Path to the archive SQLite file"
+        "archive_path", type=_arg_path, help="Path to the archive SQLite file"
     )
     archive_inject_ios.add_argument(
         "--merge-run",
@@ -930,7 +1005,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     archive_inject_ios.add_argument(
         "--backup-root",
-        type=Path,
+        type=_arg_path,
         default=None,
         help="Override the default backup directory",
     )
@@ -942,7 +1017,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     archive_inject_ios.add_argument(
         "--stage-dir",
-        type=Path,
+        type=_arg_path,
         default=None,
         help=(
             "Persist and optionally reuse the merged export in this"
@@ -1043,8 +1118,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "capture",
         help="Capture a representative sample corpus from an Android export ZIP",
     )
-    corpus_capture.add_argument("export_zip", type=Path, help="Path to the Android export ZIP")
-    corpus_capture.add_argument("output_zip", type=Path, help="Output redacted ZIP path")
+    corpus_capture.add_argument("export_zip", type=_arg_path, help="Path to the Android export ZIP")
+    corpus_capture.add_argument("output_zip", type=_arg_path, help="Output redacted ZIP path")
     corpus_capture.add_argument(
         "--max-per-bucket",
         type=int,
@@ -1074,7 +1149,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     verify_parser.add_argument(
         "backup_path",
-        type=Path,
+        type=_arg_path,
         help="Path to the iPhone backup directory",
     )
     verify_parser.add_argument("-v", "--verbose", action="store_true")
@@ -1094,7 +1169,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     diagnose_parser.add_argument(
         "--backup-root",
-        type=Path,
+        type=_arg_path,
         default=None,
         help="Override the default backup directory",
     )
@@ -1127,7 +1202,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     prepare_sync_parser.add_argument(
         "--backup-root",
-        type=Path,
+        type=_arg_path,
         default=None,
         help="Override the default backup directory",
     )
@@ -1176,7 +1251,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "run-status",
         help="Inspect a persisted live device run bundle and any recovery guidance",
     )
-    dev_run_status_parser.add_argument("run_dir", type=Path, help="Path to the live run directory")
+    dev_run_status_parser.add_argument(
+        "run_dir",
+        type=_arg_path,
+        help="Path to the live run directory",
+    )
     dev_run_status_parser.add_argument("-v", "--verbose", action="store_true")
     dev_run_status_parser.add_argument("-q", "--quiet", action="store_true")
     dev_run_status_parser.set_defaults(func=_cmd_device_run_status)
@@ -1189,7 +1268,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dev_backup_parser.add_argument(
         "--output",
         "-o",
-        type=Path,
+        type=_arg_path,
         default=None,
         help="Output directory for backup (default: temp directory)",
     )
@@ -1216,7 +1295,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     dev_inject_parser.add_argument(
         "export_zip",
-        type=Path,
+        type=_arg_path,
         help="Path to the SMS Import/Export ZIP file",
     )
     dev_inject_parser.add_argument(
@@ -1275,7 +1354,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     dev_restore_parser.add_argument(
         "backup_path",
-        type=Path,
+        type=_arg_path,
         help="Path to the backup directory",
     )
     dev_restore_parser.add_argument(
@@ -1382,7 +1461,7 @@ def _cmd_inject(args: argparse.Namespace) -> int:
     backup_info = find_backup(args.backup, args.backup_root)
 
     # Show confirmation prompt unless skipped
-    skip_prompt = args.backup or args.yes or not sys.stdin.isatty()
+    skip_prompt = args.backup or args.yes or not is_interactive_stdin()
     if not skip_prompt:
         confirmed_path = _confirm_backup(backup_info, args.backup_root)
         if confirmed_path is None:
@@ -1393,6 +1472,7 @@ def _cmd_inject(args: argparse.Namespace) -> int:
             backup_info = find_backup(str(confirmed_path), args.backup_root)
 
     ck_strategy = CKStrategy(args.ck_strategy)
+    password = _resolve_required_backup_password(backup_info, args.password)
 
     result = run_pipeline(
         export_path=args.export_zip,
@@ -1402,7 +1482,7 @@ def _cmd_inject(args: argparse.Namespace) -> int:
         skip_duplicates=args.skip_duplicates,
         include_attachments=not args.no_attachments,
         dry_run=args.dry_run,
-        password=args.password,
+        password=password,
         ck_strategy=ck_strategy,
         service=args.service,
         injection_mode=injection_mode,
@@ -1519,22 +1599,28 @@ def _show_backup_list(backup_root: Path | None = None) -> Path | None:
     Returns:
         The chosen backup path, or None if the user quit.
     """
-    from green2blue.ios.backup import has_restore_checkpoint, list_backups
+    from green2blue.ios.backup import has_restore_checkpoint, scan_backups
 
-    backups = list_backups(backup_root)
+    scan = scan_backups(backup_root)
+    backups = list(scan.backups)
     if not backups:
         print("No backups found.")
+        _print_backup_scan_issues(scan)
         return None
 
     print()
     for i, b in enumerate(backups, 1):
+        recommended = " [recommended]" if i == 1 else ""
         injected = " [already injected]" if has_restore_checkpoint(b.path) else ""
         encrypted = ", encrypted" if b.is_encrypted else ""
-        print(f"  {i}. {b.device_name} (iOS {b.product_version}{encrypted}){injected}")
+        print(f"  {i}. {b.device_name} (iOS {b.product_version}{encrypted}){injected}{recommended}")
         print(f"     UDID: {b.udid}")
         if b.date:
             print(f"     Date: {b.date}")
     print()
+    _print_backup_scan_issues(scan)
+    if scan.skipped:
+        print()
 
     while True:
         try:
@@ -1555,23 +1641,28 @@ def _show_backup_list(backup_root: Path | None = None) -> Path | None:
 
 def _cmd_list_backups(args: argparse.Namespace) -> int:
     """Execute the list-backups command."""
-    from green2blue.ios.backup import list_backups
+    from green2blue.ios.backup import has_restore_checkpoint, scan_backups
 
-    backups = list_backups(args.backup_root)
+    scan = scan_backups(args.backup_root)
+    backups = list(scan.backups)
 
     if not backups:
         print("No iPhone backups found.")
+        _print_backup_scan_issues(scan)
         return 0
 
     print(f"Found {len(backups)} backup(s):\n")
-    for b in backups:
+    for index, b in enumerate(backups, start=1):
+        recommended = " [RECOMMENDED]" if index == 1 else ""
         encrypted = " [ENCRYPTED]" if b.is_encrypted else ""
-        print(f"  {b.device_name} (iOS {b.product_version}){encrypted}")
+        injected = " [INJECTED]" if has_restore_checkpoint(b.path) else ""
+        print(f"  {b.device_name} (iOS {b.product_version}){encrypted}{injected}{recommended}")
         print(f"    UDID: {b.udid}")
         print(f"    Path: {b.path}")
         if b.date:
             print(f"    Date: {b.date}")
         print()
+    _print_backup_scan_issues(scan)
 
     return 0
 
@@ -1629,12 +1720,20 @@ def _cmd_archive_import_android(args: argparse.Namespace) -> int:
 def _cmd_archive_import_ios(args: argparse.Namespace) -> int:
     """Import an iPhone backup into a canonical archive."""
     from green2blue.archive import import_ios_backup
+    from green2blue.ios.backup import find_backup
+
+    backup_info = find_backup(args.backup, args.backup_root)
+    password = _resolve_required_backup_password(
+        backup_info,
+        args.password,
+        prompt_label="iPhone backup",
+    )
 
     result = import_ios_backup(
-        args.backup,
+        backup_info.path,
         args.output,
         backup_root=args.backup_root,
-        password=args.password,
+        password=password,
         resume=args.resume,
     )
     print(f"Archive: {result.archive_path}")
@@ -1818,13 +1917,21 @@ def _cmd_archive_stage_ios(args: argparse.Namespace) -> int:
 def _cmd_archive_prepare_ios(args: argparse.Namespace) -> int:
     """Build a durable merged archive + stage workflow directory."""
     from green2blue.archive import prepare_ios_workflow
+    from green2blue.ios.backup import find_backup
+
+    backup_info = find_backup(args.backup, args.backup_root)
+    password = _resolve_required_backup_password(
+        backup_info,
+        args.password,
+        prompt_label="iPhone backup",
+    )
 
     result = prepare_ios_workflow(
         args.export_zip,
-        args.backup,
+        backup_info.path,
         args.workflow_dir,
         backup_root=args.backup_root,
-        password=args.password,
+        password=password,
         country=args.country,
         resume=args.resume,
     )
@@ -1931,9 +2038,16 @@ def _cmd_archive_run_ios(args: argparse.Namespace) -> int:
         print("Error: --mode overwrite requires at least one --sacrifice-chat", file=sys.stderr)
         return 1
 
+    backup_info = _load_workflow_backup_info(args.workflow_dir)
+    password = _resolve_required_backup_password(
+        backup_info,
+        args.password,
+        prompt_label="workflow backup",
+    )
+
     result = run_ios_workflow_injection(
         args.workflow_dir,
-        password=args.password,
+        password=password,
         country=args.country,
         include_attachments=not args.no_attachments,
         dry_run=args.dry_run,
@@ -1974,7 +2088,7 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
 
     backup_info = find_backup(args.backup, args.backup_root)
 
-    skip_prompt = args.backup or args.yes or not sys.stdin.isatty()
+    skip_prompt = args.backup or args.yes or not is_interactive_stdin()
     if not skip_prompt:
         confirmed_path = _confirm_backup(backup_info, args.backup_root)
         if confirmed_path is None:
@@ -1984,6 +2098,11 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
             backup_info = find_backup(str(confirmed_path), args.backup_root)
 
     ck_strategy = CKStrategy(args.ck_strategy)
+    password = _resolve_required_backup_password(
+        backup_info,
+        args.password,
+        prompt_label="iPhone backup",
+    )
     render_verify_result = None
 
     if args.stage_dir is not None:
@@ -2012,7 +2131,7 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
             skip_duplicates=args.skip_duplicates,
             include_attachments=not args.no_attachments,
             dry_run=args.dry_run,
-            password=args.password,
+            password=password,
             ck_strategy=ck_strategy,
             service=args.service,
             injection_mode=injection_mode,
@@ -2026,7 +2145,7 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
                 result,
                 country=args.country,
                 skip_duplicates=args.skip_duplicates,
-                password=args.password,
+                password=password,
                 ck_strategy=ck_strategy,
                 service=args.service,
             )
@@ -2050,7 +2169,7 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
                 skip_duplicates=args.skip_duplicates,
                 include_attachments=not args.no_attachments,
                 dry_run=args.dry_run,
-                password=args.password,
+                password=password,
                 ck_strategy=ck_strategy,
                 service=args.service,
                 injection_mode=injection_mode,
@@ -2064,7 +2183,7 @@ def _cmd_archive_inject_ios(args: argparse.Namespace) -> int:
                     result,
                     country=args.country,
                     skip_duplicates=args.skip_duplicates,
-                    password=args.password,
+                    password=password,
                     ck_strategy=ck_strategy,
                     service=args.service,
                 )
@@ -2159,19 +2278,21 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
     from green2blue.ios.backup import find_backup, get_sms_db_path
 
     backup_info = find_backup(args.backup, args.backup_root)
+    password = _resolve_required_backup_password(
+        backup_info,
+        args.password,
+        prompt_label="diagnose target backup",
+    )
     sms_db_path = get_sms_db_path(backup_info.path)
     temp_path = None
 
     try:
         # Decrypt if needed
         if backup_info.is_encrypted:
-            if not args.password:
-                print("Error: Encrypted backup requires --password", file=sys.stderr)
-                return 1
             from green2blue.ios.crypto import EncryptedBackup
             from green2blue.ios.manifest import ManifestDB, compute_file_id
 
-            eb = EncryptedBackup(backup_info.path, args.password)
+            eb = EncryptedBackup(backup_info.path, password)
             eb.unlock()
             temp_manifest = eb.decrypt_manifest_db()
             sms_file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")
@@ -2269,19 +2390,21 @@ def _cmd_prepare_sync(args: argparse.Namespace) -> int:
     from green2blue.ios.prepare_sync import prepare_sync
 
     backup_info = find_backup(args.backup, args.backup_root)
+    password = _resolve_required_backup_password(
+        backup_info,
+        args.password,
+        prompt_label="prepare-sync target backup",
+    )
     sms_db_path = get_sms_db_path(backup_info.path)
     manifest_path = backup_info.path / "Manifest.db"
     temp_path = None
 
     try:
         if backup_info.is_encrypted:
-            if not args.password:
-                print("Error: Encrypted backup requires --password", file=sys.stderr)
-                return 1
             from green2blue.ios.crypto import EncryptedBackup
             from green2blue.ios.manifest import ManifestDB, compute_file_id
 
-            eb = EncryptedBackup(backup_info.path, args.password)
+            eb = EncryptedBackup(backup_info.path, password)
             eb.unlock()
             temp_manifest = eb.decrypt_manifest_db()
             sms_file_id = compute_file_id("HomeDomain", "Library/SMS/sms.db")

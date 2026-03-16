@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from green2blue.exceptions import InvalidZipError, MissingNDJSONError
+from green2blue.user_paths import normalize_user_path
 
 EXPECTED_NDJSON = "messages.ndjson"
 
@@ -29,7 +30,7 @@ def open_export_zip(zip_path: Path | str) -> Generator[ExtractedExport, None, No
         InvalidZipError: If the file is not a valid ZIP.
         MissingNDJSONError: If the ZIP lacks messages.ndjson.
     """
-    zip_path = Path(zip_path)
+    zip_path = normalize_user_path(zip_path)
 
     if not zip_path.exists():
         raise InvalidZipError(f"File not found: {zip_path}")

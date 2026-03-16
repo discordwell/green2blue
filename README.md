@@ -35,7 +35,12 @@ pip install green2blue
 green2blue
 ```
 
-The wizard walks you through everything. Or go direct:
+The wizard walks you through everything. You can also hand it a ZIP directly:
+```bash
+green2blue export.zip
+```
+
+Or go direct:
 ```bash
 green2blue inject export.zip
 ```
@@ -83,11 +88,11 @@ green2blue inject export.zip --dry-run
 
 **"No iPhone backups found"** — Create a backup first. Finder on macOS, iTunes on Windows.
 
-**"Wrong password"** — This is your *local backup password* from Finder/iTunes, not your Apple ID.
+**"Wrong password"** — This is your *local backup password* from Finder/iTunes, not your Apple ID. Interactive commands will prompt for it when needed.
 
 **Messages disappear after restore** — iCloud Messages is wiping them. Re-run with `--disable-icloud-sync`, or don't sign into iCloud Messages right after restore.
 
-**Non-US phone numbers** — Use `--country GB` (or whatever). The wizard auto-detects this.
+**Non-US phone numbers** — The wizard infers obvious international prefixes and many local number formats. If it guesses wrong, use `--country GB` (or whatever).
 
 ## CLI Reference
 

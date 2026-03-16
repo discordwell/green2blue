@@ -71,6 +71,34 @@ for _cc, (_calling, _) in COUNTRY_RULES.items():
     if _calling not in _CALLING_CODE_TO_COUNTRY:
         _CALLING_CODE_TO_COUNTRY[_calling] = _cc
 
+_TRUNK_ZERO_COUNTRIES = {
+    "AT",
+    "AU",
+    "BE",
+    "CH",
+    "DE",
+    "DK",
+    "EG",
+    "ES",
+    "FI",
+    "FR",
+    "GB",
+    "IE",
+    "JP",
+    "KR",
+    "MY",
+    "NL",
+    "NO",
+    "NZ",
+    "PL",
+    "PT",
+    "SE",
+    "TH",
+    "UK",
+    "VN",
+    "ZA",
+}
+
 # Short codes are typically 5-6 digits. Pass them through as-is.
 SHORT_CODE_MAX_LENGTH = 6
 
@@ -135,6 +163,12 @@ def normalize_phone(number: str, country: str = "US") -> str:
     # Check if the number already starts with the calling code
     if digits.startswith(calling_code):
         national = digits[len(calling_code) :]
+        if len(national) in valid_lengths:
+            return f"+{calling_code}{national}"
+
+    # Some countries use a domestic trunk "0" prefix that is omitted in E.164.
+    if country in _TRUNK_ZERO_COUNTRIES and digits.startswith("0"):
+        national = digits[1:]
         if len(national) in valid_lengths:
             return f"+{calling_code}{national}"
 

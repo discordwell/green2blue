@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from green2blue.exceptions import Green2BlueError
 from green2blue.ios.backup import BackupInfo, get_sms_db_hash
 from green2blue.ios.device import DeviceCheckResult, DeviceHealthReport
 from green2blue.wizard import (
@@ -132,6 +133,59 @@ def _create_non_us_export_zip(root: Path) -> Path:
     return zip_path
 
 
+def _create_plus_prefixed_non_us_export_zip(root: Path) -> Path:
+    """Create an export ZIP with clearly non-US +44 numbers."""
+    zip_path = root / "plus_non_us_export.zip"
+    records = []
+    for i in range(10):
+        records.append(
+            {
+                "address": f"+44778800{1000 + i}",
+                "body": f"Intl message {i}",
+                "date": str(1700000000000 + i * 1000),
+                "type": "1",
+                "read": "1",
+            }
+        )
+    content = "\n".join(json.dumps(r) for r in records) + "\n"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("messages.ndjson", content)
+    return zip_path
+
+
+def _create_ambiguous_export_zip(root: Path) -> Path:
+    """Create an export ZIP with mixed international numbers."""
+    zip_path = root / "ambiguous_export.zip"
+    records = []
+    for i in range(5):
+        records.append(
+            {
+                "address": f"+44778800{1000 + i}",
+                "body": f"UK message {i}",
+                "date": str(1700000000000 + i * 1000),
+                "type": "1",
+                "read": "1",
+            }
+        )
+        records.append(
+            {
+                "address": f"+61412345{100 + i}",
+                "body": f"AU message {i}",
+                "date": str(1700000005000 + i * 1000),
+                "type": "1",
+                "read": "1",
+            }
+        )
+    content = "\n".join(json.dumps(r) for r in records) + "\n"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("messages.ndjson", content)
+    return zip_path
+
+
+def _scan_result(backups: list[BackupInfo], skipped: tuple[object, ...] = ()) -> MagicMock:
+    return MagicMock(backups=tuple(backups), skipped=skipped)
+
+
 # -- Tests --
 
 
@@ -154,6 +208,10 @@ class TestCleanPath:
     def test_preserves_normal_path(self):
         assert _clean_path("/Users/test/export.zip") == "/Users/test/export.zip"
 
+    def test_expands_tilde(self, tmp_dir, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_dir))
+        assert _clean_path("~/export.zip") == str((tmp_dir / "export.zip").resolve())
+
 
 class TestDetectCountry:
     def test_us_numbers_detected(self, tmp_dir):
@@ -166,6 +224,18 @@ class TestDetectCountry:
         zip_path = _create_export_zip(tmp_dir)  # Uses +1... numbers
         country = _detect_country(zip_path)
         assert country == "US"
+
+    def test_plus_prefixed_non_us_numbers_detect_country(self, tmp_dir):
+        zip_path = _create_plus_prefixed_non_us_export_zip(tmp_dir)
+        assert _detect_country(zip_path) == "GB"
+
+    def test_local_non_us_numbers_detect_country(self, tmp_dir):
+        zip_path = _create_non_us_export_zip(tmp_dir)
+        assert _detect_country(zip_path) == "GB"
+
+    def test_ambiguous_numbers_fall_back_to_us(self, tmp_dir):
+        zip_path = _create_ambiguous_export_zip(tmp_dir)
+        assert _detect_country(zip_path) == "US"
 
 
 class TestUsNumbersPass:
@@ -266,7 +336,7 @@ class TestWizardHappyPath:
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
-            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.ios.backup.scan_backups", return_value=_scan_result([backup_info])),
             patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
         ):
             mock_result = MagicMock()
@@ -314,7 +384,7 @@ class TestWizardHappyPath:
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
-            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.ios.backup.scan_backups", return_value=_scan_result([backup_info])),
             patch("green2blue.archive.prepare_ios_workflow") as mock_prepare_workflow,
             patch("green2blue.archive.run_ios_workflow_injection") as mock_run_workflow,
         ):
@@ -433,7 +503,7 @@ class TestWizardHappyPath:
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
-            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.ios.backup.scan_backups", return_value=_scan_result([backup_info])),
             patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
             patch("green2blue.ios.device.doctor_device", return_value=report) as mock_doctor,
             patch(
@@ -509,7 +579,7 @@ class TestWizardHappyPath:
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
-            patch("green2blue.ios.backup.list_backups", return_value=[]),
+            patch("green2blue.ios.backup.scan_backups", return_value=_scan_result([])),
             pytest.raises(SystemExit) as exc_info,
         ):
             run_wizard()
@@ -543,7 +613,7 @@ class TestWizardHappyPath:
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
-            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
+            patch("green2blue.ios.backup.scan_backups", return_value=_scan_result([backup_info])),
             patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
         ):
             mock_result = MagicMock()
@@ -589,9 +659,8 @@ class TestWizardEncryptedBackup:
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
-            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
-            patch("green2blue.wizard._validate_password", return_value=True),
-            patch("green2blue.wizard.getpass.getpass", return_value="secret123"),
+            patch("green2blue.ios.backup.scan_backups", return_value=_scan_result([backup_info])),
+            patch("green2blue.wizard.prompt_for_backup_password", return_value="secret123"),
             patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
         ):
             mock_result = MagicMock()
@@ -632,9 +701,11 @@ class TestWizardEncryptedBackup:
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
-            patch("green2blue.ios.backup.list_backups", return_value=[backup_info]),
-            patch("green2blue.wizard._validate_password", return_value=False),
-            patch("green2blue.wizard.getpass.getpass", return_value="wrong"),
+            patch("green2blue.ios.backup.scan_backups", return_value=_scan_result([backup_info])),
+            patch(
+                "green2blue.wizard.prompt_for_backup_password",
+                side_effect=Green2BlueError("Wrong password. Too many attempts."),
+            ),
             pytest.raises(SystemExit) as exc_info,
         ):
             run_wizard()

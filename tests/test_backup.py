@@ -15,6 +15,7 @@ from green2blue.ios.backup import (
     get_sms_db_hash,
     has_restore_checkpoint,
     list_backups,
+    scan_backups,
     stash_safety_copy,
     validate_backup,
 )
@@ -106,6 +107,32 @@ class TestListBackups:
         _create_backup(root, "ENC-BACKUP", encrypted=True)
         backups = list_backups(root)
         assert backups[0].is_encrypted
+
+    def test_list_backups_sorts_by_recommended_selection_order(self, tmp_dir):
+        root = tmp_dir / "backups"
+        root.mkdir()
+        old_path = _create_backup(root, "AAAA", date="2024-01-01T00:00:00Z")
+        new_path = _create_backup(root, "BBBB", date="2024-06-01T00:00:00Z")
+        create_safety_copy(new_path)
+
+        backups = list_backups(root)
+
+        assert backups[0].path == old_path
+        assert backups[1].path == new_path
+
+    def test_scan_backups_reports_skipped_entries(self, tmp_dir):
+        root = tmp_dir / "backups"
+        root.mkdir()
+        _create_backup(root, "VALID")
+        broken = root / "BROKEN"
+        broken.mkdir()
+        (broken / "Info.plist").write_text("not-a-plist")
+
+        scan = scan_backups(root)
+
+        assert [backup.udid for backup in scan.backups] == ["VALID"]
+        assert len(scan.skipped) == 1
+        assert scan.skipped[0].path == broken
 
 
 class TestFindBackup:

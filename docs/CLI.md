@@ -8,6 +8,11 @@ Full reference for all green2blue commands and options.
 
 Launches the interactive wizard when run from a terminal. Prints help when piped.
 
+### `green2blue <export.zip>`
+
+If run from an interactive terminal, launches the wizard with that ZIP preselected.
+If run non-interactively, treats it like `green2blue inject <export.zip>`.
+
 ### `green2blue wizard`
 
 Explicitly launches the interactive wizard — same as running with no arguments.
@@ -25,7 +30,7 @@ Inject Android messages into an iPhone backup.
 | Flag | Description |
 |------|-------------|
 | `--backup <path\|udid>` | Specify backup (auto-detect if omitted) |
-| `--password <pw>` | Backup encryption password |
+| `--password <pw>` | Backup encryption password (prompted for automatically in interactive terminals) |
 | `--dry-run` | Parse and convert without modifying the backup |
 | `-y, --yes` | Skip confirmation prompt |
 | `-v, --verbose` | Verbose output |
@@ -100,7 +105,7 @@ Canonical archive workflows for future merge and re-render support.
 | Flag | Description |
 |------|-------------|
 | `--backup-root <path>` | Override the default backup directory when resolving a UDID |
-| `--password <pw>` | Backup encryption password for encrypted iPhone backups |
+| `--password <pw>` | Backup encryption password for encrypted iPhone backups (prompted for automatically in interactive terminals) |
 | `--no-resume` | Force a new import run even if the exact same backup state was already imported |
 
 #### `green2blue archive import-android <zip> <archive.sqlite>`
@@ -137,7 +142,7 @@ Diagnose CloudKit sync state of messages in a backup.
 |------|-------------|
 | `--backup <path\|udid>` | Specify backup (auto-detect if omitted) |
 | `--backup-root <path>` | Override default backup directory |
-| `--password <pw>` | Backup encryption password |
+| `--password <pw>` | Backup encryption password (prompted for automatically in interactive terminals) |
 | `--injected-only` | Only show green2blue-injected messages |
 
 ### `green2blue prepare-sync`
@@ -148,7 +153,7 @@ Prepare an injected backup for iCloud sync reset workflow.
 |------|-------------|
 | `--backup <path\|udid>` | Specify backup |
 | `--backup-root <path>` | Override default backup directory |
-| `--password <pw>` | Backup encryption password |
+| `--password <pw>` | Backup encryption password (prompted for automatically in interactive terminals) |
 
 ### `green2blue device <subcommand>`
 
@@ -163,8 +168,12 @@ Direct device operations via USB (requires `pymobiledevice3`).
 | `device inject <zip>` | Full pipeline: backup, inject, restore |
 | `device restore <path>` | Restore a modified backup to a device |
 
-Every live device command writes a run bundle under `.live_device_runs/`
-containing:
+Every live device command writes a run bundle under the green2blue app-state directory:
+- macOS: `~/Library/Application Support/green2blue/live_device_runs/`
+- Windows: `%LOCALAPPDATA%\green2blue\live_device_runs\`
+- fallback: `~/.green2blue/live_device_runs/`
+
+Each bundle contains:
 - `metadata.json`
 - `progress.json`
 - `green2blue.log`
@@ -174,7 +183,7 @@ containing:
 If a live run fails, use:
 
 ```bash
-green2blue device run-status .live_device_runs/<timestamp>_<command>
+green2blue device run-status ~/Library/Application\ Support/green2blue/live_device_runs/<timestamp>_<command>
 ```
 
 to inspect the recorded phase, last progress, and recommended recovery steps.
@@ -187,6 +196,13 @@ green2blue looks for iPhone backups in the platform-specific default location:
 - **Windows**: `%APPDATA%\Apple Computer\MobileSync\Backup\` or `%USERPROFILE%\Apple\MobileSync\Backup\`
 
 Use `--backup-root` to override this on any command that accesses backups.
+
+Durable green2blue-generated archives, workflow directories, staged exports, and
+wizard rollback backups now default to the app-state directory as well:
+
+- **macOS**: `~/Library/Application Support/green2blue/`
+- **Windows**: `%LOCALAPPDATA%\green2blue\`
+- **fallback**: `~/.green2blue/`
 
 ## Canonical Archive Workflow
 
@@ -201,8 +217,8 @@ green2blue archive merge merged.g2b.sqlite
 green2blue archive inspect merged.g2b.sqlite
 green2blue archive report merged.g2b.sqlite
 green2blue archive export-android merged.g2b.sqlite merged-export.zip
-green2blue archive prepare-ios android-export.zip <UDID> .g2b_workflows/<UDID>
-green2blue archive run-ios .g2b_workflows/<UDID>
+green2blue archive prepare-ios android-export.zip <UDID> ~/Library/Application\ Support/green2blue/workflows/<UDID>
+green2blue archive run-ios ~/Library/Application\ Support/green2blue/workflows/<UDID>
 ```
 
 The archive now stores attachment payloads in a content-addressed sidecar blob

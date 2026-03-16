@@ -39,6 +39,9 @@ class TestInternational:
     def test_uk_national(self):
         assert normalize_phone("2079460958", "GB") == "+442079460958"
 
+    def test_uk_national_with_trunk_prefix(self):
+        assert normalize_phone("07788001000", "GB") == "+447788001000"
+
     def test_australian_number(self):
         assert normalize_phone("+61412345678") == "+61412345678"
 

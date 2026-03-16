@@ -90,7 +90,7 @@ LAUNCHER="$HOME/Desktop/run-green2blue.command"
 cat > "$LAUNCHER" << 'LAUNCHER_EOF'
 #!/bin/bash
 source "$HOME/.green2blue/bin/activate"
-green2blue
+green2blue "$@"
 LAUNCHER_EOF
 chmod +x "$LAUNCHER"
 

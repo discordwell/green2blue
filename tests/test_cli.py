@@ -271,7 +271,7 @@ class TestShowBackupList:
         _create_backup(root, "AAAA", "iPhone A")
         path_b = _create_backup(root, "BBBB", "iPhone B")
 
-        with patch("builtins.input", return_value="2"):
+        with patch("builtins.input", return_value="1"):
             result = _show_backup_list(root)
         assert result == path_b
 
@@ -328,6 +328,70 @@ class TestYesFlag:
             ]
         )
         assert ret == 0
+
+    def test_inject_prompts_for_encrypted_backup_password_when_interactive(self, tmp_dir):
+        zip_path = _create_export_zip(tmp_dir)
+        backup_info = BackupInfo(
+            path=tmp_dir / "encrypted-backup",
+            udid="ENC-TEST",
+            device_name="Encrypted iPhone",
+            product_version="17.4",
+            is_encrypted=True,
+        )
+
+        mock_result = MagicMock()
+        mock_result.clone_stats = None
+        mock_result.overwrite_stats = None
+        mock_result.injection_stats = MagicMock(
+            messages_inserted=1,
+            messages_skipped=0,
+            handles_inserted=0,
+            handles_existing=0,
+            chats_inserted=0,
+            chats_existing=0,
+            attachments_inserted=0,
+        )
+        mock_result.total_messages_parsed = 1
+        mock_result.skipped_count = 0
+        mock_result.safety_copy_path = None
+        mock_result.verification = None
+        mock_result.conversion_warnings = []
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("green2blue.ios.backup.find_backup", return_value=backup_info),
+            patch("green2blue.credentials.prompt_for_backup_password", return_value="secret123"),
+            patch("green2blue.pipeline.run_pipeline", return_value=mock_result) as mock_pipeline,
+        ):
+            mock_stdin.isatty.return_value = True
+            ret = main(["inject", str(zip_path), "--backup", "ENC-TEST", "--yes"])
+
+        assert ret == 0
+        assert mock_pipeline.call_args.kwargs["password"] == "secret123"
+
+    def test_inject_non_interactive_encrypted_backup_still_requires_password(
+        self, tmp_dir, capsys
+    ):
+        zip_path = _create_export_zip(tmp_dir)
+        backup_info = BackupInfo(
+            path=tmp_dir / "encrypted-backup",
+            udid="ENC-TEST",
+            device_name="Encrypted iPhone",
+            product_version="17.4",
+            is_encrypted=True,
+        )
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("green2blue.ios.backup.find_backup", return_value=backup_info),
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+        ):
+            mock_stdin.isatty.return_value = False
+            ret = main(["inject", str(zip_path), "--backup", "ENC-TEST", "--yes"])
+
+        assert ret == 1
+        assert "Encrypted backup requires a password" in capsys.readouterr().err
+        mock_pipeline.assert_not_called()
 
 
 class TestDeviceRestoreRouting:
@@ -727,13 +791,56 @@ class TestSmartNoArgs:
             ret = main([])
         assert ret == 1
 
-    def test_zip_arg_suggests_inject(self, capsys):
-        """A bare .zip arg should suggest 'green2blue inject'."""
-        ret = main(["export.zip"])
-        captured = capsys.readouterr()
-        assert "Did you mean" in captured.err
-        assert "green2blue inject export.zip" in captured.err
-        assert ret == 1
+    def test_zip_arg_tty_launches_wizard_with_prefilled_export(self, tmp_dir):
+        zip_path = _create_export_zip(tmp_dir)
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("green2blue.wizard.run_wizard", return_value=0) as mock_wizard,
+        ):
+            mock_stdin.isatty.return_value = True
+            ret = main([str(zip_path)])
+
+        assert ret == 0
+        mock_wizard.assert_called_once_with(initial_export_raw=str(zip_path.resolve()))
+
+    def test_zip_arg_non_tty_routes_to_inject(self, tmp_dir):
+        zip_path = _create_export_zip(tmp_dir)
+        backup_info = BackupInfo(
+            path=tmp_dir / "backup",
+            udid="TEST-UDID",
+            device_name="Test iPhone",
+            product_version="17.4",
+            is_encrypted=False,
+        )
+
+        mock_result = MagicMock()
+        mock_result.clone_stats = None
+        mock_result.overwrite_stats = None
+        mock_result.injection_stats = MagicMock(
+            messages_inserted=1,
+            messages_skipped=0,
+            handles_inserted=0,
+            handles_existing=0,
+            chats_inserted=0,
+            chats_existing=0,
+            attachments_inserted=0,
+        )
+        mock_result.total_messages_parsed = 1
+        mock_result.skipped_count = 0
+        mock_result.safety_copy_path = None
+        mock_result.verification = None
+        mock_result.conversion_warnings = []
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("green2blue.ios.backup.find_backup", return_value=backup_info),
+            patch("green2blue.pipeline.run_pipeline", return_value=mock_result) as mock_pipeline,
+        ):
+            mock_stdin.isatty.return_value = False
+            ret = main([str(zip_path)])
+
+        assert ret == 0
+        assert mock_pipeline.call_args.kwargs["export_path"] == zip_path.resolve()
 
 
 class TestQuickstartCommand:
@@ -764,7 +871,7 @@ class TestArchiveCommands:
 
         assert ret == 0
         mock_review.assert_called_once_with(
-            sample_export_zip,
+            sample_export_zip.resolve(),
             host="127.0.0.1",
             port=8080,
             open_browser=False,
@@ -821,6 +928,42 @@ class TestArchiveCommands:
 
         assert ret == 0
         assert archive_path.exists()
+
+    def test_archive_import_ios_prompts_for_encrypted_backup_password(self, tmp_dir):
+        archive_path = tmp_dir / "ios.g2b.sqlite"
+        backup_info = BackupInfo(
+            path=tmp_dir / "encrypted-backup",
+            udid="ENC-IOS-UDID",
+            device_name="Encrypted iPhone",
+            product_version="17.4",
+            is_encrypted=True,
+        )
+
+        mock_result = MagicMock(
+            archive_path=archive_path,
+            backup_udid="ENC-IOS-UDID",
+            backup_path=backup_info.path,
+            import_run_id=1,
+            reused_existing=False,
+            messages_imported=0,
+            messages_deduped=0,
+            conversations_touched=0,
+            participants_touched=0,
+            attachments_imported=0,
+            blobs_imported=0,
+        )
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("green2blue.ios.backup.find_backup", return_value=backup_info),
+            patch("green2blue.credentials.prompt_for_backup_password", return_value="secret123"),
+            patch("green2blue.archive.import_ios_backup", return_value=mock_result) as mock_import,
+        ):
+            mock_stdin.isatty.return_value = True
+            ret = main(["archive", "import-ios", "ENC-IOS-UDID", str(archive_path)])
+
+        assert ret == 0
+        assert mock_import.call_args.kwargs["password"] == "secret123"
 
     def test_archive_prepare_ios_creates_workflow_dir(self, tmp_dir):
         backup_root = tmp_dir / "backups"

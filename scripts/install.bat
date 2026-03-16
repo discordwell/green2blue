@@ -92,7 +92,7 @@ set LAUNCHER=%USERPROFILE%\Desktop\run-green2blue.bat
 (
     echo @echo off
     echo call "%VENV_DIR%\Scripts\activate.bat"
-    echo green2blue
+    echo green2blue %%*
     echo pause
 ) > "%LAUNCHER%"
 

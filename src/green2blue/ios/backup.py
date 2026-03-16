@@ -15,6 +15,7 @@ from green2blue.exceptions import (
     InvalidBackupError,
     MultipleBackupsError,
 )
+from green2blue.user_paths import looks_like_path_text, normalize_user_path
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,24 @@ class BackupInfo:
     product_version: str
     is_encrypted: bool
     date: str | None = None
+
+
+@dataclass(frozen=True)
+class BackupScanIssue:
+    """Diagnostic about a discovered but unusable backup directory."""
+
+    path: Path
+    error_type: str
+    message: str
+
+
+@dataclass(frozen=True)
+class BackupScanResult:
+    """Structured result of scanning a backup root."""
+
+    root: Path
+    backups: tuple[BackupInfo, ...]
+    skipped: tuple[BackupScanIssue, ...]
 
 
 def get_backup_dir() -> Path:
@@ -49,22 +68,23 @@ def get_backup_dir() -> Path:
         )
 
 
-def list_backups(backup_root: Path | None = None) -> list[BackupInfo]:
-    """List all available iPhone backups.
+def scan_backups(backup_root: Path | None = None) -> BackupScanResult:
+    """Scan for iPhone backups and preserve diagnostics for skipped entries.
 
     Args:
         backup_root: Override the default backup directory.
 
     Returns:
-        List of BackupInfo for each valid backup found.
+        BackupScanResult with valid backups and skipped-entry diagnostics.
     """
     root = backup_root or get_backup_dir()
 
     if not root.exists():
-        return []
+        return BackupScanResult(root=root, backups=(), skipped=())
 
-    backups = []
-    for entry in sorted(root.iterdir()):
+    backups: list[BackupInfo] = []
+    skipped: list[BackupScanIssue] = []
+    for entry in root.iterdir():
         if not entry.is_dir():
             continue
         # Skip restore checkpoint directories (green2blue safety copies)
@@ -73,11 +93,27 @@ def list_backups(backup_root: Path | None = None) -> list[BackupInfo]:
         try:
             info = _read_backup_info(entry)
             backups.append(info)
-        except (InvalidBackupError, Exception) as e:
+        except Exception as e:
             logger.debug("Skipping %s: %s", entry.name, e)
-            continue
+            skipped.append(
+                BackupScanIssue(
+                    path=entry,
+                    error_type=type(e).__name__,
+                    message=str(e),
+                )
+            )
 
-    return backups
+    backups.sort(key=_backup_selection_key, reverse=True)
+    return BackupScanResult(
+        root=root,
+        backups=tuple(backups),
+        skipped=tuple(sorted(skipped, key=lambda issue: issue.path.name.lower())),
+    )
+
+
+def list_backups(backup_root: Path | None = None) -> list[BackupInfo]:
+    """List all usable iPhone backups in recommendation order."""
+    return list(scan_backups(backup_root).backups)
 
 
 def find_backup(
@@ -102,47 +138,37 @@ def find_backup(
         MultipleBackupsError: Multiple backups match a partial UDID.
     """
     if backup_path_or_udid:
-        # Check if it's a direct path
-        p = Path(backup_path_or_udid)
-        if p.is_dir():
-            return _read_backup_info(p)
+        raw_value = str(backup_path_or_udid)
+        explicit_path = normalize_user_path(raw_value)
+        if explicit_path.is_dir():
+            return _read_backup_info(explicit_path)
+        if looks_like_path_text(raw_value):
+            raise BackupNotFoundError(f"No backup found at '{explicit_path}'")
 
         # Try as UDID
         root = backup_root or get_backup_dir()
-        candidate = root / backup_path_or_udid
+        candidate = root / raw_value
         if candidate.is_dir():
             return _read_backup_info(candidate)
 
         # Search by partial UDID match
-        backups = list_backups(backup_root)
-        matches = [b for b in backups if backup_path_or_udid in b.udid]
+        backups = scan_backups(backup_root).backups
+        matches = [b for b in backups if raw_value in b.udid]
         if len(matches) == 1:
             return matches[0]
         elif len(matches) > 1:
             raise MultipleBackupsError(
-                f"Multiple backups match '{backup_path_or_udid}': "
+                f"Multiple backups match '{raw_value}': "
                 + ", ".join(b.udid for b in matches)
             )
         raise BackupNotFoundError(
-            f"No backup found matching '{backup_path_or_udid}'",
+            f"No backup found matching '{raw_value}'",
         )
 
     # Auto-select: pick the most recent backup, preferring uninjected ones
     backups = list_backups(backup_root)
     if not backups:
         raise BackupNotFoundError("No iPhone backups found.")
-    if len(backups) == 1:
-        return backups[0]
-
-    # Sort by date, most recent first
-    backups.sort(key=_backup_sort_key, reverse=True)
-
-    # Prefer backups that haven't been injected yet
-    uninjected = [b for b in backups if not has_restore_checkpoint(b.path)]
-    if uninjected:
-        return uninjected[0]
-
-    # All have been injected; return most recent
     return backups[0]
 
 
@@ -258,6 +284,11 @@ def _backup_sort_key(info: BackupInfo) -> str:
         return datetime.fromtimestamp(mtime).isoformat()
 
     return ""
+
+
+def _backup_selection_key(info: BackupInfo) -> tuple[int, str, str]:
+    """Sort usable backups the same way auto-selection prefers them."""
+    return (0 if has_restore_checkpoint(info.path) else 1, _backup_sort_key(info), info.udid)
 
 
 def _read_backup_info(path: Path) -> BackupInfo:
