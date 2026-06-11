@@ -205,6 +205,57 @@ def _step_inspect(export_path: Path) -> tuple[int, int, bool]:
     return sms, mms, has_attachments
 
 
+def _step_review_checkpoint(
+    export_path: Path,
+    sms_count: int,
+    mms_count: int,
+    has_attachments: bool,
+) -> tuple[Path, int, int, bool]:
+    """Optionally launch the local browser review UI before the rest of the wizard."""
+    if not _ask_yes_no(
+        "  Would you like to review and trim this export in your browser first? [y/N]: ",
+        default=False,
+    ):
+        print()
+        return export_path, sms_count, mms_count, has_attachments
+
+    from green2blue.review import ReviewWorkflowContext, run_review_workflow
+
+    total = sms_count + mms_count
+    attachment_text = " with attachments" if has_attachments else ""
+    context = ReviewWorkflowContext(
+        title="Review before green2blue touches your backup.",
+        summary=(
+            f"You are reviewing {total:,} Android messages{attachment_text}. "
+            "Keep only the conversations and messages you want to carry into this import."
+        ),
+        next_step=(
+            "green2blue will return to the terminal, detect your phone-number country, "
+            "ask you to choose an iPhone backup, and then continue with the ZIP you keep here."
+        ),
+    )
+
+    print()
+    print("  Launching review UI...")
+    print("  When you're done, use the browser buttons to continue the wizard.\n")
+
+    result = run_review_workflow(export_path, context)
+    if result.action == "cancel":
+        print("\n  Aborted.")
+        sys.exit(0)
+
+    selected_export = Path(result.export_zip) if result.export_zip is not None else export_path
+    if selected_export.resolve() == export_path.resolve():
+        print("  Continuing with the original export.\n")
+        return export_path, sms_count, mms_count, has_attachments
+
+    print(f"  Using reviewed export: {selected_export}\n")
+    reviewed_sms_count, reviewed_mms_count, reviewed_has_attachments = _step_inspect(
+        selected_export
+    )
+    return selected_export, reviewed_sms_count, reviewed_mms_count, reviewed_has_attachments
+
+
 # ---------------------------------------------------------------------------
 # Step 5: Country detection
 # ---------------------------------------------------------------------------
@@ -399,8 +450,7 @@ def _pick_backup(backups: list[BackupInfo], scan: BackupScanResult | None = None
         encrypted = ", encrypted" if b.is_encrypted else ""
         injected = " [already injected]" if has_restore_checkpoint(b.path) else ""
         label = (
-            f"    {i}. {b.device_name} (iOS {b.product_version}{encrypted})"
-            f"{injected}{recommended}"
+            f"    {i}. {b.device_name} (iOS {b.product_version}{encrypted}){injected}{recommended}"
         )
         print(label)
         if b.date:
@@ -498,6 +548,12 @@ def _validate_password(backup_info: BackupInfo, password: str) -> bool:
 def _run_classic_wizard(initial_export_raw: str | None = None) -> None:
     export_path = _step_export_zip(initial_export_raw)
     sms_count, mms_count, has_attachments = _step_inspect(export_path)
+    export_path, sms_count, mms_count, has_attachments = _step_review_checkpoint(
+        export_path,
+        sms_count,
+        mms_count,
+        has_attachments,
+    )
     country = _step_country_detection(export_path)
     backup_info = _step_backup_selection()
     password = _step_encryption(backup_info)

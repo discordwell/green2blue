@@ -329,10 +329,11 @@ class TestWizardHappyPath:
 
         # Mock the input sequence:
         # 1. Export ZIP path
-        # 2. Confirm backup (Y)
-        # 3. Confirm inject (Y)
-        # 4. Decline automatic device restore
-        inputs = iter([str(zip_path), "y", "y", "n"])
+        # 2. Skip browser review
+        # 3. Confirm backup (Y)
+        # 4. Confirm inject (Y)
+        # 5. Decline automatic device restore
+        inputs = iter([str(zip_path), "n", "y", "y", "n"])
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
@@ -355,6 +356,63 @@ class TestWizardHappyPath:
 
         assert ret == 0
         mock_pipeline.assert_called_once()
+
+    def test_classic_wizard_uses_reviewed_export_when_browser_returns_filtered_zip(self, tmp_dir):
+        root = tmp_dir / "backups"
+        root.mkdir()
+        backup_path = _create_backup(root, "REVIEW-WIZARD")
+        source_dir = tmp_dir / "source"
+        source_dir.mkdir()
+        reviewed_dir = tmp_dir / "reviewed"
+        reviewed_dir.mkdir()
+        zip_path = _create_export_zip(source_dir, num_messages=3)
+        reviewed_zip = _create_export_zip(reviewed_dir, num_messages=1)
+
+        backup_info = BackupInfo(
+            path=backup_path,
+            udid="REVIEW-WIZARD",
+            device_name="Review iPhone",
+            product_version="17.4",
+            is_encrypted=False,
+        )
+
+        inputs = iter(
+            [
+                str(zip_path),
+                "y",  # launch browser review
+                "y",  # confirm backup
+                "y",  # confirm inject
+                "n",  # decline automatic device restore
+            ]
+        )
+
+        with (
+            patch("builtins.input", side_effect=lambda _: next(inputs)),
+            patch("green2blue.ios.backup.scan_backups", return_value=_scan_result([backup_info])),
+            patch("green2blue.review.run_review_workflow") as mock_review_workflow,
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+        ):
+            mock_review_workflow.return_value = MagicMock(
+                action="filtered",
+                export_zip=reviewed_zip,
+            )
+            mock_result = MagicMock()
+            mock_result.injection_stats = MagicMock(
+                messages_inserted=1,
+                messages_skipped=0,
+            )
+            mock_result.clone_stats = None
+            mock_result.overwrite_stats = None
+            mock_result.total_attachments_copied = 0
+            mock_result.verification = MagicMock(passed=True)
+            mock_result.safety_copy_path = tmp_dir / "safety"
+            mock_pipeline.return_value = mock_result
+
+            ret = run_wizard()
+
+        assert ret == 0
+        mock_review_workflow.assert_called_once()
+        assert mock_pipeline.call_args.kwargs["export_path"] == reviewed_zip
 
     def test_merge_wizard_flow(self, tmp_dir):
         """Wizard can build/archive/merge and inject via the merged path."""
@@ -493,6 +551,7 @@ class TestWizardHappyPath:
         inputs = iter(
             [
                 str(zip_path),  # export zip
+                "n",  # skip browser review
                 "y",  # use backup
                 "y",  # proceed with injection
                 "y",  # use live device restore
@@ -575,7 +634,7 @@ class TestWizardHappyPath:
         """Wizard exits gracefully when no backups found."""
         zip_path = _create_export_zip(tmp_dir)
 
-        inputs = iter([str(zip_path)])
+        inputs = iter([str(zip_path), "n"])
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
@@ -605,6 +664,7 @@ class TestWizardHappyPath:
             [
                 str(bad_zip),  # bad file (not a valid ZIP)
                 str(good_zip),  # good file
+                "n",  # skip browser review
                 "y",  # confirm backup
                 "y",  # confirm inject
                 "n",  # decline automatic device restore
@@ -655,7 +715,7 @@ class TestWizardEncryptedBackup:
         )
 
         # Inputs: zip path, confirm backup, password, confirm inject, decline device restore
-        inputs = iter([str(zip_path), "y", "y", "n"])
+        inputs = iter([str(zip_path), "n", "y", "y", "n"])
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),
@@ -697,7 +757,7 @@ class TestWizardEncryptedBackup:
             is_encrypted=True,
         )
 
-        inputs = iter([str(zip_path), "y"])
+        inputs = iter([str(zip_path), "n", "y"])
 
         with (
             patch("builtins.input", side_effect=lambda _: next(inputs)),

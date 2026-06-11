@@ -5,17 +5,20 @@ from __future__ import annotations
 import copy
 import io
 import json
+import threading
 import webbrowser
 import zipfile
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
+from green2blue.user_paths import default_app_state_root
 
 ANDROID_ATTACHMENT_ROOT = "/data/user/0/com.android.providers.telephony/app_parts"
 
@@ -48,6 +51,23 @@ class ReviewConversation:
     latest_timestamp_ms: int
 
 
+@dataclass(frozen=True)
+class ReviewWorkflowContext:
+    """Extra metadata for wizard-driven review sessions."""
+
+    title: str
+    summary: str
+    next_step: str
+
+
+@dataclass(frozen=True)
+class ReviewWorkflowResult:
+    """Result returned when a wizard review session completes."""
+
+    action: str
+    export_zip: Path | None
+
+
 class ReviewSession:
     """Parsed export state backing the local review UI."""
 
@@ -62,13 +82,33 @@ class ReviewSession:
         self.messages = messages
         self.conversations = _build_conversations(messages)
 
-    def payload(self) -> dict[str, object]:
+    def payload(self, workflow_context: ReviewWorkflowContext | None = None) -> dict[str, object]:
+        sms_messages = sum(1 for message in self.messages if message.kind == "sms")
+        mms_messages = sum(1 for message in self.messages if message.kind == "mms")
+        messages_with_attachments = sum(1 for message in self.messages if message.attachment_count)
+        total_attachments = sum(message.attachment_count for message in self.messages)
+        latest_timestamp_ms = max((message.timestamp_ms for message in self.messages), default=0)
         return {
             "export_name": self.export_zip.name,
+            "default_conversation_id": self.conversations[0].id if self.conversations else None,
+            "workflow": (
+                {
+                    "mode": "wizard",
+                    "title": workflow_context.title,
+                    "summary": workflow_context.summary,
+                    "next_step": workflow_context.next_step,
+                }
+                if workflow_context is not None
+                else None
+            ),
             "stats": {
                 "messages": len(self.messages),
                 "conversations": len(self.conversations),
-                "attachments": sum(message.attachment_count for message in self.messages),
+                "attachments": total_attachments,
+                "sms_messages": sms_messages,
+                "mms_messages": mms_messages,
+                "messages_with_attachments": messages_with_attachments,
+                "latest_timestamp_ms": latest_timestamp_ms,
             },
             "conversations": [
                 {
@@ -167,11 +207,51 @@ def serve_review_app(
         return url
 
 
+def run_review_workflow(
+    export_zip: Path | str,
+    workflow_context: ReviewWorkflowContext,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 0,
+    open_browser: bool = True,
+) -> ReviewWorkflowResult:
+    """Launch the review UI and wait for a wizard action from the browser."""
+    with open_review_session(export_zip) as session:
+        server = _ReviewHTTPServer(
+            (host, port),
+            _make_review_handler(session, workflow_context=workflow_context),
+        )
+        url = f"http://{host}:{server.server_address[1]}"
+        print(f"Review UI: {url}")
+        print("Use the browser buttons to continue the wizard.")
+        if open_browser:
+            webbrowser.open(url)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nStopping review server.")
+        finally:
+            server.server_close()
+
+        return server.workflow_result or ReviewWorkflowResult(
+            action="cancel",
+            export_zip=None,
+        )
+
+
 class _ReviewHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.workflow_result: ReviewWorkflowResult | None = None
 
-def _make_review_handler(session: ReviewSession):
+
+def _make_review_handler(
+    session: ReviewSession,
+    *,
+    workflow_context: ReviewWorkflowContext | None = None,
+):
     class ReviewHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -185,7 +265,10 @@ def _make_review_handler(session: ReviewSession):
             if parsed.path == "/api/data":
                 self._write_bytes(
                     HTTPStatus.OK,
-                    json.dumps(session.payload(), ensure_ascii=False).encode("utf-8"),
+                    json.dumps(
+                        session.payload(workflow_context=workflow_context),
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
                     "application/json; charset=utf-8",
                 )
                 return
@@ -197,44 +280,25 @@ def _make_review_handler(session: ReviewSession):
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path != "/api/export":
-                self._write_bytes(
-                    HTTPStatus.NOT_FOUND,
-                    b"Not found",
-                    "text/plain; charset=utf-8",
-                )
+            if parsed.path == "/api/export":
+                self._handle_export()
+                return
+            if parsed.path == "/api/apply" and workflow_context is not None:
+                self._handle_workflow_apply()
+                return
+            self._write_bytes(
+                HTTPStatus.NOT_FOUND,
+                b"Not found",
+                "text/plain; charset=utf-8",
+            )
+
+        def _handle_export(self) -> None:
+            payload = self._read_json_payload()
+            if payload is None:
                 return
 
-            length = int(self.headers.get("Content-Length", "0"))
-            try:
-                payload = json.loads(self.rfile.read(length))
-            except json.JSONDecodeError:
-                self._write_bytes(
-                    HTTPStatus.BAD_REQUEST,
-                    b"Invalid JSON payload.",
-                    "text/plain; charset=utf-8",
-                )
-                return
-
-            selected_ids = payload.get("selected_ids")
-            if not isinstance(selected_ids, list) or not all(
-                isinstance(item, str) for item in selected_ids
-            ):
-                self._write_bytes(
-                    HTTPStatus.BAD_REQUEST,
-                    b"selected_ids must be a list of message IDs.",
-                    "text/plain; charset=utf-8",
-                )
-                return
-
-            try:
-                zip_bytes = session.export_selected_zip(set(selected_ids))
-            except ValueError as exc:
-                self._write_bytes(
-                    HTTPStatus.BAD_REQUEST,
-                    str(exc).encode("utf-8"),
-                    "text/plain; charset=utf-8",
-                )
+            zip_bytes = self._build_filtered_zip(payload)
+            if zip_bytes is None:
                 return
 
             filename = f"{session.export_zip.stem}.filtered.zip"
@@ -244,6 +308,62 @@ def _make_review_handler(session: ReviewSession):
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.end_headers()
             self.wfile.write(zip_bytes)
+
+        def _handle_workflow_apply(self) -> None:
+            payload = self._read_json_payload()
+            if payload is None:
+                return
+
+            action = payload.get("action")
+            if action == "continue_full":
+                self.server.workflow_result = ReviewWorkflowResult(
+                    action="full",
+                    export_zip=session.export_zip,
+                )
+                self._write_bytes(
+                    HTTPStatus.OK,
+                    b'{"status":"ok","action":"full"}',
+                    "application/json; charset=utf-8",
+                )
+                self._shutdown_server()
+                return
+            if action == "cancel":
+                self.server.workflow_result = ReviewWorkflowResult(
+                    action="cancel",
+                    export_zip=None,
+                )
+                self._write_bytes(
+                    HTTPStatus.OK,
+                    b'{"status":"ok","action":"cancel"}',
+                    "application/json; charset=utf-8",
+                )
+                self._shutdown_server()
+                return
+            if action != "continue_selected":
+                self._write_bytes(
+                    HTTPStatus.BAD_REQUEST,
+                    b"Unknown workflow action.",
+                    "text/plain; charset=utf-8",
+                )
+                return
+
+            zip_bytes = self._build_filtered_zip(payload)
+            if zip_bytes is None:
+                return
+
+            output_path = _write_reviewed_export(session.export_zip, zip_bytes)
+            self.server.workflow_result = ReviewWorkflowResult(
+                action="filtered",
+                export_zip=output_path,
+            )
+            self._write_bytes(
+                HTTPStatus.OK,
+                json.dumps({"status": "ok", "action": "filtered", "path": str(output_path)}).encode(
+                    "utf-8"
+                ),
+                "application/json; charset=utf-8",
+            )
+            self._shutdown_server()
 
         def log_message(self, _format: str, *_args) -> None:
             return
@@ -255,7 +375,62 @@ def _make_review_handler(session: ReviewSession):
             self.end_headers()
             self.wfile.write(payload)
 
+        def _read_json_payload(self) -> dict[str, object] | None:
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                payload = json.loads(self.rfile.read(length))
+            except json.JSONDecodeError:
+                self._write_bytes(
+                    HTTPStatus.BAD_REQUEST,
+                    b"Invalid JSON payload.",
+                    "text/plain; charset=utf-8",
+                )
+                return None
+            if not isinstance(payload, dict):
+                self._write_bytes(
+                    HTTPStatus.BAD_REQUEST,
+                    b"JSON payload must be an object.",
+                    "text/plain; charset=utf-8",
+                )
+                return None
+            return payload
+
+        def _build_filtered_zip(self, payload: dict[str, object]) -> bytes | None:
+            selected_ids = payload.get("selected_ids")
+            if not isinstance(selected_ids, list) or not all(
+                isinstance(item, str) for item in selected_ids
+            ):
+                self._write_bytes(
+                    HTTPStatus.BAD_REQUEST,
+                    b"selected_ids must be a list of message IDs.",
+                    "text/plain; charset=utf-8",
+                )
+                return None
+
+            try:
+                return session.export_selected_zip(set(selected_ids))
+            except ValueError as exc:
+                self._write_bytes(
+                    HTTPStatus.BAD_REQUEST,
+                    str(exc).encode("utf-8"),
+                    "text/plain; charset=utf-8",
+                )
+                return None
+
+        def _shutdown_server(self) -> None:
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+
     return ReviewHandler
+
+
+def _write_reviewed_export(export_zip: Path, zip_bytes: bytes) -> Path:
+    output_dir = default_app_state_root() / "reviewed_exports"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    filename = f"{export_zip.stem}.{stamp}.{threading.get_ident()}.filtered.zip"
+    output_path = output_dir / filename
+    output_path.write_bytes(zip_bytes)
+    return output_path
 
 
 def _load_review_messages(export: ExtractedExport) -> list[ReviewMessage]:
@@ -454,320 +629,1202 @@ _REVIEW_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>green2blue Review</title>
   <style>
-    :root { color-scheme: light; --bg:#f5f1e8; --panel:#fffaf0;
-      --line:#d7ccb7; --ink:#1e1c19; --muted:#6b6257;
-      --accent:#2d6a4f; --accent-soft:#d9efe3; }
-    body { margin:0; font-family: "Iowan Old Style",
-      "Palatino Linotype", Georgia, serif;
-      background:linear-gradient(180deg,#efe7d7,#f8f5ed);
-      color:var(--ink); }
-    header { padding:18px 24px; border-bottom:1px solid var(--line);
-      background:rgba(255,250,240,.92); position:sticky; top:0;
-      backdrop-filter:blur(10px); z-index:3; }
-    h1 { margin:0 0 8px; font-size:24px; }
-    .stats, .controls { display:flex; flex-wrap:wrap;
-      gap:10px 16px; align-items:center; }
-    .stats span { color:var(--muted); font-size:14px; }
-    .controls { margin-top:12px; }
-    input, select, button { font:inherit;
-      border:1px solid var(--line); background:white;
-      border-radius:10px; padding:8px 10px; }
-    button { cursor:pointer; background:var(--accent-soft);
-      border-color:#a5cdb8; }
-    button.primary { background:var(--accent); color:white; border-color:var(--accent); }
-    button.ghost { background:white; }
-    main { display:grid;
-      grid-template-columns: minmax(280px, 32%) 1fr;
-      gap:16px; padding:16px; }
-    .panel { background:var(--panel);
-      border:1px solid var(--line); border-radius:16px;
-      overflow:hidden; min-height:70vh; }
-    .panel h2 { margin:0; padding:14px 16px; font-size:18px;
-      border-bottom:1px solid var(--line);
-      background:rgba(255,255,255,.75); }
-    .panel-body { padding:12px; overflow:auto;
-      max-height:calc(100vh - 220px); }
-    .row { display:grid; gap:8px; padding:10px 8px;
-      border-bottom:1px solid #efe7d7; }
-    .row:last-child { border-bottom:none; }
-    .conversation-row { grid-template-columns:auto 1fr auto;
-      align-items:start; }
+    :root {
+      color-scheme: light;
+      --bg: #f4efe4;
+      --bg-strong: #e8dcc4;
+      --panel: rgba(255, 251, 244, 0.94);
+      --panel-strong: #fff7ea;
+      --line: #d7c7ab;
+      --line-strong: #b9a27a;
+      --ink: #1f231d;
+      --muted: #665f52;
+      --accent: #2f6b49;
+      --accent-strong: #1f4e34;
+      --accent-soft: #dcebdc;
+      --warning-soft: #f2e4c9;
+      --shadow: 0 20px 50px rgba(61, 47, 29, 0.12);
+      --radius: 22px;
+      --radius-sm: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, rgba(255, 255, 255, 0.72), transparent 28%),
+        linear-gradient(180deg, #efe4cf 0%, var(--bg) 24%, #f7f4ed 100%);
+      padding-bottom: 96px;
+    }
+    button, input, select {
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fffdf8;
+      color: var(--ink);
+      padding: 10px 14px;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+    button:hover:not(:disabled) {
+      transform: translateY(-1px);
+      border-color: var(--line-strong);
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      box-shadow: 0 10px 24px rgba(47, 107, 73, 0.22);
+    }
+    button.primary:hover:not(:disabled) {
+      background: var(--accent-strong);
+      border-color: var(--accent-strong);
+    }
+    button.ghost {
+      background: transparent;
+    }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 11px 13px;
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--ink);
+    }
+    input:focus, select:focus, button:focus {
+      outline: 2px solid rgba(47, 107, 73, 0.18);
+      outline-offset: 2px;
+    }
+    .hero {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      padding: 24px 24px 18px;
+      backdrop-filter: blur(16px);
+      background: rgba(247, 242, 232, 0.88);
+      border-bottom: 1px solid rgba(185, 162, 122, 0.34);
+    }
+    .hero-bar {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+    }
+    .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    h1 {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+      font-size: 34px;
+      line-height: 1.05;
+    }
+    .hero-copy {
+      max-width: 760px;
+    }
+    .hero-summary {
+      margin: 10px 0 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .hero-note {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(185, 162, 122, 0.44);
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .hero-note strong {
+      color: var(--ink);
+    }
+    .hero-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .hero-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.74);
+      border: 1px solid rgba(185, 162, 122, 0.52);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .stat-card {
+      background: linear-gradient(180deg, rgba(255, 252, 246, 0.96), rgba(251, 244, 232, 0.88));
+      border: 1px solid rgba(185, 162, 122, 0.38);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: 0 10px 26px rgba(61, 47, 29, 0.06);
+    }
+    .stat-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .stat-value {
+      font-size: 28px;
+      line-height: 1;
+      font-weight: 700;
+    }
+    .stat-meta {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
+      gap: 18px;
+      padding: 18px 24px 24px;
+      align-items: start;
+    }
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.8fr);
+      gap: 18px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid rgba(185, 162, 122, 0.46);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      min-height: 0;
+      overflow: hidden;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: flex-start;
+      padding: 18px 18px 14px;
+      border-bottom: 1px solid rgba(185, 162, 122, 0.28);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 248, 236, 0.32));
+    }
+    .panel-head h2 {
+      margin: 0;
+      font-size: 20px;
+      font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    }
+    .panel-subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .panel-actions, .inline-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .sidebar-controls {
+      display: grid;
+      gap: 10px;
+      padding: 16px 18px;
+      border-bottom: 1px solid rgba(185, 162, 122, 0.24);
+      background: rgba(255, 250, 241, 0.72);
+    }
+    .toggle-row, .select-row {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border: 1px solid rgba(185, 162, 122, 0.44);
+      background: rgba(255, 255, 255, 0.72);
+      border-radius: 14px;
+      color: var(--muted);
+      min-width: 0;
+    }
+    .toggle input {
+      width: auto;
+      margin: 0;
+      padding: 0;
+    }
+    .list {
+      padding: 10px;
+      max-height: calc(100vh - 340px);
+      overflow: auto;
+    }
+    .conversation-row,
     .message-row {
-      grid-template-columns:auto 160px 110px 1fr auto;
-      align-items:start; }
-    .label { font-weight:600; }
-    .meta, .preview { color:var(--muted); font-size:13px; }
-    .preview { white-space:pre-wrap; }
-    .pill { display:inline-block; font-size:12px;
-      padding:2px 8px; border-radius:999px;
-      background:#efe7d7; color:var(--muted); }
-    .footer { padding:12px 16px;
-      border-top:1px solid var(--line); display:flex;
-      justify-content:space-between; align-items:center;
-      gap:12px; color:var(--muted); font-size:13px; }
-    .empty { padding:20px; color:var(--muted); }
-    @media (max-width: 900px) {
-      main { grid-template-columns: 1fr; }
-      .panel-body { max-height:none; }
-      .message-row { grid-template-columns:auto 1fr; }
+      display: grid;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 18px;
+      border: 1px solid transparent;
+      background: transparent;
+      margin-bottom: 8px;
+      transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+    }
+    .conversation-row:hover,
+    .message-row:hover {
+      background: rgba(255, 255, 255, 0.68);
+      border-color: rgba(185, 162, 122, 0.34);
+    }
+    .conversation-row.active,
+    .message-row.active {
+      background: linear-gradient(180deg, rgba(220, 235, 220, 0.94), rgba(245, 249, 239, 0.92));
+      border-color: rgba(47, 107, 73, 0.38);
+      transform: translateY(-1px);
+    }
+    .conversation-row {
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: start;
+    }
+    .message-row {
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: start;
+    }
+    .row-checkbox {
+      margin-top: 4px;
+      width: auto;
+    }
+    .row-main {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      border-radius: 0;
+      text-align: left;
+      width: 100%;
+      min-width: 0;
+      box-shadow: none;
+    }
+    .row-main:hover:not(:disabled) {
+      transform: none;
+      border-color: transparent;
+    }
+    .row-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin: 0;
+      color: var(--ink);
+    }
+    .row-meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .row-preview {
+      margin-top: 8px;
+      color: #353126;
+      font-size: 14px;
+      line-height: 1.45;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      white-space: pre-wrap;
+    }
+    .chip-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(255, 247, 234, 0.92);
+      border: 1px solid rgba(185, 162, 122, 0.42);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .pill.selected {
+      background: rgba(220, 235, 220, 0.92);
+      border-color: rgba(47, 107, 73, 0.34);
+      color: var(--accent-strong);
+    }
+    .messages-panel .list {
+      max-height: calc(100vh - 385px);
+    }
+    .detail-body {
+      padding: 18px;
+      display: grid;
+      gap: 16px;
+    }
+    .detail-section {
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid rgba(185, 162, 122, 0.26);
+      border-radius: 18px;
+      padding: 14px;
+    }
+    .detail-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .detail-copy {
+      line-height: 1.55;
+      white-space: pre-wrap;
+      color: #2a271f;
+      word-break: break-word;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .empty {
+      padding: 26px 18px;
+      border: 1px dashed rgba(185, 162, 122, 0.54);
+      border-radius: 18px;
+      background: rgba(255, 252, 247, 0.72);
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .footer-note {
+      padding: 0 18px 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .export-bar {
+      position: fixed;
+      left: 18px;
+      right: 18px;
+      bottom: 18px;
+      z-index: 30;
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: center;
+      padding: 14px 16px;
+      border-radius: 22px;
+      border: 1px solid rgba(185, 162, 122, 0.46);
+      background: rgba(255, 250, 242, 0.94);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 18px 36px rgba(61, 47, 29, 0.18);
+    }
+    .export-copy {
+      min-width: 0;
+    }
+    .export-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .export-meta {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .export-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      align-items: center;
+    }
+    @media (max-width: 1260px) {
+      .workspace {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .detail-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 1040px) {
+      .hero-bar,
+      .layout {
+        grid-template-columns: 1fr;
+        display: grid;
+      }
+      .stat-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .layout {
+        padding-top: 16px;
+      }
+      .list,
+      .messages-panel .list {
+        max-height: none;
+      }
+    }
+    @media (max-width: 760px) {
+      body {
+        padding-bottom: 136px;
+      }
+      .hero,
+      .layout {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+      .stat-grid,
+      .toggle-row,
+      .select-row,
+      .detail-grid {
+        grid-template-columns: 1fr;
+      }
+      .hero-actions,
+      .panel-actions,
+      .inline-actions,
+      .export-actions,
+      .export-bar {
+        justify-content: flex-start;
+      }
+      .export-bar {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        padding: 14px;
+        display: grid;
+      }
+      .export-actions button {
+        width: 100%;
+      }
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>green2blue Export Review</h1>
-    <div class="stats" id="stats"></div>
-    <div class="controls">
-      <input id="phoneFilter" placeholder="Filter by phone number / participant">
-      <input id="textFilter" placeholder="Filter by message text">
-      <select id="kindFilter">
-        <option value="all">All message types</option>
-        <option value="sms">SMS only</option>
-        <option value="mms">MMS only</option>
-      </select>
-      <label><input type="checkbox" id="attachmentsOnly"> Attachments only</label>
-      <label><input type="checkbox" id="selectedOnly"> Selected only</label>
-      <select id="conversationSort">
-        <option value="phone_asc">Phone # A-Z</option>
-        <option value="phone_desc">Phone # Z-A</option>
-        <option value="latest_desc">Latest first</option>
-        <option value="count_desc">Most messages</option>
-      </select>
-      <button id="selectVisibleConversations">Select visible #s</button>
-      <button id="deselectVisibleConversations" class="ghost">Deselect visible #s</button>
-      <button id="selectVisibleMessages">Select visible messages</button>
-      <button id="deselectVisibleMessages" class="ghost">Deselect visible messages</button>
-      <button id="selectAll" class="ghost">Select all</button>
-      <button id="deselectAll" class="ghost">Deselect all</button>
-      <button id="exportSelected" class="primary">Export selected ZIP</button>
+  <header class="hero">
+    <div class="hero-bar">
+      <div class="hero-copy">
+        <div class="eyebrow">Local Review</div>
+        <h1>Review Android export before you trim it.</h1>
+        <p class="hero-summary" id="heroSummary"></p>
+        <div class="hero-note" id="workflowNote" hidden></div>
+      </div>
+      <div class="hero-actions">
+        <div class="hero-chip" id="selectionChip">0 messages selected</div>
+        <button type="button" id="clearSelection" class="ghost">Clear selection</button>
+      </div>
     </div>
+    <div class="stat-grid" id="statGrid"></div>
   </header>
-  <main>
-    <section class="panel">
-      <h2>Conversations / Phone Numbers</h2>
-      <div class="panel-body" id="conversationList"></div>
-      <div class="footer" id="conversationFooter"></div>
-    </section>
-    <section class="panel">
-      <h2>Messages</h2>
-      <div class="panel-body" id="messageList"></div>
-      <div class="footer" id="messageFooter"></div>
+  <main class="layout">
+    <aside class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Conversations</h2>
+          <div class="panel-subtitle" id="conversationSummary"></div>
+        </div>
+      </div>
+      <div class="sidebar-controls">
+        <input id="searchFilter" placeholder="Search participants or message text">
+        <div class="select-row">
+          <select id="kindFilter">
+            <option value="all">All message types</option>
+            <option value="sms">SMS only</option>
+            <option value="mms">MMS only</option>
+          </select>
+          <select id="conversationSort">
+            <option value="latest_desc">Latest activity</option>
+            <option value="count_desc">Most messages</option>
+            <option value="phone_asc">Phone A-Z</option>
+            <option value="phone_desc">Phone Z-A</option>
+          </select>
+        </div>
+        <div class="toggle-row">
+          <label class="toggle">
+            <input type="checkbox" id="attachmentsOnly">
+            Attachments only
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="selectedOnly">
+            Selected only
+          </label>
+        </div>
+        <div class="inline-actions">
+          <button type="button" id="selectVisibleConversations">Select visible</button>
+          <button type="button" id="deselectVisibleConversations" class="ghost">
+            Clear visible
+          </button>
+        </div>
+      </div>
+      <div class="list" id="conversationList"></div>
+      <div class="footer-note" id="conversationFooter"></div>
+    </aside>
+    <section class="workspace">
+      <section class="panel messages-panel">
+        <div class="panel-head">
+          <div>
+            <h2 id="activeConversationTitle">Messages</h2>
+            <div class="panel-subtitle" id="activeConversationMeta"></div>
+          </div>
+          <div class="panel-actions">
+            <button type="button" id="selectActiveConversation">Select conversation</button>
+            <button type="button" id="deselectActiveConversation" class="ghost">
+              Clear conversation
+            </button>
+          </div>
+        </div>
+        <div class="sidebar-controls">
+          <div class="inline-actions">
+            <button type="button" id="selectFilteredMessages">Select filtered messages</button>
+            <button type="button" id="deselectFilteredMessages" class="ghost">
+              Clear filtered messages
+            </button>
+          </div>
+        </div>
+        <div class="list" id="messageList"></div>
+        <div class="footer-note" id="messageFooter"></div>
+      </section>
+      <aside class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Details</h2>
+            <div class="panel-subtitle" id="detailSummary"></div>
+          </div>
+        </div>
+        <div class="detail-body" id="detailCard"></div>
+      </aside>
     </section>
   </main>
+  <div class="export-bar">
+    <div class="export-copy">
+      <div class="export-title" id="exportTitle"></div>
+      <div class="export-meta" id="exportMeta"></div>
+    </div>
+    <div class="export-actions">
+      <button type="button" id="continueFull" class="ghost" hidden>
+        Continue with full export
+      </button>
+      <button type="button" id="cancelWorkflow" class="ghost" hidden>Cancel wizard</button>
+      <button type="button" id="selectAllFiltered" class="ghost">Select all filtered</button>
+      <button type="button" id="clearFiltered" class="ghost">Clear filtered</button>
+      <button type="button" id="exportSelected" class="primary">Export selected ZIP</button>
+    </div>
+  </div>
   <script>
     const state = {
       data: null,
       selectedMessageIds: new Set(),
       filters: {
-        phone: "",
-        text: "",
+        query: "",
         kind: "all",
         attachmentsOnly: false,
         selectedOnly: false,
-        conversationSort: "phone_asc",
+        conversationSort: "latest_desc",
       },
+      activeConversationId: null,
+      activeMessageId: null,
     };
 
     function fmtTime(ms) {
-      if (!ms) return "(no timestamp)";
+      if (!ms) return "No timestamp";
       return new Date(ms).toLocaleString();
     }
 
-    function visibleMessages() {
-      if (!state.data) return [];
-      const phoneNeedle = state.filters.phone.trim().toLowerCase();
-      const textNeedle = state.filters.text.trim().toLowerCase();
-      return state.data.messages.filter((message) => {
-        if (state.filters.kind !== "all" && message.kind !== state.filters.kind) return false;
-        if (state.filters.attachmentsOnly && message.attachment_count === 0) return false;
-        if (state.filters.selectedOnly && !state.selectedMessageIds.has(message.id)) return false;
-        if (phoneNeedle) {
-          const haystack = [
-            message.primary_address,
-            message.conversation_label,
-            ...(message.addresses || []),
-          ].join(" ").toLowerCase();
-          if (!haystack.includes(phoneNeedle)) return false;
+    function fmtNumber(value) {
+      return Number(value || 0).toLocaleString();
+    }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function previewForMessage(message) {
+      return message.body_text || message.subject || "(attachment only)";
+    }
+
+    function workflowContext() {
+      return state.data ? state.data.workflow : null;
+    }
+
+    function isWorkflowMode() {
+      return Boolean(workflowContext());
+    }
+
+    function buildIndexes(data) {
+      data.messageById = new Map();
+      data.messagesByConversation = new Map();
+      data.conversationById = new Map();
+      data.messages.forEach((message) => {
+        data.messageById.set(message.id, message);
+        if (!data.messagesByConversation.has(message.conversation_id)) {
+          data.messagesByConversation.set(message.conversation_id, []);
         }
-        if (textNeedle) {
-          const haystack = [message.body_text || "", message.subject || ""].join(" ").toLowerCase();
-          if (!haystack.includes(textNeedle)) return false;
-        }
-        return true;
+        data.messagesByConversation.get(message.conversation_id).push(message);
+      });
+      data.messagesByConversation.forEach((messages) => {
+        messages.sort((a, b) => a.timestamp_ms - b.timestamp_ms || a.id.localeCompare(b.id));
+      });
+      data.conversations.forEach((conversation) => {
+        data.conversationById.set(conversation.id, conversation);
       });
     }
 
-    function visibleConversations() {
-      if (!state.data) return [];
-      const visibleIds = new Set(visibleMessages().map((message) => message.conversation_id));
-      const conversations = state.data.conversations
-        .filter((c) => visibleIds.has(c.id));
+    function conversationSelectionState(conversationId) {
+      const messages = state.data.messagesByConversation.get(conversationId) || [];
+      let selected = 0;
+      messages.forEach((message) => {
+        if (state.selectedMessageIds.has(message.id)) selected += 1;
+      });
+      return {
+        selected,
+        total: messages.length,
+        all: messages.length > 0 && selected === messages.length,
+        partial: selected > 0 && selected < messages.length,
+      };
+    }
+
+    function selectMessages(messages, shouldSelect) {
+      messages.forEach((message) => {
+        if (shouldSelect) state.selectedMessageIds.add(message.id);
+        else state.selectedMessageIds.delete(message.id);
+      });
+    }
+
+    function matchesFilters(message) {
+      if (state.filters.kind !== "all" && message.kind !== state.filters.kind) return false;
+      if (state.filters.attachmentsOnly && message.attachment_count === 0) return false;
+      if (state.filters.selectedOnly && !state.selectedMessageIds.has(message.id)) return false;
+
+      const needle = state.filters.query.trim().toLowerCase();
+      if (!needle) return true;
+
+      const haystack = [
+        message.primary_address,
+        message.conversation_label,
+        ...(message.addresses || []),
+        message.body_text || "",
+        message.subject || "",
+      ].join(" ").toLowerCase();
+      return haystack.includes(needle);
+    }
+
+    function sortConversations(conversations) {
       const sort = state.filters.conversationSort;
       conversations.sort((a, b) => {
+        if (sort === "phone_asc") return a.primary_address.localeCompare(b.primary_address);
         if (sort === "phone_desc") return b.primary_address.localeCompare(a.primary_address);
-        if (sort === "latest_desc") return b.latest_timestamp_ms - a.latest_timestamp_ms;
-        if (sort === "count_desc") return (
-          b.message_count - a.message_count
-          || a.primary_address.localeCompare(b.primary_address));
-        return a.primary_address.localeCompare(b.primary_address);
+        if (sort === "count_desc") {
+          return b.message_count - a.message_count
+            || b.latest_timestamp_ms - a.latest_timestamp_ms
+            || a.primary_address.localeCompare(b.primary_address);
+        }
+        return b.latest_timestamp_ms - a.latest_timestamp_ms
+          || b.message_count - a.message_count
+          || a.primary_address.localeCompare(b.primary_address);
       });
       return conversations;
     }
 
-    function conversationSelectionState(conversationId) {
-      const ids = state.data.messages
-        .filter((m) => m.conversation_id === conversationId)
-        .map((m) => m.id);
-      const selected = ids.filter((id) => state.selectedMessageIds.has(id)).length;
-      if (selected === 0) return "none";
-      if (selected === ids.length) return "all";
-      return "partial";
-    }
-
-    function render() {
-      renderStats();
-      renderConversations();
-      renderMessages();
-    }
-
-    function renderStats() {
-      const stats = document.getElementById("stats");
+    function computeDerivedState() {
       if (!state.data) {
-        stats.textContent = "Loading…";
-        return;
+        return {
+          filteredMessages: [],
+          filteredMessagesByConversation: new Map(),
+          visibleConversations: [],
+          activeConversation: null,
+          activeMessages: [],
+          activeMessage: null,
+          selectedConversations: 0,
+          selectedAttachments: 0,
+        };
       }
-      stats.innerHTML = "";
-      const items = [
-        `${state.data.export_name}`,
-        `${state.data.stats.messages} messages`,
-        `${state.data.stats.conversations} conversations`,
-        `${state.selectedMessageIds.size} selected`,
+
+      const filteredMessages = [];
+      const filteredMessagesByConversation = new Map();
+
+      state.data.messages.forEach((message) => {
+        if (!matchesFilters(message)) return;
+        filteredMessages.push(message);
+        if (!filteredMessagesByConversation.has(message.conversation_id)) {
+          filteredMessagesByConversation.set(message.conversation_id, []);
+        }
+        filteredMessagesByConversation.get(message.conversation_id).push(message);
+      });
+
+      filteredMessagesByConversation.forEach((messages) => {
+        messages.sort((a, b) => a.timestamp_ms - b.timestamp_ms || a.id.localeCompare(b.id));
+      });
+
+      const visibleConversations = sortConversations(
+        state.data.conversations.filter((conversation) =>
+          filteredMessagesByConversation.has(conversation.id)
+        ).slice()
+      );
+
+      if (
+        !visibleConversations.some(
+          (conversation) => conversation.id === state.activeConversationId
+        )
+      ) {
+        state.activeConversationId = visibleConversations.length
+          ? visibleConversations[0].id
+          : null;
+      }
+
+      const activeConversation = state.activeConversationId
+        ? state.data.conversationById.get(state.activeConversationId) || null
+        : null;
+      const activeMessages = activeConversation
+        ? (filteredMessagesByConversation.get(activeConversation.id) || [])
+        : [];
+
+      if (!activeMessages.some((message) => message.id === state.activeMessageId)) {
+        state.activeMessageId = activeMessages.length
+          ? activeMessages[activeMessages.length - 1].id
+          : null;
+      }
+
+      const activeMessage = state.activeMessageId
+        ? state.data.messageById.get(state.activeMessageId) || null
+        : null;
+
+      const selectedConversationIds = new Set();
+      let selectedAttachments = 0;
+      state.data.messages.forEach((message) => {
+        if (!state.selectedMessageIds.has(message.id)) return;
+        selectedConversationIds.add(message.conversation_id);
+        selectedAttachments += message.attachment_count;
+      });
+
+      return {
+        filteredMessages,
+        filteredMessagesByConversation,
+        visibleConversations,
+        activeConversation,
+        activeMessages,
+        activeMessage,
+        selectedConversations: selectedConversationIds.size,
+        selectedAttachments,
+      };
+    }
+
+    function renderHero(derived) {
+      const stats = state.data.stats;
+      const heroSummary = document.getElementById("heroSummary");
+      const selectionChip = document.getElementById("selectionChip");
+      const workflowNote = document.getElementById("workflowNote");
+      const statGrid = document.getElementById("statGrid");
+      const workflow = workflowContext();
+
+      heroSummary.textContent = [
+        `${state.data.export_name} contains ${fmtNumber(stats.messages)} messages`,
+        `across ${fmtNumber(stats.conversations)} conversations.`,
+        "Filter down to the people and moments you want to keep,",
+        "then export a trimmed ZIP.",
+      ].join(" ");
+      selectionChip.textContent = `${fmtNumber(state.selectedMessageIds.size)} messages selected`;
+
+      if (workflow) {
+        workflowNote.hidden = false;
+        workflowNote.innerHTML = [
+          `<strong>${workflow.title}</strong> ${workflow.summary}`,
+          `<strong>Next:</strong> ${workflow.next_step}`,
+        ].join("<br>");
+      } else {
+        workflowNote.hidden = true;
+        workflowNote.textContent = "";
+      }
+
+      statGrid.innerHTML = "";
+      const cards = [
+        {
+          label: "All Messages",
+          value: fmtNumber(stats.messages),
+          meta: `${fmtNumber(stats.sms_messages)} SMS and ${fmtNumber(stats.mms_messages)} MMS`,
+        },
+        {
+          label: "Attachment Coverage",
+          value: fmtNumber(stats.attachments),
+          meta: `${fmtNumber(stats.messages_with_attachments)} messages include attachments`,
+        },
+        {
+          label: "Visible Now",
+          value: fmtNumber(derived.filteredMessages.length),
+          meta: [
+            `${fmtNumber(derived.visibleConversations.length)} conversations`,
+            "match current filters",
+          ].join(" "),
+        },
+        {
+          label: "Selected",
+          value: fmtNumber(state.selectedMessageIds.size),
+          meta: [
+            `${fmtNumber(derived.selectedConversations)} conversations and`,
+            `${fmtNumber(derived.selectedAttachments)} attachment files`,
+          ].join(" "),
+        },
       ];
-      items.forEach((text) => {
-        const span = document.createElement("span");
-        span.textContent = text;
-        stats.appendChild(span);
+
+      cards.forEach((card) => {
+        const item = el("section", "stat-card");
+        item.appendChild(el("div", "stat-label", card.label));
+        item.appendChild(el("div", "stat-value", card.value));
+        item.appendChild(el("div", "stat-meta", card.meta));
+        statGrid.appendChild(item);
       });
     }
 
-    function renderConversations() {
+    function renderConversations(derived) {
       const list = document.getElementById("conversationList");
       const footer = document.getElementById("conversationFooter");
-      const conversations = visibleConversations();
+      const summary = document.getElementById("conversationSummary");
+      const conversations = derived.visibleConversations;
+
       list.innerHTML = "";
+      summary.textContent = `${fmtNumber(conversations.length)} matching conversations`;
+
       if (!conversations.length) {
-        list.innerHTML = '<div class="empty">No conversations match the current filters.</div>';
+        const empty = el("div", "empty");
+        empty.textContent = [
+          "No conversations match the current filters.",
+          "Clear a filter or broaden your search.",
+        ].join(" ");
+        list.appendChild(empty);
       } else {
         conversations.forEach((conversation) => {
-          const row = document.createElement("label");
-          row.className = "row conversation-row";
+          const row = el(
+            "div",
+            `conversation-row${conversation.id === state.activeConversationId ? " active" : ""}`
+          );
 
-          const checkbox = document.createElement("input");
+          const checkbox = el("input", "row-checkbox");
           checkbox.type = "checkbox";
-          const selectionState = conversationSelectionState(conversation.id);
-          checkbox.checked = selectionState === "all";
-          checkbox.indeterminate = selectionState === "partial";
+          const selection = conversationSelectionState(conversation.id);
+          checkbox.checked = selection.all;
+          checkbox.indeterminate = selection.partial;
           checkbox.addEventListener("change", () => {
-            const ids = state.data.messages
-              .filter((message) => message.conversation_id === conversation.id)
-              .map((message) => message.id);
-            ids.forEach((id) => {
-              if (checkbox.checked) state.selectedMessageIds.add(id);
-              else state.selectedMessageIds.delete(id);
-            });
+            const messages = state.data.messagesByConversation.get(conversation.id) || [];
+            selectMessages(messages, checkbox.checked);
             render();
           });
 
-          const body = document.createElement("div");
-          const metaText = `${conversation.message_count} messages`
-            + ` · ${conversation.attachment_count} attachments`
-            + ` · ${fmtTime(conversation.latest_timestamp_ms)}`;
-          body.innerHTML = `<div class="label">${conversation.label}</div>
-            <div class="meta">${metaText}</div>`;
+          const main = el("button", "row-main");
+          main.type = "button";
+          main.addEventListener("click", () => {
+            state.activeConversationId = conversation.id;
+            const messages =
+              derived.filteredMessagesByConversation.get(conversation.id) || [];
+            state.activeMessageId = messages.length ? messages[messages.length - 1].id : null;
+            render();
+          });
 
-          const badge = document.createElement("span");
-          badge.className = "pill";
-          badge.textContent = conversation.primary_address;
+          main.appendChild(el("div", "row-title", conversation.label));
+
+          const meta = el(
+            "div",
+            "row-meta",
+            [
+              `${fmtNumber(conversation.message_count)} messages,`,
+              `${fmtNumber(conversation.attachment_count)} attachments,`,
+              `latest ${fmtTime(conversation.latest_timestamp_ms)}`,
+            ].join(" ")
+          );
+          main.appendChild(meta);
+
+          const latestMessage = (
+            derived.filteredMessagesByConversation.get(conversation.id) || []
+          ).slice(-1)[0];
+          if (latestMessage) {
+            main.appendChild(el("div", "row-preview", previewForMessage(latestMessage)));
+          }
+
+          const chips = el("div", "chip-row");
+          const addressChip = el("span", "pill", conversation.primary_address);
+          chips.appendChild(addressChip);
+          if (selection.selected) {
+            chips.appendChild(
+              el("span", "pill selected", `${fmtNumber(selection.selected)} selected`)
+            );
+          }
+          main.appendChild(chips);
 
           row.appendChild(checkbox);
-          row.appendChild(body);
-          row.appendChild(badge);
+          row.appendChild(main);
           list.appendChild(row);
         });
       }
-      footer.textContent = `${conversations.length} visible conversation(s)`;
+      footer.textContent = `${fmtNumber(conversations.length)} visible conversation(s)`;
     }
 
-    function renderMessages() {
+    function renderMessages(derived) {
+      const title = document.getElementById("activeConversationTitle");
+      const meta = document.getElementById("activeConversationMeta");
       const list = document.getElementById("messageList");
       const footer = document.getElementById("messageFooter");
-      const messages = visibleMessages().slice().sort((a, b) =>
-        b.timestamp_ms - a.timestamp_ms
-        || a.primary_address.localeCompare(b.primary_address));
+
+      const conversation = derived.activeConversation;
+      const messages = derived.activeMessages;
+
+      if (!conversation) {
+        title.textContent = "Messages";
+        meta.textContent = "Choose a conversation to review its timeline.";
+      } else {
+        title.textContent = conversation.label;
+        meta.textContent = [
+          `${fmtNumber(messages.length)} filtered messages shown for`,
+          conversation.primary_address,
+        ].join(" ");
+      }
+
       list.innerHTML = "";
-      if (!messages.length) {
-        list.innerHTML = '<div class="empty">No messages match the current filters.</div>';
+      if (!conversation) {
+        const empty = el("div", "empty");
+        empty.textContent = [
+          "No conversation is active.",
+          "Pick one from the left to inspect its messages.",
+        ].join(" ");
+        list.appendChild(empty);
+      } else if (!messages.length) {
+        const empty = el("div", "empty");
+        empty.textContent = [
+          "This conversation does not have any messages",
+          "that match the current filters.",
+        ].join(" ");
+        list.appendChild(empty);
       } else {
         messages.forEach((message) => {
-          const row = document.createElement("label");
-          row.className = "row message-row";
+          const row = el(
+            "div",
+            `message-row${message.id === state.activeMessageId ? " active" : ""}`
+          );
 
-          const checkbox = document.createElement("input");
+          const checkbox = el("input", "row-checkbox");
           checkbox.type = "checkbox";
           checkbox.checked = state.selectedMessageIds.has(message.id);
           checkbox.addEventListener("change", () => {
-            if (checkbox.checked) state.selectedMessageIds.add(message.id);
-            else state.selectedMessageIds.delete(message.id);
+            selectMessages([message], checkbox.checked);
             render();
           });
 
-          const when = document.createElement("div");
-          when.className = "meta";
-          when.textContent = fmtTime(message.timestamp_ms);
+          const main = el("button", "row-main");
+          main.type = "button";
+          main.addEventListener("click", () => {
+            state.activeMessageId = message.id;
+            render();
+          });
 
-          const direction = document.createElement("div");
-          direction.innerHTML = `<span class="pill">`
-            + `${message.kind.toUpperCase()}`
-            + ` · ${message.direction}</span>`;
+          main.appendChild(el("div", "row-title", previewForMessage(message)));
+          main.appendChild(
+            el(
+              "div",
+              "row-meta",
+              [
+                fmtTime(message.timestamp_ms),
+                message.kind.toUpperCase(),
+                message.direction,
+              ].join(" - ")
+            )
+          );
+          main.appendChild(el("div", "row-preview", `${message.primary_address}`));
 
-          const body = document.createElement("div");
-          const preview = message.body_text || message.subject || "(attachment only)";
-          body.innerHTML = `<div class="label">${message.primary_address}</div>
-            <div class="preview">${preview}</div>`;
-
-          const attach = document.createElement("div");
-          attach.className = "meta";
-          attach.textContent = message.attachment_count
-            ? `${message.attachment_count} attachment(s)` : "";
+          const chips = el("div", "chip-row");
+          chips.appendChild(el("span", "pill", message.kind.toUpperCase()));
+          chips.appendChild(el("span", "pill", message.direction));
+          if (message.attachment_count) {
+            chips.appendChild(
+              el("span", "pill selected", `${fmtNumber(message.attachment_count)} attachments`)
+            );
+          }
+          if (state.selectedMessageIds.has(message.id)) {
+            chips.appendChild(el("span", "pill selected", "Selected"));
+          }
+          main.appendChild(chips);
 
           row.appendChild(checkbox);
-          row.appendChild(when);
-          row.appendChild(direction);
-          row.appendChild(body);
-          row.appendChild(attach);
+          row.appendChild(main);
           list.appendChild(row);
         });
       }
-      footer.textContent = `${messages.length} visible message(s)`;
+      footer.textContent = `${fmtNumber(messages.length)} visible message(s)`;
     }
 
-    function hookFilter(id, key, accessor = (el) => el.value) {
-      document.getElementById(id).addEventListener("input", (event) => {
-        state.filters[key] = accessor(event.target);
-        render();
+    function renderDetail(derived) {
+      const summary = document.getElementById("detailSummary");
+      const card = document.getElementById("detailCard");
+      const message = derived.activeMessage;
+
+      card.innerHTML = "";
+
+      if (!message) {
+        summary.textContent = "No message selected";
+        const empty = el("div", "empty");
+        empty.textContent = [
+          "Pick a message to inspect its timestamp,",
+          "participants, text, and attachment count.",
+        ].join(" ");
+        card.appendChild(empty);
+        return;
+      }
+
+      summary.textContent = `${message.kind.toUpperCase()} from ${fmtTime(message.timestamp_ms)}`;
+
+      const metaSection = el("section", "detail-section");
+      metaSection.appendChild(el("div", "detail-label", "Message Snapshot"));
+      const grid = el("div", "detail-grid");
+
+      [
+        ["Conversation", message.conversation_label],
+        ["Primary Address", message.primary_address],
+        ["Direction", message.direction],
+        ["Attachment Count", fmtNumber(message.attachment_count)],
+      ].forEach(([label, value]) => {
+        const item = el("div", "detail-copy");
+        item.textContent = `${label}: ${value}`;
+        grid.appendChild(item);
       });
-      document.getElementById(id).addEventListener("change", (event) => {
-        state.filters[key] = accessor(event.target);
-        render();
+      metaSection.appendChild(grid);
+      card.appendChild(metaSection);
+
+      const participants = el("section", "detail-section");
+      participants.appendChild(el("div", "detail-label", "Participants"));
+      participants.appendChild(
+        el("div", "detail-copy", (message.addresses || []).length
+          ? message.addresses.join(", ")
+          : message.primary_address)
+      );
+      card.appendChild(participants);
+
+      if (message.subject) {
+        const subject = el("section", "detail-section");
+        subject.appendChild(el("div", "detail-label", "Subject"));
+        subject.appendChild(el("div", "detail-copy", message.subject));
+        card.appendChild(subject);
+      }
+
+      const body = el("section", "detail-section");
+      body.appendChild(el("div", "detail-label", "Message Text"));
+      body.appendChild(el("div", "detail-copy", previewForMessage(message)));
+      card.appendChild(body);
+    }
+
+    function renderExportBar(derived) {
+      const selectedCount = state.selectedMessageIds.size;
+      const exportTitle = document.getElementById("exportTitle");
+      const exportMeta = document.getElementById("exportMeta");
+      const exportButton = document.getElementById("exportSelected");
+      const clearSelectionButton = document.getElementById("clearSelection");
+      const clearFilteredButton = document.getElementById("clearFiltered");
+      const selectAllFilteredButton = document.getElementById("selectAllFiltered");
+      const continueFullButton = document.getElementById("continueFull");
+      const cancelWorkflowButton = document.getElementById("cancelWorkflow");
+      const workflow = workflowContext();
+
+      if (!selectedCount) {
+        exportTitle.textContent = "No messages selected yet";
+        exportMeta.textContent = workflow
+          ? "Select messages to keep, or continue with the full export unchanged."
+          : "Select entire conversations or individual messages, then export a trimmed ZIP.";
+      } else {
+        exportTitle.textContent = workflow
+          ? `${fmtNumber(selectedCount)} messages ready for the wizard`
+          : `${fmtNumber(selectedCount)} messages ready to export`;
+        exportMeta.textContent = workflow
+          ? [
+              `${fmtNumber(derived.selectedConversations)} conversations and`,
+              `${fmtNumber(derived.selectedAttachments)} attachment files`,
+              "will continue into the rest of the wizard.",
+            ].join(" ")
+          : [
+              `${fmtNumber(derived.selectedConversations)} conversations and`,
+              `${fmtNumber(derived.selectedAttachments)} attachment files`,
+              "will be included.",
+            ].join(" ");
+      }
+
+      exportButton.disabled = selectedCount === 0;
+      clearSelectionButton.disabled = selectedCount === 0;
+      clearFilteredButton.disabled = derived.filteredMessages.length === 0;
+      selectAllFilteredButton.disabled = derived.filteredMessages.length === 0;
+      continueFullButton.hidden = !workflow;
+      cancelWorkflowButton.hidden = !workflow;
+      exportButton.textContent = workflow ? "Use selection and continue" : "Export selected ZIP";
+    }
+
+    function render() {
+      if (!state.data) return;
+      const derived = computeDerivedState();
+      renderHero(derived);
+      renderConversations(derived);
+      renderMessages(derived);
+      renderDetail(derived);
+      renderExportBar(derived);
+      syncActionStates(derived);
+    }
+
+    function syncActionStates(derived) {
+      const activeConversation = derived.activeConversation;
+      document.getElementById("selectActiveConversation").disabled = !activeConversation;
+      document.getElementById("deselectActiveConversation").disabled = !activeConversation;
+      document.getElementById("selectFilteredMessages").disabled = !derived.activeMessages.length;
+      document.getElementById("deselectFilteredMessages").disabled = !derived.activeMessages.length;
+      document.getElementById("selectVisibleConversations").disabled =
+        !derived.visibleConversations.length;
+      document.getElementById("deselectVisibleConversations").disabled =
+        !derived.visibleConversations.length;
+    }
+
+    function hookFilter(id, key, accessor = (element) => element.value) {
+      const element = document.getElementById(id);
+      ["input", "change"].forEach((eventName) => {
+        element.addEventListener(eventName, (event) => {
+          state.filters[key] = accessor(event.target);
+          render();
+        });
       });
+    }
+
+    async function submitWorkflowAction(action, selectedIds = []) {
+      const response = await fetch("/api/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, selected_ids: selectedIds }),
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      await response.json();
     }
 
     async function exportSelected() {
       const selectedIds = Array.from(state.selectedMessageIds);
       if (!selectedIds.length) {
-        alert("Select at least one message before exporting.");
+        alert("Select at least one message before continuing.");
         return;
       }
+
+      if (isWorkflowMode()) {
+        await submitWorkflowAction("continue_selected", selectedIds);
+        return;
+      }
+
       const response = await fetch("/api/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -794,44 +1851,76 @@ _REVIEW_HTML = """<!doctype html>
     async function boot() {
       const response = await fetch("/api/data");
       state.data = await response.json();
-      state.data.messages.forEach((message) => state.selectedMessageIds.add(message.id));
-      hookFilter("phoneFilter", "phone");
-      hookFilter("textFilter", "text");
+      buildIndexes(state.data);
+      state.activeConversationId = state.data.default_conversation_id;
+      hookFilter("searchFilter", "query");
       hookFilter("kindFilter", "kind");
       hookFilter("conversationSort", "conversationSort");
-      hookFilter("attachmentsOnly", "attachmentsOnly", (el) => el.checked);
-      hookFilter("selectedOnly", "selectedOnly", (el) => el.checked);
+      hookFilter("attachmentsOnly", "attachmentsOnly", (element) => element.checked);
+      hookFilter("selectedOnly", "selectedOnly", (element) => element.checked);
       document.getElementById("selectVisibleConversations").addEventListener("click", () => {
-        visibleConversations().forEach((conversation) => {
-          state.data.messages
-            .filter((message) => message.conversation_id === conversation.id)
-            .forEach((message) => state.selectedMessageIds.add(message.id));
+        const derived = computeDerivedState();
+        derived.visibleConversations.forEach((conversation) => {
+          const messages = state.data.messagesByConversation.get(conversation.id) || [];
+          selectMessages(messages, true);
         });
         render();
       });
       document.getElementById("deselectVisibleConversations").addEventListener("click", () => {
-        visibleConversations().forEach((conversation) => {
-          state.data.messages
-            .filter((message) => message.conversation_id === conversation.id)
-            .forEach((message) => state.selectedMessageIds.delete(message.id));
+        const derived = computeDerivedState();
+        derived.visibleConversations.forEach((conversation) => {
+          const messages = state.data.messagesByConversation.get(conversation.id) || [];
+          selectMessages(messages, false);
         });
         render();
       });
-      document.getElementById("selectVisibleMessages").addEventListener("click", () => {
-        visibleMessages().forEach((message) => state.selectedMessageIds.add(message.id));
+      document.getElementById("selectFilteredMessages").addEventListener("click", () => {
+        const derived = computeDerivedState();
+        selectMessages(derived.activeMessages, true);
         render();
       });
-      document.getElementById("deselectVisibleMessages").addEventListener("click", () => {
-        visibleMessages().forEach((message) => state.selectedMessageIds.delete(message.id));
+      document.getElementById("deselectFilteredMessages").addEventListener("click", () => {
+        const derived = computeDerivedState();
+        selectMessages(derived.activeMessages, false);
         render();
       });
-      document.getElementById("selectAll").addEventListener("click", () => {
-        state.data.messages.forEach((message) => state.selectedMessageIds.add(message.id));
+      document.getElementById("selectActiveConversation").addEventListener("click", () => {
+        const derived = computeDerivedState();
+        if (derived.activeConversation) {
+          const messages =
+            state.data.messagesByConversation.get(derived.activeConversation.id) || [];
+          selectMessages(messages, true);
+        }
         render();
       });
-      document.getElementById("deselectAll").addEventListener("click", () => {
+      document.getElementById("deselectActiveConversation").addEventListener("click", () => {
+        const derived = computeDerivedState();
+        if (derived.activeConversation) {
+          const messages =
+            state.data.messagesByConversation.get(derived.activeConversation.id) || [];
+          selectMessages(messages, false);
+        }
+        render();
+      });
+      document.getElementById("selectAllFiltered").addEventListener("click", () => {
+        const derived = computeDerivedState();
+        selectMessages(derived.filteredMessages, true);
+        render();
+      });
+      document.getElementById("clearFiltered").addEventListener("click", () => {
+        const derived = computeDerivedState();
+        selectMessages(derived.filteredMessages, false);
+        render();
+      });
+      document.getElementById("clearSelection").addEventListener("click", () => {
         state.selectedMessageIds.clear();
         render();
+      });
+      document.getElementById("continueFull").addEventListener("click", async () => {
+        await submitWorkflowAction("continue_full");
+      });
+      document.getElementById("cancelWorkflow").addEventListener("click", async () => {
+        await submitWorkflowAction("cancel");
       });
       document.getElementById("exportSelected").addEventListener("click", exportSelected);
       render();
