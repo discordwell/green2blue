@@ -262,3 +262,85 @@ class TestJoinTableConsistency:
         # Messages with handle_id=0 are only from is_from_me=1 (outgoing)
         # or bugs — the injection now prevents them.
         assert result.passed
+
+
+class TestConnectionHygiene:
+    """The read-only checks must always close their sqlite connection.
+
+    Each ``_check_*`` helper opens a connection and runs queries inside a
+    ``try``/``except sqlite3.Error`` block; a leak on the error path (or an
+    early return) would accumulate open handles across a batch of backups.
+    """
+
+    @staticmethod
+    def _tracking_connect(monkeypatch):
+        """Patch verify.sqlite3.connect to record close() calls on each conn."""
+        from green2blue import verify
+
+        opened: list = []
+        real_connect = sqlite3.connect
+
+        class _TrackingConnection(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.close_calls = 0
+                opened.append(self)
+
+            def close(self):
+                self.close_calls += 1
+                super().close()
+
+        monkeypatch.setattr(
+            verify.sqlite3,
+            "connect",
+            lambda database, *a, **k: real_connect(database, *a, factory=_TrackingConnection, **k),
+        )
+        return opened
+
+    def test_checks_close_connection_on_query_error(self, tmp_dir, monkeypatch):
+        from green2blue import verify
+
+        opened = self._tracking_connect(monkeypatch)
+
+        # A junk file opens lazily but fails once a query runs, so every
+        # helper takes its ``except sqlite3.Error`` branch.
+        junk = tmp_dir / "corrupt-sms.db"
+        junk.write_bytes(b"definitely not a sqlite database")
+
+        result = verify.VerificationResult()
+        checks = [
+            lambda: verify._check_integrity(junk, result),
+            lambda: verify._check_foreign_keys(junk, result),
+            lambda: verify._check_join_tables(junk, result),
+            lambda: verify._check_attachments(junk, tmp_dir, None, result),
+            lambda: verify._check_chat_indexes(junk, result),
+        ]
+        for run_check in checks:
+            opened.clear()
+            run_check()
+            assert opened, "expected the check to open a connection"
+            assert all(conn.close_calls == 1 for conn in opened), "connection leaked on error path"
+
+        assert not result.passed
+
+    def test_chat_index_check_closes_connection_on_early_return(self, tmp_dir, monkeypatch):
+        from green2blue import verify
+
+        opened = self._tracking_connect(monkeypatch)
+
+        # A valid database with no chat_service table triggers the early
+        # return inside the ``with closing(...)`` block.
+        db_path = tmp_dir / "no-chat-service.db"
+        seed = sqlite3.connect(db_path)
+        seed.execute("CREATE TABLE chat (ROWID INTEGER PRIMARY KEY)")
+        seed.commit()
+        seed.close()
+
+        result = verify.VerificationResult()
+        verify._check_chat_indexes(db_path, result)
+
+        assert opened, "expected the check to open a connection"
+        assert all(conn.close_calls == 1 for conn in opened)
+        # The early return still counts as a passed check.
+        assert result.checks_passed == 1
+        assert not result.errors

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,10 +83,9 @@ def _check_integrity(db_path: Path, result: VerificationResult) -> None:
     """Run PRAGMA integrity_check on sms.db."""
     result.checks_run += 1
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.execute("PRAGMA integrity_check")
-        check_result = cursor.fetchone()[0]
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            cursor = conn.execute("PRAGMA integrity_check")
+            check_result = cursor.fetchone()[0]
 
         if check_result == "ok":
             result.checks_passed += 1
@@ -100,14 +100,13 @@ def _check_foreign_keys(db_path: Path, result: VerificationResult) -> None:
     """Check that handle_id references in messages are valid."""
     result.checks_run += 1
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.execute("""
-            SELECT COUNT(*) FROM message m
-            WHERE m.handle_id != 0
-            AND m.handle_id NOT IN (SELECT ROWID FROM handle)
-        """)
-        orphaned = cursor.fetchone()[0]
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM message m
+                WHERE m.handle_id != 0
+                AND m.handle_id NOT IN (SELECT ROWID FROM handle)
+            """)
+            orphaned = cursor.fetchone()[0]
 
         if orphaned == 0:
             result.checks_passed += 1
@@ -122,43 +121,40 @@ def _check_join_tables(db_path: Path, result: VerificationResult) -> None:
     """Check consistency of join tables."""
     result.checks_run += 1
     try:
-        conn = sqlite3.connect(db_path)
+        with closing(sqlite3.connect(db_path)) as conn:
+            # Check chat_message_join references valid messages
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM chat_message_join cmj
+                WHERE cmj.message_id NOT IN (SELECT ROWID FROM message)
+            """)
+            orphaned_msgs = cursor.fetchone()[0]
 
-        # Check chat_message_join references valid messages
-        cursor = conn.execute("""
-            SELECT COUNT(*) FROM chat_message_join cmj
-            WHERE cmj.message_id NOT IN (SELECT ROWID FROM message)
-        """)
-        orphaned_msgs = cursor.fetchone()[0]
+            # Check chat_message_join references valid chats
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM chat_message_join cmj
+                WHERE cmj.chat_id NOT IN (SELECT ROWID FROM chat)
+            """)
+            orphaned_chats = cursor.fetchone()[0]
 
-        # Check chat_message_join references valid chats
-        cursor = conn.execute("""
-            SELECT COUNT(*) FROM chat_message_join cmj
-            WHERE cmj.chat_id NOT IN (SELECT ROWID FROM chat)
-        """)
-        orphaned_chats = cursor.fetchone()[0]
+            # Check chat_handle_join
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM chat_handle_join chj
+                WHERE chj.handle_id NOT IN (SELECT ROWID FROM handle)
+            """)
+            orphaned_handles = cursor.fetchone()[0]
 
-        # Check chat_handle_join
-        cursor = conn.execute("""
-            SELECT COUNT(*) FROM chat_handle_join chj
-            WHERE chj.handle_id NOT IN (SELECT ROWID FROM handle)
-        """)
-        orphaned_handles = cursor.fetchone()[0]
+            # Check message_attachment_join
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM message_attachment_join maj
+                WHERE maj.message_id NOT IN (SELECT ROWID FROM message)
+            """)
+            orphaned_att_msgs = cursor.fetchone()[0]
 
-        # Check message_attachment_join
-        cursor = conn.execute("""
-            SELECT COUNT(*) FROM message_attachment_join maj
-            WHERE maj.message_id NOT IN (SELECT ROWID FROM message)
-        """)
-        orphaned_att_msgs = cursor.fetchone()[0]
-
-        cursor = conn.execute("""
-            SELECT COUNT(*) FROM message_attachment_join maj
-            WHERE maj.attachment_id NOT IN (SELECT ROWID FROM attachment)
-        """)
-        orphaned_att = cursor.fetchone()[0]
-
-        conn.close()
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM message_attachment_join maj
+                WHERE maj.attachment_id NOT IN (SELECT ROWID FROM attachment)
+            """)
+            orphaned_att = cursor.fetchone()[0]
 
         errors = []
         if orphaned_msgs:
@@ -192,12 +188,11 @@ def _check_attachments(
     """Check that attachment files referenced in sms.db exist in the backup."""
     result.checks_run += 1
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.execute(
-            "SELECT filename FROM attachment WHERE filename IS NOT NULL AND filename != ''"
-        )
-        filenames = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            cursor = conn.execute(
+                "SELECT filename FROM attachment WHERE filename IS NOT NULL AND filename != ''"
+            )
+            filenames = [row[0] for row in cursor.fetchall()]
 
         if not filenames:
             result.checks_passed += 1
@@ -235,27 +230,26 @@ def _check_chat_indexes(db_path: Path, result: VerificationResult) -> None:
     """Check that chats are indexed in auxiliary tables used by Messages UI."""
     result.checks_run += 1
     try:
-        conn = sqlite3.connect(db_path)
-        tables = {
-            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
+        with closing(sqlite3.connect(db_path)) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
 
-        if "chat_service" not in tables:
-            conn.close()
-            result.checks_passed += 1
-            return
+            if "chat_service" not in tables:
+                result.checks_passed += 1
+                return
 
-        missing_chat_service = conn.execute("""
-            SELECT COUNT(*) FROM chat c
-            WHERE c.service_name IS NOT NULL
-              AND c.service_name != ''
-              AND NOT EXISTS (
-                  SELECT 1 FROM chat_service cs
-                  WHERE cs.chat = c.ROWID
-                    AND cs.service = c.service_name
-              )
-        """).fetchone()[0]
-        conn.close()
+            missing_chat_service = conn.execute("""
+                SELECT COUNT(*) FROM chat c
+                WHERE c.service_name IS NOT NULL
+                  AND c.service_name != ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM chat_service cs
+                      WHERE cs.chat = c.ROWID
+                        AND cs.service = c.service_name
+                  )
+            """).fetchone()[0]
 
         if missing_chat_service == 0:
             result.checks_passed += 1
