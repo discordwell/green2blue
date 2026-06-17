@@ -223,7 +223,11 @@ def prepare_sync(
         conn.commit()
 
     finally:
-        restore_triggers(conn, saved_triggers)
-        conn.close()
+        # restore_triggers can raise (e.g. commit fails); guarantee the
+        # connection is still closed so handles don't leak on the error path.
+        try:
+            restore_triggers(conn, saved_triggers)
+        finally:
+            conn.close()
 
     return result

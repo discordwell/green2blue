@@ -409,6 +409,47 @@ class TestPrepareSyncEdgeCases:
         assert result.chats_ck_reset == 0
         assert result.chats_preserved == 0
 
+    def test_connection_closed_when_restore_triggers_raises(
+        self, empty_sms_db: Path, monkeypatch
+    ) -> None:
+        """prepare_sync must not leak its connection if restore_triggers raises.
+
+        restore_triggers runs in the cleanup ``finally`` (and can raise, e.g. if
+        its commit fails). Before the fix, an exception there skipped
+        ``conn.close()``, leaking the handle on the error path.
+        """
+        from green2blue.ios import prepare_sync as prepare_sync_mod
+
+        opened: list = []
+        real_connect = sqlite3.connect
+
+        class _TrackingConnection(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.close_calls = 0
+                opened.append(self)
+
+            def close(self):
+                self.close_calls += 1
+                super().close()
+
+        monkeypatch.setattr(
+            prepare_sync_mod.sqlite3,
+            "connect",
+            lambda database, *a, **k: real_connect(database, *a, factory=_TrackingConnection, **k),
+        )
+
+        def _boom(_conn, _saved):
+            raise RuntimeError("restore failed")
+
+        monkeypatch.setattr(prepare_sync_mod, "restore_triggers", _boom)
+
+        with pytest.raises(RuntimeError, match="restore failed"):
+            prepare_sync_mod.prepare_sync(empty_sms_db)
+
+        assert opened, "expected prepare_sync to open a connection"
+        assert all(conn.close_calls == 1 for conn in opened), "connection leaked on error path"
+
     def test_result_counts_accurate(self, sms_db_with_injected: Path) -> None:
         """All result counts match actual database state."""
         # Add an attachment to the fixture

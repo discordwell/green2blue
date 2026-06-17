@@ -274,3 +274,26 @@ class TestCountMessages:
         assert counts["errors"] == 1
         assert counts["sms"] == 1
         assert counts["total"] == 2
+
+    def test_count_non_object_json_lines_counted_as_errors(self, tmp_dir):
+        """Valid JSON that isn't an object must be counted, not crash the scan.
+
+        ``count_messages`` used to call ``_looks_like_rcs`` (which iterates the
+        record) before checking the type, so a line like ``[1, 2, 3]`` or a bare
+        number raised ``AttributeError``/``TypeError`` mid-scan instead of being
+        skipped like ``parse_ndjson`` does.
+        """
+        path = _write_ndjson(
+            tmp_dir,
+            SAMPLE_SMS_RECEIVED,
+            "[1, 2, 3]",
+            '"just a string"',
+            "42",
+            "null",
+        )
+        counts = count_messages(path)
+        assert counts["sms"] == 1
+        assert counts["errors"] == 4
+        assert counts["total"] == 5
+        assert counts["mms"] == 0
+        assert counts["unknown"] == 0

@@ -19,6 +19,7 @@ from green2blue.cli import (
     _capture_mobiledevice_logs,
     _cmd_device_doctor,
     _cmd_device_restore,
+    _cmd_diagnose,
     _confirm_backup,
     _device_run_session,
     _format_progress_heartbeat,
@@ -1339,6 +1340,91 @@ class TestWizardSubcommand:
             ret = main(["wizard"])
         assert ret == 0
         mock_wizard.assert_called_once()
+
+
+class TestDiagnoseCommand:
+    """Tests for the ``diagnose`` subcommand (CK sync-state inspection)."""
+
+    def _backup_info(self, path: Path) -> BackupInfo:
+        return BackupInfo(
+            path=path,
+            udid="TESTUDID",
+            device_name="Test iPhone",
+            product_version="17.0",
+            is_encrypted=False,
+        )
+
+    def _args(self) -> argparse.Namespace:
+        return argparse.Namespace(
+            backup=None, backup_root=None, password=None, injected_only=False
+        )
+
+    def test_diagnose_reports_sync_state_distribution(self, empty_sms_db, capsys):
+        conn = sqlite3.connect(empty_sms_db)
+        conn.execute(
+            "INSERT INTO handle (ROWID, id, country, service) "
+            "VALUES (1, '+12025550000', 'us', 'SMS')"
+        )
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, text, handle_id, service, date, ck_sync_state) "
+            "VALUES (1, 'green2blue:a', 'hi', 1, 'SMS', 1, 0)"
+        )
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, text, handle_id, service, date, ck_sync_state) "
+            "VALUES (2, 'native-msg', 'yo', 1, 'SMS', 2, 1)"
+        )
+        conn.commit()
+        conn.close()
+
+        backup_info = self._backup_info(empty_sms_db.parent)
+        with (
+            patch("green2blue.ios.backup.find_backup", return_value=backup_info),
+            patch("green2blue.ios.backup.get_sms_db_path", return_value=empty_sms_db),
+        ):
+            ret = _cmd_diagnose(self._args())
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "Total messages: 2" in out
+        assert "ck_sync_state=0" in out
+
+    def test_diagnose_closes_connection_on_query_error(self, tmp_dir, monkeypatch):
+        """A query failure (e.g. an older sms.db missing ck_sync_state) must not
+        leak the sqlite connection — it has to be closed in the ``finally``."""
+        import sqlite3 as sqlite3_mod
+
+        junk = tmp_dir / "corrupt-sms.db"
+        junk.write_bytes(b"definitely not a sqlite database")
+
+        opened: list = []
+        real_connect = sqlite3_mod.connect
+
+        class _TrackingConnection(sqlite3_mod.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.close_calls = 0
+                opened.append(self)
+
+            def close(self):
+                self.close_calls += 1
+                super().close()
+
+        monkeypatch.setattr(
+            sqlite3_mod,
+            "connect",
+            lambda database, *a, **k: real_connect(database, *a, factory=_TrackingConnection, **k),
+        )
+
+        backup_info = self._backup_info(tmp_dir)
+        with (
+            patch("green2blue.ios.backup.find_backup", return_value=backup_info),
+            patch("green2blue.ios.backup.get_sms_db_path", return_value=junk),
+            pytest.raises(sqlite3_mod.DatabaseError),
+        ):
+            _cmd_diagnose(self._args())
+
+        assert opened, "expected diagnose to open a connection"
+        assert all(conn.close_calls == 1 for conn in opened), "connection leaked on error path"
 
 
 class TestInjectHelpGroups:

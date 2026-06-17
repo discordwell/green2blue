@@ -2285,6 +2285,7 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
     )
     sms_db_path = get_sms_db_path(backup_info.path)
     temp_path = None
+    conn = None
 
     try:
         # Decrypt if needed
@@ -2371,9 +2372,11 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
             print(f"\nWARNING: {at_risk}/{total} messages have ck_sync_state=0")
             print("These may be deleted when iCloud Messages syncs.")
 
-        conn.close()
-
     finally:
+        # Close in the finally so a query error (e.g. an older sms.db missing
+        # the ck_sync_state column) doesn't leak the connection handle.
+        if conn is not None:
+            conn.close()
         if temp_path:
             temp_path.unlink(missing_ok=True)
 

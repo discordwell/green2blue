@@ -58,6 +58,16 @@ def _post_apply(base_url: str, payload: dict, headers: dict | None = None):
     return urlopen(request)
 
 
+def _post_export(base_url: str, payload: dict, headers: dict | None = None):
+    request = Request(
+        f"{base_url}/api/export",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
+    )
+    return urlopen(request)
+
+
 class TestReviewSession:
     def test_open_review_session_builds_payload(self, sample_export_zip):
         with open_review_session(sample_export_zip) as session:
@@ -253,6 +263,40 @@ class TestWorkflowServer:
             thread.join(timeout=2)
             assert server.workflow_result is not None
             assert server.workflow_result.action == "cancel"
+
+    def test_export_io_error_returns_500_and_keeps_server_alive(self, sample_export_zip):
+        """A selected attachment that becomes unreadable must not crash the
+        request thread. The /api/export handler should surface a 500 (mirroring
+        the /api/apply handler) instead of letting OSError escape."""
+        with (
+            open_review_session(sample_export_zip) as session,
+            _serve_workflow(session) as (server, base_url, _thread),
+        ):
+            with patch.object(
+                session,
+                "export_selected_zip",
+                side_effect=OSError("attachment vanished"),
+            ):
+                with pytest.raises(HTTPError) as exc_info:
+                    _post_export(base_url, {"selected_ids": ["line-1"]})
+                assert exc_info.value.code == 500
+
+            # The server keeps serving: a normal export still succeeds.
+            with _post_export(base_url, {"selected_ids": ["line-1"]}) as response:
+                assert response.status == 200
+                body = response.read()
+            with zipfile.ZipFile(io.BytesIO(body)) as zf:
+                assert "messages.ndjson" in zf.namelist()
+
+    def test_export_invalid_selection_returns_400(self, sample_export_zip):
+        """An empty selection is a client error, not a server error."""
+        with (
+            open_review_session(sample_export_zip) as session,
+            _serve_workflow(session) as (server, base_url, _thread),
+        ):
+            with pytest.raises(HTTPError) as exc_info:
+                _post_export(base_url, {"selected_ids": []})
+            assert exc_info.value.code == 400
 
     def test_run_review_workflow_reraises_keyboard_interrupt(self, sample_export_zip):
         with (

@@ -35,6 +35,7 @@ def drop_triggers(conn: sqlite3.Connection) -> list[str]:
             saved.append(sql)
         names.append(name)
 
+    dropped = 0
     for name in names:
         # Parameterized queries can't be used for DDL identifiers,
         # so we validate the name contains only safe characters
@@ -42,8 +43,9 @@ def drop_triggers(conn: sqlite3.Connection) -> list[str]:
             logger.warning("Skipping trigger with unsafe name: %r", name)
             continue
         cursor.execute(f"DROP TRIGGER IF EXISTS [{name}]")
+        dropped += 1
     conn.commit()
-    logger.debug("Dropped %d triggers", len(names))
+    logger.debug("Dropped %d triggers", dropped)
     return saved
 
 

@@ -255,19 +255,28 @@ def count_messages(path: Path | str) -> dict[str, int]:
             counts["total"] += 1
             try:
                 record = json.loads(line)
-                is_rcs = _looks_like_rcs(record)
-
-                if _is_mms_record(record):
-                    counts["mms"] += 1
-                elif "body" in record and "address" in record:
-                    counts["sms"] += 1
-                else:
-                    counts["unknown"] += 1
-
-                if is_rcs:
-                    counts["rcs"] += 1
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError:
                 counts["errors"] += 1
+                continue
+
+            # Valid JSON that isn't an object (list, string, number) can't be a
+            # message record; count it as an error rather than letting the
+            # downstream key checks raise. Mirrors parse_ndjson's handling.
+            if not isinstance(record, dict):
+                counts["errors"] += 1
+                continue
+
+            is_rcs = _looks_like_rcs(record)
+
+            if _is_mms_record(record):
+                counts["mms"] += 1
+            elif "body" in record and "address" in record:
+                counts["sms"] += 1
+            else:
+                counts["unknown"] += 1
+
+            if is_rcs:
+                counts["rcs"] += 1
 
     return counts
 

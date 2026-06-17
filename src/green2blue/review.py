@@ -355,6 +355,16 @@ def _make_review_handler(
                     "text/plain; charset=utf-8",
                 )
                 return
+            except OSError as exc:
+                # A selected attachment can disappear or become unreadable
+                # between the existence check and zf.write(); fail cleanly
+                # instead of crashing the request thread with a traceback.
+                self._write_bytes(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    f"Could not build the filtered export: {exc}".encode(),
+                    "text/plain; charset=utf-8",
+                )
+                return
 
             filename = f"{session.export_zip.stem}.filtered.zip"
             self.send_response(HTTPStatus.OK)

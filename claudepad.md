@@ -32,6 +32,16 @@
 
 # Session Summaries
 
+## 2026-06-17T20:40Z - Robustness & resource-safety hardening pass (5 fixes, +10 tests)
+- Clean tree, no WIP. Hunted bugs across the codebase with parallel review agents, then verified every finding myself (rejected several false positives: `source_path IS ?` in archive/db.py is the CORRECT nullable-match idiom in SQLite, NOT a bug; the prepare_sync `guid LIKE '...'` "injection" is a hardcoded constant; clone() has no attachment loop — SMS-only by Hack Patrol design; archive import/verify attachment counts already agree because verify filters `text_content IS NULL`).
+- **Fix 1 — `review.py` `_handle_export`**: now catches `OSError` (→500), mirroring the sibling `_handle_workflow_apply`. A selected attachment can vanish/become unreadable between the `.exists()` check and `zf.write()`; previously that crashed the request thread with a traceback instead of a clean error.
+- **Fix 2 — `parser/ndjson_parser.count_messages`**: skips valid-JSON-but-non-dict lines (`[1,2,3]`, `42`, `"str"`) instead of crashing with AttributeError in `_looks_like_rcs`. Now mirrors `parse_ndjson`'s non-dict handling. (`inspect`/wizard pre-scan path.)
+- **Fix 3 — `ios/prepare_sync.prepare_sync`**: `conn.close()` now guaranteed via nested try/finally even if `restore_triggers` raises in the cleanup `finally` (its commit can fail). Same leak class as the recent verify.py fix.
+- **Fix 4 — `cli._cmd_diagnose`**: closes its sqlite connection in `finally` (init `conn=None`); a query error on an older sms.db missing `ck_sync_state` used to skip the close. Gave `diagnose` its first tests.
+- **Fix 5 — `ios/trigger_utils.drop_triggers`**: debug log counts triggers actually dropped, not total found (unsafe-named triggers are skipped).
+- Every fix has a regression test (verified each FAILS without its fix). New `tests/test_trigger_utils.py`; connection-hygiene tests reuse the `_TrackingConnection` pattern from test_verify.py.
+- Verification: 661 tests pass (was 651), ruff clean. Run with `PYTHONPATH=src python -m pytest` (the `.green2blue` venv has a STALE non-editable install). A focused review subagent found no correctness problems. Not pushed (orchestrator pushes).
+
 ## 2026-06-17T14:11Z - Land review-checkpoint WIP + verify connection fix + ARCHITECTURE docs
 - Landed the uncommitted browser-review WIP that built on the prior "Add browser review checkpoint" commit. Server hardening in `review.py`: same-origin POST enforcement, Content-Length bounds, thread-safe single-decision `claim_workflow_result` (loser's filtered export is unlinked + 409), streamed filtered-ZIP writes, 500-on-write-failure that keeps serving, KeyboardInterrupt re-raise; plus reviewed-export pruning (keep 5), debounced search, and DRY helpers (`_start_review_server`, `_build_stats`, `hookSelectionButton`). Wizard handles the result by explicit `action`.
 - New `tests/test_review_ui.py` + `tests/fixtures/review_ui_smoke.js`: headless **node** smoke test that evals the embedded review UI JS against a real `ReviewSession.payload()` (skips when node absent; node present here so it runs).
