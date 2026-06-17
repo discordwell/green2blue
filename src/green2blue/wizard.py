@@ -244,16 +244,13 @@ def _step_review_checkpoint(
         print("\n  Aborted.")
         sys.exit(0)
 
-    selected_export = Path(result.export_zip) if result.export_zip is not None else export_path
-    if selected_export.resolve() == export_path.resolve():
-        print("  Continuing with the original export.\n")
-        return export_path, sms_count, mms_count, has_attachments
+    if result.action == "filtered" and result.export_zip is not None:
+        reviewed_export = Path(result.export_zip)
+        print(f"  Using reviewed export: {reviewed_export}\n")
+        return (reviewed_export, *_step_inspect(reviewed_export))
 
-    print(f"  Using reviewed export: {selected_export}\n")
-    reviewed_sms_count, reviewed_mms_count, reviewed_has_attachments = _step_inspect(
-        selected_export
-    )
-    return selected_export, reviewed_sms_count, reviewed_mms_count, reviewed_has_attachments
+    print("  Continuing with the original export.\n")
+    return export_path, sms_count, mms_count, has_attachments
 
 
 # ---------------------------------------------------------------------------

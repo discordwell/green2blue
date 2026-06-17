@@ -15,6 +15,7 @@ from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import urlparse
 
 from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
@@ -81,16 +82,11 @@ class ReviewSession:
         self.export = export
         self.messages = messages
         self.conversations = _build_conversations(messages)
+        self.stats = _build_stats(messages, self.conversations)
 
     def payload(self, workflow_context: ReviewWorkflowContext | None = None) -> dict[str, object]:
-        sms_messages = sum(1 for message in self.messages if message.kind == "sms")
-        mms_messages = sum(1 for message in self.messages if message.kind == "mms")
-        messages_with_attachments = sum(1 for message in self.messages if message.attachment_count)
-        total_attachments = sum(message.attachment_count for message in self.messages)
-        latest_timestamp_ms = max((message.timestamp_ms for message in self.messages), default=0)
         return {
             "export_name": self.export_zip.name,
-            "default_conversation_id": self.conversations[0].id if self.conversations else None,
             "workflow": (
                 {
                     "mode": "wizard",
@@ -101,15 +97,7 @@ class ReviewSession:
                 if workflow_context is not None
                 else None
             ),
-            "stats": {
-                "messages": len(self.messages),
-                "conversations": len(self.conversations),
-                "attachments": total_attachments,
-                "sms_messages": sms_messages,
-                "mms_messages": mms_messages,
-                "messages_with_attachments": messages_with_attachments,
-                "latest_timestamp_ms": latest_timestamp_ms,
-            },
+            "stats": dict(self.stats),
             "conversations": [
                 {
                     "id": conversation.id,
@@ -141,6 +129,12 @@ class ReviewSession:
         }
 
     def export_selected_zip(self, selected_ids: set[str]) -> bytes:
+        payload = io.BytesIO()
+        self.write_selected_zip(payload, selected_ids)
+        return payload.getvalue()
+
+    def write_selected_zip(self, target: BinaryIO, selected_ids: set[str]) -> None:
+        """Write a filtered export ZIP to ``target`` without buffering it in memory."""
         if not selected_ids:
             raise ValueError("No messages selected.")
 
@@ -148,8 +142,7 @@ class ReviewSession:
         if not selected_messages:
             raise ValueError("The selected message IDs do not exist in this export.")
 
-        payload = io.BytesIO()
-        with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             ndjson_lines: list[str] = []
             for message in selected_messages:
                 record = copy.deepcopy(message.raw_record)
@@ -172,8 +165,6 @@ class ReviewSession:
 
             zf.writestr("messages.ndjson", "\n".join(ndjson_lines) + "\n")
 
-        return payload.getvalue()
-
 
 @contextmanager
 def open_review_session(export_zip: Path | str) -> Generator[ReviewSession, None, None]:
@@ -181,6 +172,27 @@ def open_review_session(export_zip: Path | str) -> Generator[ReviewSession, None
     with open_export_zip(export_path) as export:
         messages = tuple(_load_review_messages(export))
         yield ReviewSession(export_path, export, messages)
+
+
+def _start_review_server(
+    session: ReviewSession,
+    *,
+    host: str,
+    port: int,
+    open_browser: bool,
+    instructions: str,
+    workflow_context: ReviewWorkflowContext | None = None,
+) -> tuple[_ReviewHTTPServer, str]:
+    server = _ReviewHTTPServer(
+        (host, port),
+        _make_review_handler(session, workflow_context=workflow_context),
+    )
+    url = f"http://{host}:{server.server_address[1]}"
+    print(f"Review UI: {url}")
+    print(instructions)
+    if open_browser:
+        webbrowser.open(url)
+    return server, url
 
 
 def serve_review_app(
@@ -192,12 +204,13 @@ def serve_review_app(
 ) -> str:
     """Launch the local browser review UI for an Android export."""
     with open_review_session(export_zip) as session:
-        server = _ReviewHTTPServer((host, port), _make_review_handler(session))
-        url = f"http://{host}:{server.server_address[1]}"
-        print(f"Review UI: {url}")
-        print("Press Ctrl+C to stop the review server.")
-        if open_browser:
-            webbrowser.open(url)
+        server, url = _start_review_server(
+            session,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+            instructions="Press Ctrl+C to stop the review server.",
+        )
         try:
             server.serve_forever()
         except KeyboardInterrupt:
@@ -215,21 +228,25 @@ def run_review_workflow(
     port: int = 0,
     open_browser: bool = True,
 ) -> ReviewWorkflowResult:
-    """Launch the review UI and wait for a wizard action from the browser."""
+    """Launch the review UI and wait for a wizard action from the browser.
+
+    Raises KeyboardInterrupt if the user aborts from the terminal, so the
+    wizard's normal Ctrl+C handling (exit code 130) applies.
+    """
     with open_review_session(export_zip) as session:
-        server = _ReviewHTTPServer(
-            (host, port),
-            _make_review_handler(session, workflow_context=workflow_context),
+        server, _ = _start_review_server(
+            session,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+            instructions="Use the browser buttons to continue the wizard.",
+            workflow_context=workflow_context,
         )
-        url = f"http://{host}:{server.server_address[1]}"
-        print(f"Review UI: {url}")
-        print("Use the browser buttons to continue the wizard.")
-        if open_browser:
-            webbrowser.open(url)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             print("\nStopping review server.")
+            raise
         finally:
             server.server_close()
 
@@ -245,6 +262,15 @@ class _ReviewHTTPServer(ThreadingHTTPServer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.workflow_result: ReviewWorkflowResult | None = None
+        self._workflow_lock = threading.Lock()
+
+    def claim_workflow_result(self, result: ReviewWorkflowResult) -> bool:
+        """Record the workflow decision; only the first decision wins."""
+        with self._workflow_lock:
+            if self.workflow_result is not None:
+                return False
+            self.workflow_result = result
+            return True
 
 
 def _make_review_handler(
@@ -279,6 +305,13 @@ def _make_review_handler(
             )
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._origin_allowed():
+                self._write_bytes(
+                    HTTPStatus.FORBIDDEN,
+                    b"Cross-origin requests are not allowed.",
+                    "text/plain; charset=utf-8",
+                )
+                return
             parsed = urlparse(self.path)
             if parsed.path == "/api/export":
                 self._handle_export()
@@ -292,13 +325,35 @@ def _make_review_handler(
                 "text/plain; charset=utf-8",
             )
 
+        def _origin_allowed(self) -> bool:
+            """Reject cross-origin POSTs so other pages cannot drive the workflow."""
+            origin = self.headers.get("Origin")
+            if origin is None:
+                return True
+            host, port = self.server.server_address[:2]
+            return origin in {
+                f"http://{host}:{port}",
+                f"http://127.0.0.1:{port}",
+                f"http://localhost:{port}",
+            }
+
         def _handle_export(self) -> None:
             payload = self._read_json_payload()
             if payload is None:
                 return
 
-            zip_bytes = self._build_filtered_zip(payload)
-            if zip_bytes is None:
+            selected_ids = self._validated_selected_ids(payload)
+            if selected_ids is None:
+                return
+
+            try:
+                zip_bytes = session.export_selected_zip(selected_ids)
+            except ValueError as exc:
+                self._write_bytes(
+                    HTTPStatus.BAD_REQUEST,
+                    str(exc).encode("utf-8"),
+                    "text/plain; charset=utf-8",
+                )
                 return
 
             filename = f"{session.export_zip.stem}.filtered.zip"
@@ -315,31 +370,7 @@ def _make_review_handler(
                 return
 
             action = payload.get("action")
-            if action == "continue_full":
-                self.server.workflow_result = ReviewWorkflowResult(
-                    action="full",
-                    export_zip=session.export_zip,
-                )
-                self._write_bytes(
-                    HTTPStatus.OK,
-                    b'{"status":"ok","action":"full"}',
-                    "application/json; charset=utf-8",
-                )
-                self._shutdown_server()
-                return
-            if action == "cancel":
-                self.server.workflow_result = ReviewWorkflowResult(
-                    action="cancel",
-                    export_zip=None,
-                )
-                self._write_bytes(
-                    HTTPStatus.OK,
-                    b'{"status":"ok","action":"cancel"}',
-                    "application/json; charset=utf-8",
-                )
-                self._shutdown_server()
-                return
-            if action != "continue_selected":
+            if action not in ("continue_full", "continue_selected", "cancel"):
                 self._write_bytes(
                     HTTPStatus.BAD_REQUEST,
                     b"Unknown workflow action.",
@@ -347,23 +378,55 @@ def _make_review_handler(
                 )
                 return
 
-            zip_bytes = self._build_filtered_zip(payload)
-            if zip_bytes is None:
+            if action == "continue_full":
+                result = ReviewWorkflowResult(action="full", export_zip=session.export_zip)
+            elif action == "cancel":
+                result = ReviewWorkflowResult(action="cancel", export_zip=None)
+            else:
+                selected_ids = self._validated_selected_ids(payload)
+                if selected_ids is None:
+                    return
+                try:
+                    output_path = _write_reviewed_export(session, selected_ids)
+                except ValueError as exc:
+                    self._write_bytes(
+                        HTTPStatus.BAD_REQUEST,
+                        str(exc).encode("utf-8"),
+                        "text/plain; charset=utf-8",
+                    )
+                    return
+                except OSError as exc:
+                    self._write_bytes(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        f"Could not save the reviewed export: {exc}".encode(),
+                        "text/plain; charset=utf-8",
+                    )
+                    return
+                result = ReviewWorkflowResult(action="filtered", export_zip=output_path)
+
+            if not self.server.claim_workflow_result(result):
+                if result.action == "filtered" and result.export_zip is not None:
+                    result.export_zip.unlink(missing_ok=True)
+                self._write_bytes(
+                    HTTPStatus.CONFLICT,
+                    b"A workflow decision was already submitted.",
+                    "text/plain; charset=utf-8",
+                )
                 return
 
-            output_path = _write_reviewed_export(session.export_zip, zip_bytes)
-            self.server.workflow_result = ReviewWorkflowResult(
-                action="filtered",
-                export_zip=output_path,
-            )
-            self._write_bytes(
-                HTTPStatus.OK,
-                json.dumps({"status": "ok", "action": "filtered", "path": str(output_path)}).encode(
-                    "utf-8"
-                ),
-                "application/json; charset=utf-8",
-            )
-            self._shutdown_server()
+            response: dict[str, object] = {"status": "ok", "action": result.action}
+            if result.action == "filtered":
+                response["path"] = str(result.export_zip)
+            try:
+                self._write_bytes(
+                    HTTPStatus.OK,
+                    json.dumps(response).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                )
+            finally:
+                # The decision is recorded; stop serving even if the browser
+                # disconnected before the response could be delivered.
+                self._shutdown_server()
 
         def log_message(self, _format: str, *_args) -> None:
             return
@@ -376,10 +439,12 @@ def _make_review_handler(
             self.wfile.write(payload)
 
         def _read_json_payload(self) -> dict[str, object] | None:
-            length = int(self.headers.get("Content-Length", "0"))
             try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 <= length <= _MAX_REQUEST_BYTES:
+                    raise ValueError(f"Content-Length out of range: {length}")
                 payload = json.loads(self.rfile.read(length))
-            except json.JSONDecodeError:
+            except (ValueError, UnicodeDecodeError):
                 self._write_bytes(
                     HTTPStatus.BAD_REQUEST,
                     b"Invalid JSON payload.",
@@ -395,7 +460,7 @@ def _make_review_handler(
                 return None
             return payload
 
-        def _build_filtered_zip(self, payload: dict[str, object]) -> bytes | None:
+        def _validated_selected_ids(self, payload: dict[str, object]) -> set[str] | None:
             selected_ids = payload.get("selected_ids")
             if not isinstance(selected_ids, list) or not all(
                 isinstance(item, str) for item in selected_ids
@@ -406,16 +471,7 @@ def _make_review_handler(
                     "text/plain; charset=utf-8",
                 )
                 return None
-
-            try:
-                return session.export_selected_zip(set(selected_ids))
-            except ValueError as exc:
-                self._write_bytes(
-                    HTTPStatus.BAD_REQUEST,
-                    str(exc).encode("utf-8"),
-                    "text/plain; charset=utf-8",
-                )
-                return None
+            return set(selected_ids)
 
         def _shutdown_server(self) -> None:
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -423,14 +479,38 @@ def _make_review_handler(
     return ReviewHandler
 
 
-def _write_reviewed_export(export_zip: Path, zip_bytes: bytes) -> Path:
+_MAX_REQUEST_BYTES = 64 * 1024 * 1024
+
+_REVIEWED_EXPORTS_TO_KEEP = 5
+
+
+def _write_reviewed_export(session: ReviewSession, selected_ids: set[str]) -> Path:
+    """Stream a filtered export to the app state dir and prune older ones."""
     output_dir = default_app_state_root() / "reviewed_exports"
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
-    filename = f"{export_zip.stem}.{stamp}.{threading.get_ident()}.filtered.zip"
-    output_path = output_dir / filename
-    output_path.write_bytes(zip_bytes)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    output_path = output_dir / f"{session.export_zip.stem}.{stamp}.filtered.zip"
+    try:
+        with output_path.open("wb") as fh:
+            session.write_selected_zip(fh, selected_ids)
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+    _prune_reviewed_exports(output_dir, keep=_REVIEWED_EXPORTS_TO_KEEP)
     return output_path
+
+
+def _prune_reviewed_exports(output_dir: Path, *, keep: int) -> None:
+    try:
+        reviewed = sorted(
+            (path for path in output_dir.glob("*.filtered.zip") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in reviewed[keep:]:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _load_review_messages(export: ExtractedExport) -> list[ReviewMessage]:
@@ -440,7 +520,12 @@ def _load_review_messages(export: ExtractedExport) -> list[ReviewMessage]:
             line = raw_line.strip()
             if not line:
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                # Match the inspect/inject parsers, which skip malformed lines
+                # instead of refusing the whole export.
+                continue
             if not isinstance(record, dict):
                 continue
             if _is_mms_record(record):
@@ -537,6 +622,32 @@ def _build_conversations(messages: tuple[ReviewMessage, ...]) -> tuple[ReviewCon
         key=lambda conversation: (conversation.primary_address, -conversation.latest_timestamp_ms)
     )
     return tuple(conversations)
+
+
+def _build_stats(
+    messages: tuple[ReviewMessage, ...],
+    conversations: tuple[ReviewConversation, ...],
+) -> dict[str, int]:
+    sms_messages = 0
+    mms_messages = 0
+    messages_with_attachments = 0
+    total_attachments = 0
+    for message in messages:
+        if message.kind == "sms":
+            sms_messages += 1
+        elif message.kind == "mms":
+            mms_messages += 1
+        if message.attachment_count:
+            messages_with_attachments += 1
+            total_attachments += message.attachment_count
+    return {
+        "messages": len(messages),
+        "conversations": len(conversations),
+        "attachments": total_attachments,
+        "sms_messages": sms_messages,
+        "mms_messages": mms_messages,
+        "messages_with_attachments": messages_with_attachments,
+    }
 
 
 def _is_mms_record(record: dict[str, object]) -> bool:
@@ -1227,6 +1338,7 @@ _REVIEW_HTML = """<!doctype html>
   <script>
     const state = {
       data: null,
+      derived: null,
       selectedMessageIds: new Set(),
       filters: {
         query: "",
@@ -1237,6 +1349,8 @@ _REVIEW_HTML = """<!doctype html>
       },
       activeConversationId: null,
       activeMessageId: null,
+      workflowPending: false,
+      workflowDoneAction: null,
     };
 
     function fmtTime(ms) {
@@ -1272,6 +1386,13 @@ _REVIEW_HTML = """<!doctype html>
       data.messagesByConversation = new Map();
       data.conversationById = new Map();
       data.messages.forEach((message) => {
+        message.searchText = [
+          message.primary_address,
+          message.conversation_label,
+          ...(message.addresses || []),
+          message.body_text || "",
+          message.subject || "",
+        ].join(" ").toLowerCase();
         data.messageById.set(message.id, message);
         if (!data.messagesByConversation.has(message.conversation_id)) {
           data.messagesByConversation.set(message.conversation_id, []);
@@ -1279,24 +1400,27 @@ _REVIEW_HTML = """<!doctype html>
         data.messagesByConversation.get(message.conversation_id).push(message);
       });
       data.messagesByConversation.forEach((messages) => {
-        messages.sort((a, b) => a.timestamp_ms - b.timestamp_ms || a.id.localeCompare(b.id));
+        messages.sort((a, b) =>
+          a.timestamp_ms - b.timestamp_ms
+            || a.id.localeCompare(b.id, undefined, { numeric: true }));
       });
       data.conversations.forEach((conversation) => {
         data.conversationById.set(conversation.id, conversation);
       });
     }
 
-    function conversationSelectionState(conversationId) {
-      const messages = state.data.messagesByConversation.get(conversationId) || [];
-      let selected = 0;
-      messages.forEach((message) => {
-        if (state.selectedMessageIds.has(message.id)) selected += 1;
-      });
+    function messagesFor(conversationId) {
+      return state.data.messagesByConversation.get(conversationId) || [];
+    }
+
+    function conversationSelectionState(conversationId, derived) {
+      const total = messagesFor(conversationId).length;
+      const selected = derived.selectedCountByConversation.get(conversationId) || 0;
       return {
         selected,
-        total: messages.length,
-        all: messages.length > 0 && selected === messages.length,
-        partial: selected > 0 && selected < messages.length,
+        total,
+        all: total > 0 && selected === total,
+        partial: selected > 0 && selected < total,
       };
     }
 
@@ -1307,22 +1431,11 @@ _REVIEW_HTML = """<!doctype html>
       });
     }
 
-    function matchesFilters(message) {
+    function matchesFilters(message, needle) {
       if (state.filters.kind !== "all" && message.kind !== state.filters.kind) return false;
       if (state.filters.attachmentsOnly && message.attachment_count === 0) return false;
       if (state.filters.selectedOnly && !state.selectedMessageIds.has(message.id)) return false;
-
-      const needle = state.filters.query.trim().toLowerCase();
-      if (!needle) return true;
-
-      const haystack = [
-        message.primary_address,
-        message.conversation_label,
-        ...(message.addresses || []),
-        message.body_text || "",
-        message.subject || "",
-      ].join(" ").toLowerCase();
-      return haystack.includes(needle);
+      return !needle || message.searchText.includes(needle);
     }
 
     function sortConversations(conversations) {
@@ -1353,23 +1466,19 @@ _REVIEW_HTML = """<!doctype html>
           activeMessage: null,
           selectedConversations: 0,
           selectedAttachments: 0,
+          selectedCountByConversation: new Map(),
         };
       }
 
+      const needle = state.filters.query.trim().toLowerCase();
       const filteredMessages = [];
       const filteredMessagesByConversation = new Map();
 
-      state.data.messages.forEach((message) => {
-        if (!matchesFilters(message)) return;
-        filteredMessages.push(message);
-        if (!filteredMessagesByConversation.has(message.conversation_id)) {
-          filteredMessagesByConversation.set(message.conversation_id, []);
-        }
-        filteredMessagesByConversation.get(message.conversation_id).push(message);
-      });
-
-      filteredMessagesByConversation.forEach((messages) => {
-        messages.sort((a, b) => a.timestamp_ms - b.timestamp_ms || a.id.localeCompare(b.id));
+      state.data.messagesByConversation.forEach((messages, conversationId) => {
+        const matching = messages.filter((message) => matchesFilters(message, needle));
+        if (!matching.length) return;
+        filteredMessagesByConversation.set(conversationId, matching);
+        filteredMessages.push(...matching);
       });
 
       const visibleConversations = sortConversations(
@@ -1405,11 +1514,14 @@ _REVIEW_HTML = """<!doctype html>
         ? state.data.messageById.get(state.activeMessageId) || null
         : null;
 
-      const selectedConversationIds = new Set();
+      const selectedCountByConversation = new Map();
       let selectedAttachments = 0;
       state.data.messages.forEach((message) => {
         if (!state.selectedMessageIds.has(message.id)) return;
-        selectedConversationIds.add(message.conversation_id);
+        selectedCountByConversation.set(
+          message.conversation_id,
+          (selectedCountByConversation.get(message.conversation_id) || 0) + 1
+        );
         selectedAttachments += message.attachment_count;
       });
 
@@ -1420,8 +1532,9 @@ _REVIEW_HTML = """<!doctype html>
         activeConversation,
         activeMessages,
         activeMessage,
-        selectedConversations: selectedConversationIds.size,
+        selectedConversations: selectedCountByConversation.size,
         selectedAttachments,
+        selectedCountByConversation,
       };
     }
 
@@ -1443,10 +1556,12 @@ _REVIEW_HTML = """<!doctype html>
 
       if (workflow) {
         workflowNote.hidden = false;
-        workflowNote.innerHTML = [
-          `<strong>${workflow.title}</strong> ${workflow.summary}`,
-          `<strong>Next:</strong> ${workflow.next_step}`,
-        ].join("<br>");
+        workflowNote.textContent = "";
+        workflowNote.appendChild(el("strong", null, workflow.title));
+        workflowNote.appendChild(document.createTextNode(` ${workflow.summary}`));
+        workflowNote.appendChild(el("br"));
+        workflowNote.appendChild(el("strong", null, "Next:"));
+        workflowNote.appendChild(document.createTextNode(` ${workflow.next_step}`));
       } else {
         workflowNote.hidden = true;
         workflowNote.textContent = "";
@@ -1475,10 +1590,7 @@ _REVIEW_HTML = """<!doctype html>
         {
           label: "Selected",
           value: fmtNumber(state.selectedMessageIds.size),
-          meta: [
-            `${fmtNumber(derived.selectedConversations)} conversations and`,
-            `${fmtNumber(derived.selectedAttachments)} attachment files`,
-          ].join(" "),
+          meta: selectionSummary(derived),
         },
       ];
 
@@ -1516,12 +1628,11 @@ _REVIEW_HTML = """<!doctype html>
 
           const checkbox = el("input", "row-checkbox");
           checkbox.type = "checkbox";
-          const selection = conversationSelectionState(conversation.id);
+          const selection = conversationSelectionState(conversation.id, derived);
           checkbox.checked = selection.all;
           checkbox.indeterminate = selection.partial;
           checkbox.addEventListener("change", () => {
-            const messages = state.data.messagesByConversation.get(conversation.id) || [];
-            selectMessages(messages, checkbox.checked);
+            selectMessages(messagesFor(conversation.id), checkbox.checked);
             render();
           });
 
@@ -1724,6 +1835,14 @@ _REVIEW_HTML = """<!doctype html>
       card.appendChild(body);
     }
 
+    function selectionSummary(derived, suffix) {
+      return [
+        `${fmtNumber(derived.selectedConversations)} conversations and`,
+        `${fmtNumber(derived.selectedAttachments)} attachment files`,
+        suffix,
+      ].filter(Boolean).join(" ");
+    }
+
     function renderExportBar(derived) {
       const selectedCount = state.selectedMessageIds.size;
       const exportTitle = document.getElementById("exportTitle");
@@ -1736,6 +1855,24 @@ _REVIEW_HTML = """<!doctype html>
       const cancelWorkflowButton = document.getElementById("cancelWorkflow");
       const workflow = workflowContext();
 
+      continueFullButton.hidden = !workflow;
+      cancelWorkflowButton.hidden = !workflow;
+      exportButton.textContent = workflow ? "Use selection and continue" : "Export selected ZIP";
+
+      if (state.workflowDoneAction) {
+        exportTitle.textContent = state.workflowDoneAction === "cancel"
+          ? "Wizard cancelled."
+          : "Done — your choice was sent to the wizard.";
+        exportMeta.textContent = state.workflowDoneAction === "cancel"
+          ? "You can close this tab."
+          : "Return to the terminal to finish the import. You can close this tab.";
+        [
+          exportButton, clearSelectionButton, clearFilteredButton,
+          selectAllFilteredButton, continueFullButton, cancelWorkflowButton,
+        ].forEach((button) => { button.disabled = true; });
+        return;
+      }
+
       if (!selectedCount) {
         exportTitle.textContent = "No messages selected yet";
         exportMeta.textContent = workflow
@@ -1745,31 +1882,25 @@ _REVIEW_HTML = """<!doctype html>
         exportTitle.textContent = workflow
           ? `${fmtNumber(selectedCount)} messages ready for the wizard`
           : `${fmtNumber(selectedCount)} messages ready to export`;
-        exportMeta.textContent = workflow
-          ? [
-              `${fmtNumber(derived.selectedConversations)} conversations and`,
-              `${fmtNumber(derived.selectedAttachments)} attachment files`,
-              "will continue into the rest of the wizard.",
-            ].join(" ")
-          : [
-              `${fmtNumber(derived.selectedConversations)} conversations and`,
-              `${fmtNumber(derived.selectedAttachments)} attachment files`,
-              "will be included.",
-            ].join(" ");
+        exportMeta.textContent = selectionSummary(
+          derived,
+          workflow ? "will continue into the rest of the wizard." : "will be included."
+        );
       }
 
-      exportButton.disabled = selectedCount === 0;
-      clearSelectionButton.disabled = selectedCount === 0;
-      clearFilteredButton.disabled = derived.filteredMessages.length === 0;
-      selectAllFilteredButton.disabled = derived.filteredMessages.length === 0;
-      continueFullButton.hidden = !workflow;
-      cancelWorkflowButton.hidden = !workflow;
-      exportButton.textContent = workflow ? "Use selection and continue" : "Export selected ZIP";
+      const busy = state.workflowPending;
+      exportButton.disabled = busy || selectedCount === 0;
+      clearSelectionButton.disabled = busy || selectedCount === 0;
+      clearFilteredButton.disabled = busy || derived.filteredMessages.length === 0;
+      selectAllFilteredButton.disabled = busy || derived.filteredMessages.length === 0;
+      continueFullButton.disabled = busy;
+      cancelWorkflowButton.disabled = busy;
     }
 
     function render() {
       if (!state.data) return;
       const derived = computeDerivedState();
+      state.derived = derived;
       renderHero(derived);
       renderConversations(derived);
       renderMessages(derived);
@@ -1790,27 +1921,45 @@ _REVIEW_HTML = """<!doctype html>
         !derived.visibleConversations.length;
     }
 
-    function hookFilter(id, key, accessor = (element) => element.value) {
+    function hookFilter(id, key, accessor = (element) => element.value, debounceMs = 0) {
       const element = document.getElementById(id);
-      ["input", "change"].forEach((eventName) => {
-        element.addEventListener(eventName, (event) => {
-          state.filters[key] = accessor(event.target);
+      let timer = null;
+      element.addEventListener("input", (event) => {
+        state.filters[key] = accessor(event.target);
+        if (!debounceMs) {
           render();
-        });
+          return;
+        }
+        clearTimeout(timer);
+        timer = setTimeout(render, debounceMs);
       });
     }
 
     async function submitWorkflowAction(action, selectedIds = []) {
-      const response = await fetch("/api/apply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, selected_ids: selectedIds }),
-      });
-      if (!response.ok) {
-        alert(await response.text());
-        return;
+      if (state.workflowPending || state.workflowDoneAction) return;
+      state.workflowPending = true;
+      render();
+      try {
+        const response = await fetch("/api/apply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, selected_ids: selectedIds }),
+        });
+        if (!response.ok) {
+          alert(await response.text());
+          return;
+        }
+        const body = await response.json();
+        state.workflowDoneAction = body.action;
+      } catch (error) {
+        alert(
+          "Could not reach the review server. If the wizard already resumed "
+            + "in the terminal, you can close this tab."
+        );
+      } finally {
+        state.workflowPending = false;
+        render();
       }
-      await response.json();
     }
 
     async function exportSelected() {
@@ -1825,11 +1974,17 @@ _REVIEW_HTML = """<!doctype html>
         return;
       }
 
-      const response = await fetch("/api/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selected_ids: selectedIds }),
-      });
+      let response;
+      try {
+        response = await fetch("/api/export", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ selected_ids: selectedIds }),
+        });
+      } catch (error) {
+        alert("Could not reach the review server. It may have been stopped.");
+        return;
+      }
       if (!response.ok) {
         alert(await response.text());
         return;
@@ -1848,70 +2003,50 @@ _REVIEW_HTML = """<!doctype html>
       URL.revokeObjectURL(url);
     }
 
+    function hookSelectionButton(id, getMessages, shouldSelect) {
+      document.getElementById(id).addEventListener("click", () => {
+        selectMessages(getMessages(state.derived), shouldSelect);
+        render();
+      });
+    }
+
+    function visibleConversationMessages(derived) {
+      const messages = [];
+      derived.visibleConversations.forEach((conversation) => {
+        messages.push(...messagesFor(conversation.id));
+      });
+      return messages;
+    }
+
+    function activeConversationMessages(derived) {
+      return derived.activeConversation ? messagesFor(derived.activeConversation.id) : [];
+    }
+
     async function boot() {
-      const response = await fetch("/api/data");
-      state.data = await response.json();
+      try {
+        const response = await fetch("/api/data");
+        if (!response.ok) throw new Error(await response.text());
+        state.data = await response.json();
+      } catch (error) {
+        document.getElementById("heroSummary").textContent =
+          "Could not load the export from the review server. "
+            + "Check the terminal for errors, then reload this page.";
+        return;
+      }
       buildIndexes(state.data);
-      state.activeConversationId = state.data.default_conversation_id;
-      hookFilter("searchFilter", "query");
+      hookFilter("searchFilter", "query", undefined, 150);
       hookFilter("kindFilter", "kind");
       hookFilter("conversationSort", "conversationSort");
       hookFilter("attachmentsOnly", "attachmentsOnly", (element) => element.checked);
       hookFilter("selectedOnly", "selectedOnly", (element) => element.checked);
-      document.getElementById("selectVisibleConversations").addEventListener("click", () => {
-        const derived = computeDerivedState();
-        derived.visibleConversations.forEach((conversation) => {
-          const messages = state.data.messagesByConversation.get(conversation.id) || [];
-          selectMessages(messages, true);
-        });
-        render();
-      });
-      document.getElementById("deselectVisibleConversations").addEventListener("click", () => {
-        const derived = computeDerivedState();
-        derived.visibleConversations.forEach((conversation) => {
-          const messages = state.data.messagesByConversation.get(conversation.id) || [];
-          selectMessages(messages, false);
-        });
-        render();
-      });
-      document.getElementById("selectFilteredMessages").addEventListener("click", () => {
-        const derived = computeDerivedState();
-        selectMessages(derived.activeMessages, true);
-        render();
-      });
-      document.getElementById("deselectFilteredMessages").addEventListener("click", () => {
-        const derived = computeDerivedState();
-        selectMessages(derived.activeMessages, false);
-        render();
-      });
-      document.getElementById("selectActiveConversation").addEventListener("click", () => {
-        const derived = computeDerivedState();
-        if (derived.activeConversation) {
-          const messages =
-            state.data.messagesByConversation.get(derived.activeConversation.id) || [];
-          selectMessages(messages, true);
-        }
-        render();
-      });
-      document.getElementById("deselectActiveConversation").addEventListener("click", () => {
-        const derived = computeDerivedState();
-        if (derived.activeConversation) {
-          const messages =
-            state.data.messagesByConversation.get(derived.activeConversation.id) || [];
-          selectMessages(messages, false);
-        }
-        render();
-      });
-      document.getElementById("selectAllFiltered").addEventListener("click", () => {
-        const derived = computeDerivedState();
-        selectMessages(derived.filteredMessages, true);
-        render();
-      });
-      document.getElementById("clearFiltered").addEventListener("click", () => {
-        const derived = computeDerivedState();
-        selectMessages(derived.filteredMessages, false);
-        render();
-      });
+      hookSelectionButton("selectVisibleConversations", visibleConversationMessages, true);
+      hookSelectionButton("deselectVisibleConversations", visibleConversationMessages, false);
+      hookSelectionButton("selectFilteredMessages", (derived) => derived.activeMessages, true);
+      hookSelectionButton("deselectFilteredMessages", (derived) => derived.activeMessages, false);
+      hookSelectionButton("selectActiveConversation", activeConversationMessages, true);
+      hookSelectionButton("deselectActiveConversation", activeConversationMessages, false);
+      hookSelectionButton("selectAllFiltered", (derived) => derived.filteredMessages, true);
+      hookSelectionButton("clearFiltered", (derived) => derived.filteredMessages, false);
       document.getElementById("clearSelection").addEventListener("click", () => {
         state.selectedMessageIds.clear();
         render();

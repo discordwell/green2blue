@@ -414,6 +414,60 @@ class TestWizardHappyPath:
         mock_review_workflow.assert_called_once()
         assert mock_pipeline.call_args.kwargs["export_path"] == reviewed_zip
 
+    def test_classic_wizard_keeps_original_export_when_browser_continues_full(self, tmp_dir):
+        root = tmp_dir / "backups"
+        root.mkdir()
+        backup_path = _create_backup(root, "REVIEW-FULL")
+        source_dir = tmp_dir / "source"
+        source_dir.mkdir()
+        zip_path = _create_export_zip(source_dir, num_messages=3)
+
+        backup_info = BackupInfo(
+            path=backup_path,
+            udid="REVIEW-FULL",
+            device_name="Review iPhone",
+            product_version="17.4",
+            is_encrypted=False,
+        )
+
+        inputs = iter(
+            [
+                str(zip_path),
+                "y",  # launch browser review
+                "y",  # confirm backup
+                "y",  # confirm inject
+                "n",  # decline automatic device restore
+            ]
+        )
+
+        with (
+            patch("builtins.input", side_effect=lambda _: next(inputs)),
+            patch("green2blue.ios.backup.scan_backups", return_value=_scan_result([backup_info])),
+            patch("green2blue.review.run_review_workflow") as mock_review_workflow,
+            patch("green2blue.pipeline.run_pipeline") as mock_pipeline,
+        ):
+            mock_review_workflow.return_value = MagicMock(
+                action="full",
+                export_zip=zip_path,
+            )
+            mock_result = MagicMock()
+            mock_result.injection_stats = MagicMock(
+                messages_inserted=3,
+                messages_skipped=0,
+            )
+            mock_result.clone_stats = None
+            mock_result.overwrite_stats = None
+            mock_result.total_attachments_copied = 0
+            mock_result.verification = MagicMock(passed=True)
+            mock_result.safety_copy_path = tmp_dir / "safety"
+            mock_pipeline.return_value = mock_result
+
+            ret = run_wizard()
+
+        assert ret == 0
+        mock_review_workflow.assert_called_once()
+        assert mock_pipeline.call_args.kwargs["export_path"] == zip_path.resolve()
+
     def test_merge_wizard_flow(self, tmp_dir):
         """Wizard can build/archive/merge and inject via the merged path."""
         root = tmp_dir / "backups"
