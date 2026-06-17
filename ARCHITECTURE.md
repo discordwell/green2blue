@@ -40,11 +40,28 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 
 ### Top-level
 - **pipeline.py** — Orchestrates full flow: find backup → safety copy → parse → convert → inject → copy attachments → update manifest → verify.
-- **verify.py** — Post-injection checks: SQLite integrity, foreign key consistency, join table consistency, attachment files exist, Manifest.db entry present.
-- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `verify`, `diagnose`, `prepare-sync`, `device`, `wizard`, `quickstart`. Smart no-args behavior: launches wizard on TTY, suggests `inject` for bare .zip args. Inject args split into "Common options" and "Advanced options" groups. Interactive backup confirmation on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
-- **wizard.py** — Interactive guided flow for non-technical users. Steps: welcome → ZIP drag-and-drop → inspect → country detection → backup selection → encryption handling → confirm → inject → next steps. Auto-detects country from phone number pre-scan.
-- **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`). Also `InjectionMode` enum (insert, overwrite), `CKStrategy` enum (none, fake-synced, pending-upload, icloud-reset), and `generate_ck_record_id()` helper.
+- **verify.py** — Post-injection checks: SQLite integrity, foreign key consistency, join table consistency, attachment files exist, `chat_service` index consistency, and Manifest.db entry/digest. Each check wraps its sqlite connection in `contextlib.closing` so handles are released even on the error path.
+- **cli.py** — argparse CLI with subcommands: `inject`, `list-backups`, `inspect`, `review`, `archive`, `corpus`, `verify`, `diagnose`, `prepare-sync`, `device`, `wizard`, `quickstart`. Smart no-args behavior: launches wizard on TTY, suggests `inject` for bare .zip args. Inject args split into "Common options" and "Advanced options" groups. Interactive backup confirmation on inject (skip with `--yes`/`-y`, `--backup`, or non-TTY stdin).
+- **wizard.py** — Interactive guided flow for non-technical users. Steps: welcome → ZIP drag-and-drop → inspect → optional browser review checkpoint → country detection → backup selection → encryption handling → confirm → inject → next steps. Auto-detects country from phone number pre-scan.
+- **review.py** — Local browser review tool. Spins up a localhost-only `ThreadingHTTPServer` serving a single-file HTML/CSS/JS app (`_REVIEW_HTML`) plus a small JSON API. Two modes: standalone (`serve_review_app`, backs `green2blue review`) for browsing/filtering and downloading a trimmed ZIP, and wizard mode (`run_review_workflow`) that adds `/api/apply` so the browser can hand a "continue with full / continue with selection / cancel" decision back to the terminal. Hardening: same-origin POST enforcement, Content-Length bounds, a thread-safe single-decision claim, streamed ZIP writes, and pruning of old reviewed exports (keeps newest 5 under the app state dir).
+- **corpus.py** — Privacy-safe representative corpus capture. Selects a representative subset of an export (bucketed by message shape), redacts text, anonymizes contacts, and swaps media for placeholders, writing a shareable sample ZIP. Backs `green2blue corpus capture`.
+- **credentials.py** — Interactive helpers for encrypted-backup passwords: detect interactive stdin, validate a candidate password against the backup keybag, and prompt (with retries) when a command needs the local backup password.
+- **user_paths.py** — User-facing path normalization (strip quotes, unescape drag-and-drop spaces, expand `~`, detect path-like input) and default storage locations (app state root) used for reviewed exports and other generated artifacts.
+- **models.py** — All dataclasses: Android (`AndroidSMS`, `AndroidMMS`, `MMSPart`, `MMSAddress`) and iOS (`iOSMessage`, `iOSHandle`, `iOSChat`, `iOSAttachment`). Also `InjectionMode` enum (insert, overwrite, clone), `CKStrategy` enum (none, fake-synced, pending-upload, icloud-reset), and `generate_ck_record_id()` helper.
 - **exceptions.py** — Hierarchy with user-friendly `hint` attributes.
+
+### `archive/`
+The canonical archive is a target-neutral SQLite store that lets message histories from multiple sources be merged and re-exported to either platform. Backs `green2blue archive`.
+- **db.py** — SQLite-backed canonical archive storage (`CanonicalArchive`): schema, content-addressed attachments, dedup keys, and summaries.
+- **android_import.py** — Import an SMS Import/Export ZIP into the archive.
+- **ios_import.py** — Import an iPhone backup's sms.db (decrypting if needed) into the archive.
+- **merge.py** — Cross-source merge planning: deduplicate messages/attachments across Android and iOS sources.
+- **export_android.py** — Re-export a merged archive as an SMS IE-style Android ZIP.
+- **stage.py** — Durable staging for merged exports so large-history runs are resumable.
+- **render_verify.py** — Target-side verification that an archive-rendered injection matches expected message/attachment signatures in the resulting sms.db.
+- **verify.py** — Internal consistency verification of a canonical archive.
+- **report.py** — Archive-level reporting/summaries.
+- **workflow.py** — Durable orchestration tying import → merge → stage → export together for large histories.
 
 ## Data Flow
 
