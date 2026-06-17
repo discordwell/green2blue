@@ -32,6 +32,14 @@
 
 # Session Summaries
 
+## 2026-06-17T14:11Z - Land review-checkpoint WIP + verify connection fix + ARCHITECTURE docs
+- Landed the uncommitted browser-review WIP that built on the prior "Add browser review checkpoint" commit. Server hardening in `review.py`: same-origin POST enforcement, Content-Length bounds, thread-safe single-decision `claim_workflow_result` (loser's filtered export is unlinked + 409), streamed filtered-ZIP writes, 500-on-write-failure that keeps serving, KeyboardInterrupt re-raise; plus reviewed-export pruning (keep 5), debounced search, and DRY helpers (`_start_review_server`, `_build_stats`, `hookSelectionButton`). Wizard handles the result by explicit `action`.
+- New `tests/test_review_ui.py` + `tests/fixtures/review_ui_smoke.js`: headless **node** smoke test that evals the embedded review UI JS against a real `ReviewSession.payload()` (skips when node absent; node present here so it runs).
+- Fixed real sqlite connection leak in `verify.py`: the `_check_*` helpers only closed on the success path, leaking on `sqlite3.Error` and on `_check_chat_indexes`'s early return. Wrapped each in `contextlib.closing`. NOTE: `with sqlite3.connect(...)` does NOT close — it only manages the transaction. Added a connection-tracking regression test (Connection factory subclass counting `close()` calls).
+- Updated `ARCHITECTURE.md`: documented previously-missing `review.py`, `corpus.py`, `credentials.py`, `user_paths.py`, and the whole `archive/` subpackage; refreshed the stale CLI subcommand list and `InjectionMode` enum (insert/overwrite/clone).
+- Verification: 651 tests pass (was 649), ruff clean. Tests run with `PYTHONPATH=src python -m pytest` — the `.green2blue` venv has a STALE non-editable install of green2blue, so plain `pytest` imports the wrong copy. CI uses `pip install -e .[dev]` so it's fine there.
+- Commits (main): 05ffbc0 (review hardening), 6be8ab0 (verify conn fix), 7d7acbf (architecture docs). Not pushed (orchestrator pushes).
+
 ## 2026-03-11T12:00Z - Non-technical user experience (wizard + installers + README)
 - Added interactive wizard (`wizard.py`) — guided flow: welcome, ZIP drag-and-drop, inspect, country auto-detection, backup selection, encryption handling, confirm, inject, platform-aware next steps
 - Updated `cli.py`: no-args launches wizard on TTY, bare .zip arg suggests `inject`, two-tier help groups (Common/Advanced), `wizard` and `quickstart` subcommands
