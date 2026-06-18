@@ -17,6 +17,8 @@ from green2blue.converter.phone import normalize_phone
 from green2blue.converter.timestamp import unix_ms_to_ios_ns, unix_s_to_ios_ns
 from green2blue.exceptions import PhoneNormalizationError
 from green2blue.models import (
+    MMS_OUTGOING_BOXES,
+    SMS_OUTGOING_TYPES,
     AndroidMMS,
     AndroidSMS,
     CKStrategy,
@@ -261,7 +263,7 @@ def _apply_ck_strategy_to_chat(chat: iOSChat, strategy: CKStrategy) -> iOSChat:
 def _convert_sms(sms: AndroidSMS, country: str, service: str = "SMS") -> iOSMessage | None:
     """Convert a single Android SMS to an iOS message."""
     phone = normalize_phone(sms.address, country)
-    is_from_me = sms.type == 2  # type 2 = sent
+    is_from_me = sms.type in SMS_OUTGOING_TYPES  # only INBOX (1) is received
     is_sent = is_from_me
 
     date_ns = unix_ms_to_ios_ns(sms.date)
@@ -293,7 +295,7 @@ def _convert_sms(sms: AndroidSMS, country: str, service: str = "SMS") -> iOSMess
 
 def _convert_mms(mms: AndroidMMS, country: str, service: str = "SMS") -> iOSMessage | None:
     """Convert a single Android MMS to an iOS message."""
-    is_from_me = mms.msg_box == 2  # msg_box 2 = sent
+    is_from_me = mms.msg_box in MMS_OUTGOING_BOXES  # only INBOX (1) is received
 
     # Find the sender (type 137) and recipients (type 151)
     sender = None

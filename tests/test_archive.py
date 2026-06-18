@@ -36,6 +36,32 @@ from green2blue.parser.zip_reader import open_export_zip
 from green2blue.pipeline import run_pipeline
 
 
+class TestAndroidDirectionClassification:
+    """Direction must agree with the inject converter for every Android bucket.
+
+    Regression: only SENT (type/box 2) was classified as outgoing, so OUTBOX/
+    FAILED/QUEUED/DRAFT messages became "unknown" and re-exported as received.
+    The canonical classifiers live in ``green2blue.models`` and are shared by
+    the archive importer and the review preview.
+    """
+
+    def test_sms_direction(self):
+        from green2blue.models import android_sms_direction
+
+        assert android_sms_direction(1) == "incoming"
+        for outgoing in (2, 3, 4, 5, 6):  # SENT/DRAFT/OUTBOX/FAILED/QUEUED
+            assert android_sms_direction(outgoing) == "outgoing", outgoing
+        assert android_sms_direction(99) == "unknown"
+
+    def test_mms_direction(self):
+        from green2blue.models import android_mms_direction
+
+        assert android_mms_direction(1) == "incoming"
+        for outgoing in (2, 3, 4):  # SENT/DRAFTS/OUTBOX
+            assert android_mms_direction(outgoing) == "outgoing", outgoing
+        assert android_mms_direction(99) == "unknown"
+
+
 class TestAndroidArchiveImport:
     def test_import_android_export_creates_archive(self, sample_export_zip, tmp_dir):
         archive_path = tmp_dir / "sample.g2b.sqlite"

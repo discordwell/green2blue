@@ -23,7 +23,7 @@ green2blue converts Android SMS/MMS exports into iOS Messages database format an
 ### `converter/`
 - **phone.py** — E.164 phone normalization without external dependencies. Country calling code table for 40+ countries. Handles parentheses, dashes, spaces, dots, short codes.
 - **timestamp.py** — Android epoch milliseconds ↔ iOS CoreData nanoseconds (since 2001-01-01). Formula: `ios_ns = (unix_ms / 1000 - 978307200) * 1_000_000_000`.
-- **message_converter.py** — Android models → iOS models. Groups messages into conversations by normalized phone. Generates UUIDs. Maps Android type codes to iOS booleans. MIME→UTI mapping for attachments.
+- **message_converter.py** — Android models → iOS models. Groups messages into conversations by normalized phone. Generates UUIDs. Maps Android type codes to iOS booleans. MIME→UTI mapping for attachments. **Direction:** only Android `INBOX` (SMS `type`/MMS `msg_box` == 1) is incoming; `SENT`/`DRAFT`/`OUTBOX`/`FAILED`/`QUEUED` are all owner-authored (`is_from_me=True`). The outgoing-bucket sets (`SMS_OUTGOING_TYPES`, `MMS_OUTGOING_BOXES`) live in `models.py` and are shared with the archive importer so both injection paths agree on direction.
 
 ### `ios/`
 - **backup.py** — Discover iPhone backups at platform-specific paths. Read metadata from Info.plist/Manifest.plist/Status.plist. Smart auto-selection: picks the most recent uninjected backup when multiple exist. Creates `.restore_checkpoint_` safety copies before modification. Filters out checkpoint directories from backup listings. Validate backup structure.

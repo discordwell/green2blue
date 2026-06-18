@@ -55,7 +55,7 @@ class AndroidMMS:
     """A single MMS message parsed from NDJSON."""
 
     date: int  # Unix timestamp in seconds (MMS uses seconds, not ms)
-    msg_box: int  # 1=received, 2=sent
+    msg_box: int  # 1=received, 2=sent, 3=draft, 4=outbox
     addresses: tuple[MMSAddress, ...] = ()
     parts: tuple[MMSPart, ...] = ()
     read: int = 1
@@ -63,6 +63,41 @@ class AndroidMMS:
     thread_id: int | None = None
     ct_t: str | None = None  # Content-Type header
     date_sent: int | None = None  # Sent timestamp in seconds
+
+
+# Android Telephony buckets that the *device owner* originated. In Android's
+# data model only INBOX (1) is incoming; everything else (SENT/DRAFT/OUTBOX/
+# FAILED/QUEUED) is outgoing. Misclassifying any of these as received flips a
+# user's own messages so they appear to come *from the contact*. Shared by the
+# inject converter and the archive importer so both paths agree on direction.
+# Unknown/vendor values are intentionally excluded so callers can fall back to
+# their own default ("received" for inject, "unknown" for the archive).
+#   SMS (Telephony.TextBasedSmsColumns): 2=SENT 3=DRAFT 4=OUTBOX 5=FAILED 6=QUEUED
+#   MMS (Telephony.BaseMmsColumns):      2=SENT 3=DRAFTS 4=OUTBOX
+SMS_OUTGOING_TYPES: frozenset[int] = frozenset({2, 3, 4, 5, 6})
+MMS_OUTGOING_BOXES: frozenset[int] = frozenset({2, 3, 4})
+
+
+def android_sms_direction(msg_type: int) -> str:
+    """Classify an Android SMS ``type`` as incoming/outgoing/unknown.
+
+    Canonical 3-state classifier shared by the archive importer and the review
+    preview so they never drift from each other or from the inject converter.
+    """
+    if msg_type == 1:
+        return "incoming"
+    if msg_type in SMS_OUTGOING_TYPES:
+        return "outgoing"
+    return "unknown"
+
+
+def android_mms_direction(msg_box: int) -> str:
+    """Classify an Android MMS ``msg_box`` as incoming/outgoing/unknown."""
+    if msg_box == 1:
+        return "incoming"
+    if msg_box in MMS_OUTGOING_BOXES:
+        return "outgoing"
+    return "unknown"
 
 
 # --- iOS models (destined for sms.db) ---

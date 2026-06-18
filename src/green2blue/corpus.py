@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
-from green2blue.models import AndroidMMS, AndroidSMS, MMSAddress, MMSPart
+from green2blue.models import (
+    SMS_OUTGOING_TYPES,
+    AndroidMMS,
+    AndroidSMS,
+    MMSAddress,
+    MMSPart,
+)
 from green2blue.parser.ndjson_parser import parse_ndjson
 from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
 
@@ -97,7 +103,7 @@ def _select_messages(
 def _classify_message(msg: AndroidSMS | AndroidMMS) -> tuple[str, ...]:
     buckets: list[str] = []
     if isinstance(msg, AndroidSMS):
-        buckets.append("sms_outgoing" if msg.type == 2 else "sms_incoming")
+        buckets.append("sms_outgoing" if msg.type in SMS_OUTGOING_TYPES else "sms_incoming")
         if msg.read == 0:
             buckets.append("sms_unread")
         if _URL_RE.search(msg.body):

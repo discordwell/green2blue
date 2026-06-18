@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import urlparse
 
+from green2blue.models import android_mms_direction, android_sms_direction
 from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
 from green2blue.user_paths import default_app_state_root
 
@@ -558,7 +559,7 @@ def _build_sms_review_message(line_number: int, record: dict[str, object]) -> Re
         addresses=(address,),
         primary_address=address,
         kind="sms",
-        direction=_sms_direction(msg_type),
+        direction=android_sms_direction(msg_type),
         timestamp_ms=timestamp_ms,
         body_text=body_text,
         subject=None,
@@ -598,7 +599,7 @@ def _build_mms_review_message(
         addresses=addresses,
         primary_address=addresses[0] if addresses else "(unknown)",
         kind="mms",
-        direction=_mms_direction(int(record.get("msg_box") or 1)),
+        direction=android_mms_direction(int(record.get("msg_box") or 1)),
         timestamp_ms=timestamp_ms,
         body_text="\n".join(text_parts),
         subject=str(record.get("sub")) if record.get("sub") else None,
@@ -665,22 +666,6 @@ def _is_mms_record(record: dict[str, object]) -> bool:
         key in record
         for key in ("__parts", "__addresses", "__sender_address", "__recipient_addresses")
     )
-
-
-def _sms_direction(msg_type: int) -> str:
-    if msg_type == 1:
-        return "incoming"
-    if msg_type == 2:
-        return "outgoing"
-    return "unknown"
-
-
-def _mms_direction(msg_box: int) -> str:
-    if msg_box == 1:
-        return "incoming"
-    if msg_box == 2:
-        return "outgoing"
-    return "unknown"
 
 
 def _mms_addresses(record: dict[str, object]) -> list[str]:

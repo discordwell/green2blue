@@ -5,8 +5,27 @@ from __future__ import annotations
 import json
 import zipfile
 
-from green2blue.corpus import capture_android_corpus
+from green2blue.corpus import _classify_message, capture_android_corpus
+from green2blue.models import AndroidSMS
 from green2blue.parser.zip_reader import open_export_zip
+
+
+class TestClassifyMessage:
+    def test_outgoing_sms_buckets(self):
+        """OUTBOX/FAILED/QUEUED/DRAFT bucket as outgoing, not incoming.
+
+        Regression: bucketing hardcoded type==2, so other outgoing types were
+        miscounted as incoming when sampling a representative corpus.
+        """
+        for outgoing_type in (2, 3, 4, 5, 6):
+            msg = AndroidSMS(address="+1555000000", body="hi", date=1, type=outgoing_type)
+            assert "sms_outgoing" in _classify_message(msg)
+            assert "sms_incoming" not in _classify_message(msg)
+
+    def test_incoming_sms_bucket(self):
+        msg = AndroidSMS(address="+1555000000", body="hi", date=1, type=1)
+        assert "sms_incoming" in _classify_message(msg)
+        assert "sms_outgoing" not in _classify_message(msg)
 
 
 class TestCorpusCapture:

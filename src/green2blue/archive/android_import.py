@@ -7,7 +7,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from green2blue.archive.db import CanonicalArchive, detect_address_kind, json_dumps_stable
-from green2blue.models import AndroidMMS, AndroidSMS, MMSAddress, MMSPart
+from green2blue.models import (
+    AndroidMMS,
+    AndroidSMS,
+    MMSAddress,
+    MMSPart,
+    android_mms_direction,
+    android_sms_direction,
+)
 from green2blue.parser.ndjson_parser import parse_ndjson
 from green2blue.parser.zip_reader import ExtractedExport, open_export_zip
 
@@ -148,7 +155,7 @@ def _import_sms(
         source_type="android.sms",
         import_run_id=import_run_id,
         conversation_id=conversation_id,
-        direction=_sms_direction(msg.type),
+        direction=android_sms_direction(msg.type),
         sent_at_ms=msg.date,
         read_state="read" if msg.read else "unread",
         service_hint="SMS",
@@ -205,7 +212,7 @@ def _import_mms(
         source_type="android.mms",
         import_run_id=import_run_id,
         conversation_id=conversation_id,
-        direction="incoming" if msg.msg_box == 1 else "outgoing" if msg.msg_box == 2 else "unknown",
+        direction=android_mms_direction(msg.msg_box),
         sent_at_ms=_mms_timestamp_ms(msg),
         read_state="read" if msg.read else "unread",
         service_hint="MMS",
@@ -247,14 +254,6 @@ def _import_mms(
             )
 
     return True, attachment_count, conversation_id, participant_ids, blob_ids
-
-
-def _sms_direction(msg_type: int) -> str:
-    if msg_type == 1:
-        return "incoming"
-    if msg_type == 2:
-        return "outgoing"
-    return "unknown"
 
 
 def _mms_timestamp_ms(msg: AndroidMMS) -> int:

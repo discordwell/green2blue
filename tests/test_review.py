@@ -100,6 +100,32 @@ class TestReviewSession:
 
         assert bodies == ["first", "third"]
 
+    def test_review_preview_labels_outgoing_buckets(self, tmp_dir):
+        """OUTBOX/FAILED/DRAFT must preview as outgoing, matching the import.
+
+        Regression: the preview hardcoded type==2/msg_box==2, so these showed
+        as 'unknown' while the actual injection treats them as the user's own.
+        """
+        zip_path = tmp_dir / "directions.zip"
+        lines = [
+            json.dumps({"address": "+1555000001", "body": "in", "date": "1", "type": "1"}),
+            json.dumps({"address": "+1555000002", "body": "sent", "date": "2", "type": "2"}),
+            json.dumps({"address": "+1555000003", "body": "outbox", "date": "3", "type": "4"}),
+            json.dumps({"address": "+1555000004", "body": "failed", "date": "4", "type": "5"}),
+        ]
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("messages.ndjson", "\n".join(lines) + "\n")
+
+        with open_review_session(zip_path) as session:
+            directions = {m.body_text: m.direction for m in session.messages}
+
+        assert directions == {
+            "in": "incoming",
+            "sent": "outgoing",
+            "outbox": "outgoing",
+            "failed": "outgoing",
+        }
+
     def test_export_selected_zip_filters_messages_and_attachments(self, sample_export_zip):
         with open_review_session(sample_export_zip) as session:
             zip_bytes = session.export_selected_zip({"line-1", "line-3"})

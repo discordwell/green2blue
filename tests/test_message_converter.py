@@ -68,6 +68,28 @@ class TestSMSConversion:
         assert msg.date_read == 0
         assert msg.date_delivered == 0
 
+    def test_outgoing_sms_types_are_from_me(self):
+        """OUTBOX(4)/FAILED(5)/QUEUED(6)/DRAFT(3) are owner-authored, not received.
+
+        Regression: these were previously classified as received (only type==2
+        counted as sent), so a user's own un-delivered messages showed up in
+        Messages as if the *contact* had sent them.
+        """
+        for outgoing_type in (2, 3, 4, 5, 6):
+            result = convert_messages([_make_sms(type_=outgoing_type)])
+            msg = result.messages[0]
+            assert msg.is_from_me, f"SMS type {outgoing_type} should be from me"
+            assert msg.is_sent, f"SMS type {outgoing_type} should be is_sent"
+
+    def test_inbox_sms_is_received(self):
+        result = convert_messages([_make_sms(type_=1)])
+        assert not result.messages[0].is_from_me
+
+    def test_unknown_sms_type_defaults_to_received(self):
+        """An unrecognized/vendor type stays received rather than guessing sent."""
+        result = convert_messages([_make_sms(type_=99)])
+        assert not result.messages[0].is_from_me
+
     def test_handle_created(self):
         result = convert_messages([_make_sms()])
         assert len(result.handles) == 1
@@ -142,6 +164,22 @@ class TestMMSConversion:
         msg = result.messages[0]
         assert msg.is_from_me
         assert msg.is_sent
+
+    def test_outgoing_mms_boxes_are_from_me(self):
+        """SENT(2)/DRAFTS(3)/OUTBOX(4) are owner-authored, not received.
+
+        Regression: only msg_box==2 was treated as sent, so OUTBOX/DRAFT MMS
+        flipped direction and appeared to come from the contact.
+        """
+        for box in (2, 3, 4):
+            result = convert_messages([_make_mms(msg_box=box)])
+            msg = result.messages[0]
+            assert msg.is_from_me, f"MMS box {box} should be from me"
+            assert msg.is_sent, f"MMS box {box} should be is_sent"
+
+    def test_unknown_mms_box_defaults_to_received(self):
+        result = convert_messages([_make_mms(msg_box=99)])
+        assert not result.messages[0].is_from_me
 
     def test_sent_mms_date_sent_used(self):
         """Sent iMessage-style MMS should use date_sent for date_delivered."""
