@@ -54,6 +54,50 @@ _DEFAULT_ATTRIBUTION_INFO = plistlib.dumps(
     sort_keys=False,
 )
 
+# Columns that decide how Messages.app *interprets* a row (reaction, app/balloon
+# payload, audio message, system event, edited/unsent, screen effect, ...).
+# Overwrite mode repurposes an arbitrary existing "sacrifice" row, so any of
+# these may be carried over from the original message. Left untouched, e.g. a
+# reacted-to sacrifice (associated_message_type != 0) would render the injected
+# text as a tapback on a now-missing message rather than a normal bubble. Reset
+# each to the same value a fresh INSERT produces so the row reads as a plain
+# text/attachment message. CK metadata, ROWID, and GUID are deliberately NOT in
+# this list — overwrite mode preserves those on purpose. The reset is applied
+# schema-aware (only for columns the live sms.db actually has).
+_OVERWRITE_RESET_COLUMNS: tuple[tuple[str, object], ...] = (
+    # Tapback / reaction association.
+    ("associated_message_type", 0),
+    ("associated_message_guid", None),
+    ("associated_message_range_location", 0),
+    ("associated_message_range_length", 0),
+    # System / action events ("X joined", group renames, ...).
+    ("item_type", 0),
+    ("group_action_type", 0),
+    ("message_action_type", 0),
+    ("message_source", 0),
+    ("other_handle", 0),
+    ("type", 0),
+    # App / balloon payloads (Apple Pay, games, stickers) and screen effects.
+    ("balloon_bundle_id", None),
+    ("payload_data", None),
+    ("expressive_send_style_id", None),
+    ("time_expressive_send_played", 0),
+    # Voice (audio) messages.
+    ("is_audio_message", 0),
+    ("is_played", 0),
+    ("date_played", 0),
+    # Edited / unsent / detonated state.
+    ("date_edited", 0),
+    ("date_retracted", 0),
+    ("was_detonated", 0),
+    # Expiring (digital touch / audio) state.
+    ("is_expirable", 0),
+    ("expire_state", 0),
+    # Misc flags a fresh INSERT always normalizes to 0.
+    ("error", 0),
+    ("replace", 0),
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -1159,6 +1203,14 @@ class SMSDatabase:
         if "part_count" in self._msg_schema:
             opt_sets += ", part_count = ?"
             opt_params.append(part_count)
+
+        # Normalize message-kind columns so the repurposed sacrifice row renders
+        # as a plain text/attachment message regardless of what it originally was
+        # (reaction, app message, audio message, system event, edited, ...).
+        for col, reset_value in _OVERWRITE_RESET_COLUMNS:
+            if col in self._msg_schema:
+                opt_sets += f", {col} = ?"
+                opt_params.append(reset_value)
 
         cursor.execute(
             f"""UPDATE message SET

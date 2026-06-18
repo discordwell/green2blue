@@ -313,6 +313,121 @@ class TestOverwriteContentUpdate:
         conn.close()
 
 
+class TestOverwriteKindNormalization:
+    """Message-kind columns are reset so a sacrifice renders as a plain message.
+
+    Overwrite mode repurposes an arbitrary existing row. If that row was a
+    tapback/reaction, an app/balloon message, an audio message, a system event,
+    or an edited/unsent message, those columns must be cleared — otherwise the
+    injected text renders as the wrong *kind* of message (e.g. a reaction to a
+    now-missing message) even though its text/date are correct.
+    """
+
+    # (column, corrupt_value_to_seed, expected_value_after_overwrite)
+    _KIND_COLUMNS = (
+        ("associated_message_type", 2000, 0),  # "loved" tapback
+        ("associated_message_guid", "p:0/ABCD-EF", None),
+        ("associated_message_range_location", 3, 0),
+        ("associated_message_range_length", 5, 0),
+        ("item_type", 1, 0),  # group/system event
+        ("group_action_type", 1, 0),
+        ("message_action_type", 1, 0),
+        ("message_source", 1, 0),
+        ("other_handle", 7, 0),
+        ("type", 1, 0),
+        ("balloon_bundle_id", "com.apple.messages.MSMessageExtensionBalloonPlugin", None),
+        ("payload_data", b"\x01\x02\x03", None),
+        ("expressive_send_style_id", "com.apple.MobileSMS.expressivesend.impact", None),
+        ("time_expressive_send_played", 123, 0),
+        ("is_audio_message", 1, 0),
+        ("is_played", 1, 0),
+        ("date_played", 999, 0),
+        ("date_edited", 888, 0),
+        ("date_retracted", 777, 0),
+        ("was_detonated", 1, 0),
+        ("is_expirable", 1, 0),
+        ("expire_state", 1, 0),
+        ("error", 1, 0),
+        ("replace", 1, 0),
+    )
+
+    def _seed_kind_columns(self, db_path: Path, rowid: int) -> None:
+        conn = sqlite3.connect(db_path)
+        assignments = ", ".join(f"{col} = ?" for col, _, _ in self._KIND_COLUMNS)
+        conn.execute(
+            f"UPDATE message SET {assignments} WHERE ROWID = ?",
+            (*[seed for _, seed, _ in self._KIND_COLUMNS], rowid),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_kind_columns_reset_to_plain_message(self, empty_sms_db: Path):
+        chat_id, msg_ids = _populate_sacrifice_db(empty_sms_db, "+15551110000", 1)
+        self._seed_kind_columns(empty_sms_db, msg_ids[0])
+
+        android_msg = _make_message("+15552220000", "just a normal text", 800000000000000000)
+        result = _make_result(
+            [android_msg],
+            [_make_handle("+15552220000")],
+            [_make_chat("+15552220000")],
+        )
+
+        with SMSDatabase(empty_sms_db) as db:
+            db.overwrite(result, [chat_id])
+
+        conn = sqlite3.connect(empty_sms_db)
+        conn.row_factory = sqlite3.Row
+        cols = ", ".join(col for col, _, _ in self._KIND_COLUMNS)
+        row = conn.execute(
+            f"SELECT {cols} FROM message WHERE ROWID = ?", (msg_ids[0],)
+        ).fetchone()
+        conn.close()
+
+        for col, _, expected in self._KIND_COLUMNS:
+            assert row[col] == expected, f"{col} not normalized: {row[col]!r} != {expected!r}"
+
+    def test_kind_reset_preserves_ck_rowid_and_guid(self, empty_sms_db: Path):
+        """Resetting kind columns must not disturb the preserved CK/identity columns."""
+        chat_id, msg_ids = _populate_sacrifice_db(
+            empty_sms_db, "+15551110000", 1, ck_sync_state=1
+        )
+        self._seed_kind_columns(empty_sms_db, msg_ids[0])
+
+        conn = sqlite3.connect(empty_sms_db)
+        conn.row_factory = sqlite3.Row
+        before = conn.execute(
+            "SELECT guid, ck_sync_state, ck_record_id, ck_record_change_tag "
+            "FROM message WHERE ROWID = ?",
+            (msg_ids[0],),
+        ).fetchone()
+        conn.close()
+
+        android_msg = _make_message("+15552220000", "preserve check", 800000000000000000)
+        result = _make_result(
+            [android_msg],
+            [_make_handle("+15552220000")],
+            [_make_chat("+15552220000")],
+        )
+
+        with SMSDatabase(empty_sms_db) as db:
+            db.overwrite(result, [chat_id])
+
+        conn = sqlite3.connect(empty_sms_db)
+        conn.row_factory = sqlite3.Row
+        after = conn.execute(
+            "SELECT guid, ck_sync_state, ck_record_id, ck_record_change_tag "
+            "FROM message WHERE ROWID = ?",
+            (msg_ids[0],),
+        ).fetchone()
+        conn.close()
+
+        assert after["guid"] == before["guid"]
+        assert not after["guid"].startswith("green2blue:")
+        assert after["ck_sync_state"] == 1
+        assert after["ck_record_id"] == before["ck_record_id"]
+        assert after["ck_record_change_tag"] == before["ck_record_change_tag"]
+
+
 class TestOverwriteCKPreservation:
     """CloudKit metadata is preserved from sacrifice messages."""
 

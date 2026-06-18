@@ -93,9 +93,9 @@ RCS messages appear as regular SMS or MMS records with no special type marker. T
 
 ### Chat GUID Format
 - 1:1: `any;-;+12025551234`
-- Group: `any;-;chat{sha256(sorted_phones)[:16]}`
+- Group: `any;+;chat{decimal}` where `decimal = int.from_bytes(sha256(sorted_phones)[:8]) % 10**18` (see `compute_group_chat_identifier`)
 
-Real iOS 26.2+ uses the `any;-;` prefix for all SMS chats (confirmed from 3,151 chats in a real backup).
+Real iOS 26.2.1 uses the `any;-;` prefix for 1:1 SMS chats and the `any;+;` prefix for group chats (the group identifier is an opaque `chat<decimal>`, not the participant list).
 
 ### Field Matching (Real iOS 26.2 Comparison)
 Injection output is validated against real iOS backup data. Key field mappings:
@@ -221,6 +221,7 @@ Instead of INSERTing new message rows, overwrite mode UPDATEs existing "sacrific
 3. If pool < messages to inject, `InsufficientSacrificeError` is raised
 4. For each Android message, a sacrifice message is popped and:
    - Content columns are UPDATEd: `text`, `attributedBody`, `message_summary_info`, `date`, `handle_id`, direction flags
+   - **Message-kind columns are reset** to a plain-message shape (`associated_message_type`/`associated_message_guid`, `item_type`, `group_action_type`, `balloon_bundle_id`/`payload_data`, `expressive_send_style_id`, `is_audio_message`, `date_edited`/`date_retracted`, ...) via `_OVERWRITE_RESET_COLUMNS`. A sacrifice pool is arbitrary existing rows, so without this a repurposed tapback/app/audio/system/edited row would keep those markers and render as the wrong *kind* of message (e.g. a reaction to a now-missing message). The reset is schema-aware so older iOS versions are unaffected.
    - CK columns are **preserved**: `ck_sync_state`, `ck_record_id`, `ck_record_change_tag`
    - ROWID and original GUID are preserved (no `green2blue:` prefix)
    - `chat_message_join` is updated to move the message to the target chat
