@@ -354,6 +354,15 @@ class TestEdgeCases:
         assert len(result.messages) == 0
         assert result.skipped_count == 1
 
+    def test_intl_access_prefix_not_dropped(self):
+        # A foreign contact stored with the "00" international access prefix
+        # used to fail normalization and silently drop the whole message.
+        sms = _make_sms(address="00491701234567")
+        result = convert_messages([sms], country="GB")
+        assert result.skipped_count == 0
+        assert len(result.messages) == 1
+        assert result.messages[0].handle_id == "+491701234567"
+
 
 class TestComputeChatGuid:
     def test_1to1_chat(self):

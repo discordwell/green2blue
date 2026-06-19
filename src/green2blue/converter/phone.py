@@ -1,7 +1,8 @@
 """Phone number normalization to E.164 format without external dependencies.
 
 Handles common formats: (202) 555-1234, 202-555-1234, 2025551234,
-+12025551234, 12025551234, +44 20 7946 0958, short codes, etc.
++12025551234, 12025551234, +44 20 7946 0958, 0044 20 7946 0958
+(the "00" international access prefix), short codes, etc.
 
 This is intentionally not a full reimplementation of libphonenumber.
 It covers the most common cases for SMS/MMS message transfers.
@@ -147,6 +148,17 @@ def normalize_phone(number: str, country: str = "US") -> str:
     # Already has + prefix — validate and return
     if has_plus:
         return _validate_international(digits, original)
+
+    # International access prefix "00" (ITU-T E.123): outside North America,
+    # "00<country code><national number>" is how "+<country code><national
+    # number>" is dialed and is commonly how phones store foreign contacts
+    # (e.g. a German number saved as 0049170... on a UK phone). No national
+    # numbering plan assigns subscriber numbers that begin with 00, so a
+    # leading 00 unambiguously means "international" regardless of `country`.
+    # Strip it and validate as E.164. Short codes were already returned above,
+    # so this only sees numbers long enough to plausibly be international.
+    if digits.startswith("00"):
+        return _validate_international(digits[2:], original)
 
     # No + prefix — try to interpret as national or with implicit country code
     if country not in COUNTRY_RULES:
